@@ -630,6 +630,217 @@ func TestTimerPauseAndResume(t *testing.T) {
 	}
 }
 
+// TestQuoteRotates 验证中间栏字条会随时间轮换（见需求 5）。
+func TestQuoteRotates(t *testing.T) {
+	now := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	dir := t.TempDir()
+	s, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewApp(Options{
+		Store:  s,
+		Config: config.Default(),
+		Clock:  clock.NewWith(func() time.Time { return now }, time.Local),
+		Paths:  &config.Paths{Root: dir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.width, app.height = 120, 36
+
+	first := app.quoteIdx
+	// 未到轮换间隔时不应变化。
+	now = now.Add(quoteEvery - time.Second)
+	app.Update(animMsg{})
+	if app.quoteIdx != first {
+		t.Error("未到轮换间隔时字条不应变化")
+	}
+
+	// 跨过间隔后应换一条。
+	now = now.Add(2 * time.Second)
+	app.Update(animMsg{})
+	if app.quoteIdx == first {
+		t.Error("跨过轮换间隔后字条应换新")
+	}
+	if app.quoteIdx < 0 || app.quoteIdx >= len(Quotes) {
+		t.Errorf("字条下标越界: %d", app.quoteIdx)
+	}
+}
+
+// TestNextQuoteAlwaysChanges 验证连续轮换不会原地打转。
+func TestNextQuoteAlwaysChanges(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	for i := 0; i < 50; i++ {
+		before := app.quoteIdx
+		app.NextQuote()
+		if app.quoteIdx == before {
+			t.Fatalf("第 %d 次轮换后下标未变化: %d", i, before)
+		}
+	}
+}
+
+// TestCustomEditorBuildsPlan 验证自定义时段编辑器能编排多段状态（见需求 16、20）。
+func TestCustomEditorBuildsPlan(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+
+	allowCarrySkip(t, app)
+	app.openCustom()
+	if app.custom == nil {
+		t.Fatal("应打开自定义时段编辑器")
+	}
+	if len(app.custom.plan.Segments) != 2 {
+		t.Fatalf("默认应有 2 段，实际 %d", len(app.custom.plan.Segments))
+	}
+
+	// 新增一段并改名。
+	press(t, app, "n")
+	if len(app.custom.plan.Segments) != 3 {
+		t.Fatalf("新增后应有 3 段，实际 %d", len(app.custom.plan.Segments))
+	}
+	press(t, app, "e")
+	// 输入框会带上原名，先清空再输入。
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "复盘" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	idx := app.custom.cursor
+	if app.custom.plan.Segments[idx].Name != "复盘" {
+		t.Errorf("改名失败，实际 %q", app.custom.plan.Segments[idx].Name)
+	}
+
+	// 改类型。
+	before := app.custom.plan.Segments[idx].Kind
+	press(t, app, "t")
+	if app.custom.plan.Segments[idx].Kind == before {
+		t.Error("按 t 后类型应轮换")
+	}
+
+	// 改时长。
+	press(t, app, "p")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "45" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if got := app.custom.plan.Segments[idx].Dur; got != 45*time.Minute {
+		t.Errorf("时长应为 45m，实际 %v", got)
+	}
+
+	// 删除一段。
+	press(t, app, "d")
+	if len(app.custom.plan.Segments) != 2 {
+		t.Errorf("删除后应有 2 段，实际 %d", len(app.custom.plan.Segments))
+	}
+
+	// 开始计时会先要求选择归属 TODO。
+	press(t, app, "enter")
+	if app.custom != nil {
+		t.Error("确认后应关闭编辑器")
+	}
+	if app.pick == nil {
+		t.Fatal("应弹出归属 TODO 的选择框")
+	}
+	// 选择“不归属任何 TODO”（最后一项）。
+	app.pick.cursor = len(app.pick.items) - 1
+	press(t, app, "enter")
+	if app.timer == nil {
+		t.Fatal("应已开始自定义计时")
+	}
+	if app.timer.plan.Kind != model.TimerCustom {
+		t.Errorf("计时类型应为 custom，实际 %q", app.timer.plan.Kind)
+	}
+	if len(app.timer.plan.Segments) != 2 {
+		t.Errorf("方案应保留 2 段，实际 %d", len(app.timer.plan.Segments))
+	}
+}
+
+// TestCustomEditorRejectsSingleSegment 验证只有一段时不允许开始。
+func TestCustomEditorRejectsSingleSegment(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	allowCarrySkip(t, app)
+	app.openCustom()
+
+	press(t, app, "d")
+	if len(app.custom.plan.Segments) != 1 {
+		t.Fatalf("应剩 1 段，实际 %d", len(app.custom.plan.Segments))
+	}
+	// 再删应被拒。
+	press(t, app, "d")
+	if len(app.custom.plan.Segments) != 1 {
+		t.Error("不应允许删到零段")
+	}
+	press(t, app, "enter")
+	if app.custom == nil {
+		t.Error("只有一段时不应开始计时")
+	}
+	if app.timer != nil {
+		t.Error("只有一段时不应创建计时器")
+	}
+}
+
+// TestCustomSegmentsColorByKind 验证自定义状态的进度条按类型着色（见需求 20）。
+func TestCustomSegmentsColorByKind(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+
+	plan := model.Plan{Kind: model.TimerCustom, Segments: []model.Segment{
+		{Name: "深度工作", Kind: "focus", Dur: 50 * time.Minute},
+		{Name: "散步", Kind: "break", Dur: 10 * time.Minute},
+	}}
+	bar := app.renderPlanBar(plan, 0, 60)
+	if bar == "" {
+		t.Fatal("自定义方案的进度条不应为空")
+	}
+	// 两段都应渲染出槽位；未开始时都是空槽。
+	if n := strings.Count(bar, "─"); n == 0 {
+		t.Errorf("应渲染出时段槽位，实际 %q", bar)
+	}
+	// 走到第二段时，应出现休息色与专注色的实心格。
+	barMid := app.renderPlanBar(plan, 55*time.Minute, 60)
+	if strings.Count(barMid, "━") == 0 {
+		t.Errorf("走过的时段应渲染为实心，实际 %q", barMid)
+	}
+}
+
+// TestParseMinutes 验证分钟输入解析。
+func TestParseMinutes(t *testing.T) {
+	ok := map[string]time.Duration{
+		"25":  25 * time.Minute,
+		" 5 ": 5 * time.Minute,
+		"600": 600 * time.Minute,
+	}
+	for in, want := range ok {
+		got, err := parseMinutes(in)
+		if err != nil {
+			t.Errorf("parseMinutes(%q) 不应报错: %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseMinutes(%q) = %v，期望 %v", in, got, want)
+		}
+	}
+	for _, in := range []string{"0", "-5", "601", "abc", ""} {
+		if _, err := parseMinutes(in); err == nil {
+			t.Errorf("parseMinutes(%q) 应报错", in)
+		}
+	}
+}
+
+// allowCarrySkip 关掉可能出现的继承确认页，便于测试其他界面。
+func allowCarrySkip(t *testing.T, app *App) {
+	t.Helper()
+	if app.view == ViewCarry {
+		press(t, app, "n")
+	}
+}
+
 // TestQuitKeys 验证退出快捷键。
 func TestQuitKeys(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)

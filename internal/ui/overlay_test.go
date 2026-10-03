@@ -3,9 +3,59 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// TestWrapBalancedKeepsLinesEven 验证字条折行不会出现“最后一行只剩一个句号”。
+func TestWrapBalancedKeepsLinesEven(t *testing.T) {
+	// 中文没有空格可依，贪心折行会把收尾的「。」挤到最后一行。
+	text := "「时机成熟时，一切都会水到渠成。」"
+	const maxW = 31
+	lines := wrapBalanced(text, maxW)
+	if len(lines) != 2 {
+		t.Fatalf("应折成 2 行，实际 %d 行: %q", len(lines), lines)
+	}
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > maxW {
+			t.Errorf("行宽 %d 超过上限 %d: %q", w, maxW, l)
+		}
+	}
+	// 两行长度应接近，不能一行很长一行只剩一两个字。
+	if spread := lineSpread(lines); spread > 6 {
+		t.Errorf("两行长度差 %d 过大: %q", spread, lines)
+	}
+	// 收尾标点必须留在最后一行。
+	if !strings.HasSuffix(lines[len(lines)-1], "」") {
+		t.Errorf("收尾标点应留在最后一行: %q", lines)
+	}
+}
+
+// TestWrapFitsInPanel 验证每条字条在任何终端宽度下都能折进中间栏。
+func TestWrapFitsInPanel(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	for _, w := range []int{60, 70, 80, 100, 120, 160} {
+		app.width, app.height = w, 30
+		leftW, rightW := 24, 22
+		if w >= 110 {
+			leftW, rightW = 34, 30
+		}
+		inner := w - leftW - rightW - 4
+		if inner < 1 {
+			continue
+		}
+		for i, q := range Quotes {
+			app.quoteIdx = i
+			for _, l := range wrapBalanced("「"+q+"」", inner) {
+				if lw := lipgloss.Width(l); lw > inner {
+					t.Errorf("宽度 %d：字条 %d 的行宽 %d 超过内宽 %d", w, i, lw, inner)
+				}
+			}
+		}
+	}
+}
 
 // TestOverlayAlignsWithWideCharacters 是浮层对齐的回归测试。
 //

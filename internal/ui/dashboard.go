@@ -11,12 +11,18 @@ import (
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
 )
 
+// 看板可用的最小终端尺寸；更小的时候只显示一行提示。
+const (
+	minWidth  = 60
+	minHeight = 16
+)
+
 // View 渲染当前界面。
 func (a *App) View() string {
 	if a.width == 0 || a.height == 0 {
 		return "正在启动 Kairos…"
 	}
-	if a.width < 60 || a.height < 16 {
+	if a.width < minWidth || a.height < minHeight {
 		return a.viewTooSmall()
 	}
 
@@ -36,6 +42,9 @@ func (a *App) View() string {
 			base = "\a" + base
 		}
 		// 模态浮层叠在看板之上，保留背景上下文。
+		if a.custom != nil {
+			return a.renderCustomEditor()
+		}
 		if a.pick != nil {
 			return overlay(base, a.renderPick(), a.width, a.height)
 		}
@@ -50,7 +59,7 @@ func (a *App) viewTooSmall() string {
 	return lipgloss.JoinVertical(lipgloss.Center,
 		"",
 		a.st.Warn.Render("终端窗口太小"),
-		a.st.Muted.Render(fmt.Sprintf("当前 %d×%d，Kairos 至少需要 60×16", a.width, a.height)),
+		a.st.Muted.Render(fmt.Sprintf("当前 %d×%d，Kairos 至少需要 %d×%d", a.width, a.height, minWidth, minHeight)),
 		"",
 		a.st.Muted.Render("放大窗口，或按 ctrl+c 退出"),
 	)
@@ -103,6 +112,9 @@ func (a *App) renderDashboard() string {
 }
 
 // renderHeader 显示问候语、日期与今日专注时长（见需求 18）。
+//
+// 右侧的“今日专注”是用户最关心的信息，因此空间不够时优先压缩左侧的
+// 问候语与日期，而不是让整行溢出去撑破下面的面板。
 func (a *App) renderHeader() string {
 	now := a.clock.Now()
 	cut := a.cfg.Cutoff()
@@ -120,17 +132,41 @@ func (a *App) renderHeader() string {
 	}
 	weekCN := [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[weekday]
 
-	left := a.st.Title.Render(greeting+"！") + "  " +
-		a.st.Muted.Render(fmt.Sprintf("%s %s · %s · 日界线 %s",
-			a.day, weekCN, now.Format("15:04:05"), clock.WallClock(cut)))
+	greetText := greeting + "！"
+	dateText := fmt.Sprintf("%s %s · %s · 日界线 %s",
+		a.day, weekCN, now.Format("15:04:05"), clock.WallClock(cut))
 
+	rightPlain := "今日专注 " + clock.HumanDuration(focus)
 	right := a.st.Muted.Render("今日专注 ") + a.st.OK.Bold(true).Render(clock.HumanDuration(focus))
+
+	// 先按完整内容排版；放不下时依次退让：先缩短日期，再截断问候语。
+	leftPlainW := lipgloss.Width(greetText) + 2 + lipgloss.Width(dateText)
+	avail := a.width - lipgloss.Width(rightPlain) - 1
+
+	var left string
+	switch {
+	case leftPlainW <= avail:
+		left = a.st.Title.Render(greetText) + "  " + a.st.Muted.Render(dateText)
+	default:
+		greetW := lipgloss.Width(greetText)
+		dateW := avail - greetW - 2
+		if dateW >= 12 {
+			left = a.st.Title.Render(greetText) + "  " + a.st.Muted.Render(truncate(dateText, dateW))
+		} else if avail > 6 {
+			left = a.st.Title.Render(truncate(greetText, avail-1)) + " "
+		} else {
+			left = ""
+		}
+	}
 
 	gap := a.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
 	line := left + strings.Repeat(" ", gap) + right
+	if w := lipgloss.Width(line); w > a.width {
+		line = truncate(line, a.width)
+	}
 
 	if a.toast != "" {
 		line += "\n" + a.toastLine()
@@ -400,15 +436,21 @@ func (a *App) renderCenterPanel(width, height int) string {
 	}
 
 	// 随机字条固定在底部（见需求 5）。
+	// 先用空行填充剩余空间，但至少保留一行，避免和上面的内容贴在一起。
 	quote := "「" + Quotes[a.quoteIdx%len(Quotes)] + "」"
-	quoteLines := wrap(quote, inner)
-	needed := len(lines) + 1 + len(quoteLines)
-	if needed < height-2 {
-		for i := 0; i < height-2-needed; i++ {
-			lines = append(lines, "")
-		}
+	quoteLines := wrapBalanced(quote, inner)
+	// 面板内部可用行数：扣掉上下边框。
+	bodyRows := height - a.st.Panel.GetVerticalFrameSize()
+	if bodyRows < 1 {
+		bodyRows = 1
 	}
-	lines = append(lines, "")
+	spacer := bodyRows - len(lines) - len(quoteLines)
+	if spacer < 1 {
+		spacer = 1
+	}
+	for i := 0; i < spacer; i++ {
+		lines = append(lines, "")
+	}
 	for _, ql := range quoteLines {
 		lines = append(lines, a.st.Muted.Render(center(ql, inner, lipgloss.Width(ql))))
 	}
@@ -643,7 +685,7 @@ func wrap(s string, width int) []string {
 	for _, r := range s {
 		rw := lipgloss.Width(string(r))
 		if w+rw > width {
-			out = append(out, cur.String())
+			out = append(out, strings.TrimRight(cur.String(), " "))
 			cur.Reset()
 			w = 0
 		}
@@ -651,12 +693,54 @@ func wrap(s string, width int) []string {
 		w += rw
 	}
 	if cur.Len() > 0 {
-		out = append(out, cur.String())
+		out = append(out, strings.TrimRight(cur.String(), " "))
 	}
 	if len(out) == 0 {
 		out = []string{""}
 	}
 	return out
+}
+
+// wrapBalanced 尽量把文本折成宽度均衡的几行。
+//
+// 中文没有空格可依，按最大宽度贪心折行很容易出现“最后一行只剩一个句号”，
+// 所以这里尝试多个目标宽度，取行数最少、且各行长度最接近的方案。
+// 行数少优先，避免把一句话拆得七零八落。
+func wrapBalanced(s string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		return []string{s}
+	}
+	if lipgloss.Width(s) <= maxWidth {
+		return []string{s}
+	}
+	best := wrap(s, maxWidth)
+	bestScore := lineSpread(best)
+	for target := maxWidth - 1; target >= maxWidth/2; target-- {
+		candidate := wrap(s, target)
+		score := lineSpread(candidate)
+		if len(candidate) < len(best) || (len(candidate) == len(best) && score < bestScore) {
+			best, bestScore = candidate, score
+		}
+	}
+	return best
+}
+
+// lineSpread 返回各行显示宽度中最大值与最小值的差，用来衡量折行是否均衡。
+func lineSpread(lines []string) int {
+	if len(lines) == 0 {
+		return 0
+	}
+	lo, hi := -1, 0
+	for _, l := range lines {
+		w := lipgloss.Width(l)
+		if lo < 0 || w < lo {
+			lo = w
+		}
+		if w > hi {
+			hi = w
+		}
+	}
+	return hi - lo
 }
 
 // 确保 tea 包被使用（Update 的返回值类型依赖它）。

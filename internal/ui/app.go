@@ -89,7 +89,12 @@ type App struct {
 
 	celebrate *celebrateState
 
-	quoteIdx  int
+	// custom 是“自定义时段”编辑器状态（见需求 20）。
+	custom *customState
+
+	quoteIdx int
+	// quoteAt 记录当前字条是何时换上的，用于定时轮换（见需求 5）。
+	quoteAt   time.Time
 	animPhase float64
 	frame     int
 
@@ -139,6 +144,7 @@ func NewApp(opts Options) (*App, error) {
 		focus: FocusMenu,
 	}
 	a.quoteIdx = rand.Intn(len(Quotes))
+	a.quoteAt = clk.Now()
 	if err := a.reload(); err != nil {
 		return nil, err
 	}
@@ -252,6 +258,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.animPhase > 1 {
 			a.animPhase -= 1
 		}
+		// 字条定时轮换，让它真的“滚动”起来（见需求 5）。
+		if now := a.clock.Now(); now.Sub(a.quoteAt) >= quoteEvery {
+			a.NextQuote()
+			a.quoteAt = now
+		}
 		// 计时状态在动画帧里推进，保证进度条平滑动起来。
 		if a.timer != nil {
 			if cmd := a.timer.tick(a.clock.Now()); cmd != nil {
@@ -289,6 +300,10 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if a.editor.active {
 		return a.handleEditorKey(msg)
+	}
+	// 自定义时段编辑器独占按键。
+	if a.custom != nil {
+		return a.handleCustomKey(key)
 	}
 	// 计时进行中，用少量按键控制计时器。
 	if a.timer != nil {
@@ -687,17 +702,8 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		a.chooseTimerTodo(model.Plan{Kind: model.TimerCountUp})
 		return a, nil
 	case action == "timer_custom":
-		a.pick = &pickState{
-			title: "自定义时段总长",
-			items: []pickItem{
-				{Label: "15 分钟", Action: "custom:15"},
-				{Label: "30 分钟", Action: "custom:30"},
-				{Label: "45 分钟", Action: "custom:45"},
-				{Label: "60 分钟", Action: "custom:60"},
-				{Label: "90 分钟", Action: "custom:90"},
-				{Label: "取消", Action: "cancel"},
-			},
-		}
+		// 让用户自己编排状态名与时长（见需求 16、20）。
+		a.openCustom()
 		return a, nil
 	case strings.HasPrefix(action, "custom:"):
 		minutes, err := strconv.Atoi(strings.TrimPrefix(action, "custom:"))

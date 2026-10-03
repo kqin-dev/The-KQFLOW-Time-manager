@@ -32,6 +32,9 @@ var Quotes = []string{
 	"先做最重要的那件事，其余自会排队。",
 }
 
+// quoteEvery 是看板中间栏字条的轮换间隔（见需求 5）。
+const quoteEvery = 12 * time.Second
+
 // NextQuote 轮换到下一条字条。
 func (a *App) NextQuote() {
 	if len(Quotes) == 0 {

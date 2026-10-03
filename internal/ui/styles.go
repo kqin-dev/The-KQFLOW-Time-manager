@@ -130,6 +130,26 @@ func NewStyles(t Theme) *Styles {
 	return s
 }
 
+// compactWidth 是开始收紧浮层内边距的终端宽度。窄终端下把 2 列内边距收到 1 列，
+// 能多出 2 列放内容，明显减少中文被截断的情况。
+const compactWidth = 92
+
+// modalStyle 返回浮层样式：窄终端下用更省空间的内边距。
+func (s *Styles) modalStyle(compact bool) lipgloss.Style {
+	if compact {
+		return s.Modal.Padding(1, 1)
+	}
+	return s.Modal
+}
+
+// pageStyle 返回整页样式：窄终端下用更省空间的内边距。
+func (s *Styles) pageStyle(compact bool) lipgloss.Style {
+	if compact {
+		return s.PanelFocused.Padding(0, 1)
+	}
+	return s.PanelFocused
+}
+
 // MarkDone / MarkTodo 是勾选框字符。
 const (
 	MarkDone  = "✔"
