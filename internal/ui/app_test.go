@@ -1936,6 +1936,178 @@ func TestNoteNotShownWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestCJKEditorCursorAlignsWithRenderedContent 验证含中文时画出的光标落在真实位置。
+//
+// 中文一个字占两列，早期用 rune 下标定位光标，一旦输入法粘进中文，
+// 画出来的光标就会跑到文字前面（用户报过这个 bug）。
+func TestCJKEditorCursorAlignsWithRenderedContent(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.width, app.height = 120, 40
+
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"纯英文", "hello world"},
+		{"纯中文", "中文内容测试"},
+		{"中英混排", "今天 write 周报"},
+		{"以中文结尾", "abc中文"},
+		{"以英文结尾", "中文abc"},
+	}
+	for _, c := range cases {
+		app.openNote()
+		app.editor.value = []rune(c.text)
+		app.editor.cursor = len(app.editor.value)
+
+		lines := app.multilineEditorLines(app.contentWidth(), 4)
+		// 找到带光标的那一行。
+		var target string
+		for _, l := range lines {
+			if strings.Contains(l, "▏") {
+				target = l
+				break
+			}
+		}
+		if target == "" {
+			t.Fatalf("%s：没找到光标", c.name)
+		}
+		// 光标左边应当是完整输入的内容（去掉 marker 与样式）。
+		plain := stripStyles(target)
+		idx := strings.Index(plain, "▏")
+		left := plain[len(" ▸ "):idx]
+		if strings.TrimSpace(left) != c.text {
+			t.Errorf("%s：光标左侧应为完整内容 %q，实际 %q（整行 %q）", c.name, c.text, left, plain)
+		}
+	}
+}
+
+// stripStyles 去掉 ANSI 转义，便于按显示内容做断言。
+func stripStyles(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if r == 0x1b {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if r == 'm' {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// TestVerticalChartBars 验证竖向柱状图：归一化高度 + 柱子与标签对齐。
+func TestVerticalChartBars(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+
+	vals := []dayValue{
+		{Label: "日", Value: 0}, {Label: "一", Value: 20}, {Label: "二", Value: 35},
+		{Label: "三", Value: 10}, {Label: "四", Value: 0}, {Label: "五", Value: 50},
+		{Label: "今", Value: 25, Today: true},
+	}
+	lines := app.renderVerticalChart(vals, 52, 4)
+	if len(lines) == 0 {
+		t.Fatal("柱状图不应为空")
+	}
+	// 柱子用方块字符；最高的一天应占满 maxHeight（归一化）。
+	body := strings.Join(lines[:4], "\n")
+	plain := stripStyles(body)
+	if !strings.Contains(plain, "█") {
+		t.Errorf("柱状图应包含方块字符，实际:\n%s", plain)
+	}
+	// 每根柱子占 1 列、间隔 1 列 → 第 i 根柱子在显示第 1+2i 列。
+	for i := range vals {
+		col := 1 + 2*i
+		found := false
+		for _, l := range lines[:4] {
+			r := []rune(stripStyles(l))
+			if col < len(r) && (r[col] == '█' || r[col] == '▄') {
+				found = true
+				break
+			}
+		}
+		if !found && vals[i].Value > 0 {
+			t.Errorf("第 %d 根柱子（值 %d）应出现在第 %d 列", i, vals[i].Value, col)
+		}
+	}
+	// 轴与标签行必须存在，且标签落在柱子所在列。
+	axis := stripStyles(lines[len(lines)-2])
+	if !strings.HasPrefix(axis, "└") {
+		t.Errorf("应有坐标轴，实际 %q", axis)
+	}
+	labels := []rune(stripStyles(lines[len(lines)-1]))
+	for i, v := range vals {
+		col := 1 + 2*i
+		want := []rune(v.Label)[0]
+		if col >= len(labels) {
+			t.Fatalf("标签行太短: %q", string(labels))
+		}
+		if labels[col] != want {
+			t.Errorf("第 %d 个标签应在第 %d 列，实际 %q（整行 %q）", i, col, string(labels[col]), string(labels))
+		}
+	}
+	// 归一化：最高值的柱子应达到最大高度。
+	maxH := 4
+	top := 0
+	for i, v := range vals {
+		if v.Value != 50 {
+			continue
+		}
+		col := 1 + 2*i
+		filled := 0
+		for _, l := range lines[:maxH] {
+			r := []rune(stripStyles(l))
+			if col < len(r) && (r[col] == '█' || r[col] == '▄') {
+				filled++
+			}
+		}
+		top = filled
+	}
+	if top != maxH {
+		t.Errorf("最高的一天应占满 %d 行，实际 %d 行", maxH, top)
+	}
+}
+
+// TestStatBarValuesUseFocus 验证柱状图数值取自专注时长。
+func TestStatBarValuesUseFocus(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+	d := model.NewDayData("2026-10-02", at)
+	e := at
+	d.Archive.Sessions = append(d.Archive.Sessions,
+		model.Session{Elapsed: 45 * time.Minute, SegmentKind: "focus", Ended: &e})
+	if err := s.SaveDay(d); err != nil {
+		t.Fatal(err)
+	}
+	// 今天只完成了一件事、没有专注 → 给最小高度而不是 0。
+	today := model.NewDayData("2026-10-03", at)
+	item := model.NewTodo("事", model.KindFloating, "2026-10-03", at)
+	item.Toggle(at)
+	today.Floating = append(today.Floating, item)
+	if err := s.SaveDay(today); err != nil {
+		t.Fatal(err)
+	}
+
+	vals := app.statBarValues(app.rollingStats("2026-10-03", 7), time.Local)
+	byLabel := map[string]dayValue{}
+	for _, v := range vals {
+		byLabel[v.Label] = v
+	}
+	if got := byLabel["五"]; got.Value != 45 {
+		t.Errorf("10-02 是周五，柱值应为 45 分钟，实际 %d", got.Value)
+	}
+	if got := byLabel["今"]; got.Value != 1 {
+		t.Errorf("今天只完成了待办，柱值应为 1，实际 %d", got.Value)
+	}
+}
+
 // TestQuitRequiresConfirmation 验证按 q 先弹确认而不是直接退出（见需求 8）。
 func TestQuitRequiresConfirmation(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)

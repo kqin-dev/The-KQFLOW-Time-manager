@@ -179,6 +179,9 @@ func (a *App) singleLineEditor(inner int) string {
 }
 
 // multilineEditorLines 渲染多行输入，只显示光标附近的若干行。
+//
+// 光标位置按“显示宽度”计算，不能按 rune 个数：中文一个字占两列，
+// 用 rune 下标定位会让画出来的光标跑到文字前面去（用户报过这个问题）。
 func (a *App) multilineEditorLines(inner, maxLines int) []string {
 	text := string(a.editor.value)
 	all := strings.Split(text, "\n")
@@ -200,6 +203,13 @@ func (a *App) multilineEditorLines(inner, maxLines int) []string {
 		end = len(all)
 	}
 
+	// 光标在其所在行内的字符下标。
+	lineStartRune := 0
+	for j := 0; j < line; j++ {
+		lineStartRune += len([]rune(all[j])) + 1
+	}
+	colRune := a.editor.cursor - lineStartRune
+
 	out := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
 		marker := "   "
@@ -208,32 +218,53 @@ func (a *App) multilineEditorLines(inner, maxLines int) []string {
 		}
 		body := all[i]
 		if i == line {
-			// 光标所在行：把光标插到正确位置。
-			lineStart := 0
-			for j := 0; j < i; j++ {
-				lineStart += len([]rune(all[j])) + 1
-			}
-			col := a.editor.cursor - lineStart
 			runes := []rune(body)
-			if col < 0 {
-				col = 0
+			if colRune < 0 {
+				colRune = 0
 			}
-			if col > len(runes) {
-				col = len(runes)
+			if colRune > len(runes) {
+				colRune = len(runes)
 			}
-			body = string(runes[:col]) + "▏" + string(runes[col:])
+			before := string(runes[:colRune])
+			after := string(runes[colRune:])
+			// 光标前的内容按显示宽度裁剪，保证光标落在正确的列上。
+			avail := max(1, inner-3)
+			before = truncateCellsFromEnd(before, max(1, avail-1))
+			rendered := a.st.Text.Render(before) + a.st.ModalCursor.Render("▏") + a.st.Text.Render(after)
+			out = append(out, a.st.ModalCursor.Render(marker)+truncateCells(rendered, avail))
+			continue
 		}
-		if i == line {
-			out = append(out, a.st.ModalCursor.Render(marker)+a.st.Text.Render(truncateCells(body, max(1, inner-3))))
-		} else {
-			out = append(out, a.st.Muted.Render(marker+truncateCells(body, max(1, inner-3))))
-		}
+		out = append(out, a.st.Muted.Render(marker+truncateCells(body, max(1, inner-3))))
 	}
 	// 补足空行，避免输入框高度跳动。
 	for len(out) < maxLines {
 		out = append(out, "")
 	}
 	return out
+}
+
+// truncateCellsFromEnd 从左侧裁剪，保留字符串末尾 width 列。
+//
+// 光标在长行末尾时用它，保证光标仍然可见。
+func truncateCellsFromEnd(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	total := 0
+	i := len(runes)
+	for i > 0 {
+		w := lipgloss.Width(string(runes[i-1]))
+		if total+w > width {
+			break
+		}
+		total += w
+		i--
+	}
+	return string(runes[i:])
 }
 
 // pickContent 渲染选择框内容。

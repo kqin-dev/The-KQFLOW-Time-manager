@@ -81,7 +81,7 @@ func (a *App) currentStreak(endDay string, limit int) int {
 	return streak
 }
 
-// statBarWidth 是统计迷你条的可用宽度。
+// statBarWidth 已废弃：统计改为竖向柱状图后不再需要每格的横向宽度。
 const statBarWidth = 10
 
 // renderMiniBar 用方块画一条迷你进度条。
@@ -112,7 +112,138 @@ func weekdayLabel(day string, loc *time.Location) string {
 	return [...]string{"日", "一", "二", "三", "四", "五", "六"}[d.Weekday()]
 }
 
-// statsLines 生成“连续 7 天统计”区块。
+// dayValue 是柱状图里一根柱子对应的数值。
+type dayValue struct {
+	Label string
+	Value int
+	Today bool
+	// Empty 表示当天完全没有记录。
+	Empty bool
+}
+
+// statBarValues 把 7 天统计折算成柱状图的数值。
+//
+// 柱高表示“当天专注时长（分钟）”；当天没有任何记录（既没专注也没完成事项）
+// 时值为 0，画成空槽，便于一眼看出断档。
+func (a *App) statBarValues(stats []dayStat, loc *time.Location) []dayValue {
+	out := make([]dayValue, 0, len(stats))
+	for _, st := range stats {
+		label := weekdayLabel(st.Day, loc)
+		today := st.Day == a.day
+		if today {
+			label = "今"
+		}
+		minutes := int(st.Focus.Minutes())
+		// 有专注就按专注排高；没有专注但完成了待办，给一个最小高度以示“做过事”。
+		if minutes == 0 && st.Done > 0 {
+			minutes = 1
+		}
+		out = append(out, dayValue{
+			Label: label,
+			Value: minutes,
+			Today: today,
+			Empty: minutes == 0,
+		})
+	}
+	return out
+}
+
+// renderVerticalChart 画竖向柱状图（见用户草图）。
+//
+// 空白区域高度有限，所以柱高是**归一化相对高度**：最高的一天占满 maxHeight，
+// 其余按比例缩放，而不是绝对分钟数。
+func (a *App) renderVerticalChart(values []dayValue, inner, maxHeight int) []string {
+	if len(values) == 0 || maxHeight < 2 {
+		return nil
+	}
+	// 每天两列（柱 + 间隔），最少也要留出这个宽度。
+	if inner < len(values)*2 {
+		maxHeight = min(maxHeight, 3)
+	}
+	maxVal := 0
+	for _, v := range values {
+		if v.Value > maxVal {
+			maxVal = v.Value
+		}
+	}
+
+	// 归一化到 maxHeight 行；每行用半高块与整高块拼出更平滑的柱。
+	// 用“半格”为单位，避免小数值全部塌成 0 或 1。
+	halfUnits := maxHeight * 2
+	heights := make([]int, len(values))
+	for i, v := range values {
+		if maxVal <= 0 {
+			heights[i] = 0
+			continue
+		}
+		h := v.Value * halfUnits / maxVal
+		if v.Value > 0 && h < 1 {
+			// 有值就至少给半格，否则看起来和没记录一样。
+			h = 1
+		}
+		heights[i] = h
+	}
+
+	var out []string
+	for row := maxHeight - 1; row >= 0; row-- {
+		var b strings.Builder
+		b.WriteString(" ")
+		for i, v := range values {
+			cellBottom := row * 2
+			level := heights[i]
+			var ch string
+			style := a.st.BarFilled
+			if v.Today {
+				style = a.st.OK
+			}
+			switch {
+			case level >= cellBottom+2:
+				ch = "█"
+			case level == cellBottom+1:
+				ch = "▄"
+			default:
+				ch = " "
+				style = a.st.BarEmpty
+			}
+			b.WriteString(style.Render(ch))
+			if i < len(values)-1 {
+				b.WriteString(" ")
+			}
+		}
+		out = append(out, b.String())
+	}
+
+	// 坐标轴：一条横线加日期标签。
+	// 每根柱子占 1 列、间隔 1 列，所以第 i 根柱子在显示列 2i 上；
+	// 标签用同样间距逐字给出，才能正好落在柱子正下方（首列留空对齐 "└"）。
+	axis := a.st.BarEmpty.Render("└" + strings.Repeat("─", max(1, len(values)*2-1)))
+	out = append(out, axis)
+
+	var labels strings.Builder
+	labels.WriteString(" ")
+	for i, v := range values {
+		style := a.st.Muted
+		if v.Today {
+			style = a.st.Accent
+		}
+		labels.WriteString(style.Render(firstCell(v.Label)))
+		if i < len(values)-1 {
+			labels.WriteString(" ")
+		}
+	}
+	out = append(out, labels.String())
+	return out
+}
+
+// firstCell 取文本的第一个显示单元，保证标签恰好占一列，和柱子对齐。
+func firstCell(s string) string {
+	for _, r := range s {
+		return string(r)
+	}
+	return " "
+}
+
+// statsLines 生成“连续 7 天统计”区块（竖向柱状图）。
 func (a *App) statsLines(inner int) []string {
 	stats := a.rollingStats(a.day, 7)
 	if len(stats) == 0 {
@@ -130,60 +261,22 @@ func (a *App) statsLines(inner int) []string {
 		}
 	}
 	streak := a.currentStreak(a.day, 365)
-
 	loc := a.cfg.Location()
+
 	var out []string
 	title := fmt.Sprintf("连续 7 天 · 完成 %d/%d · 专注 %s",
 		totalDone, totalTodos, clock.HumanDuration(totalFocus))
 	out = append(out, fit(a.st.PanelTitle, center(title, inner, lipglossWidth(title)), inner))
+	sub := fmt.Sprintf("连续 %d 天有记录 · 活跃 %d 天", streak, activeDays)
+	out = append(out, fit(a.st.Muted, center(sub, inner, lipglossWidth(sub)), inner))
 
-	if streak > 0 {
-		line := fmt.Sprintf("连续 %d 天有记录 · 7 天里活跃 %d 天", streak, activeDays)
-		out = append(out, fit(a.st.Muted, center(line, inner, lipglossWidth(line)), inner))
-	}
-
-	// 每天一格（星期 + 迷你条 + 完成比），同行并排若干天，
-	// 这样 7 天只占两行左右，不会把随手记挤掉。
-	segW := statBarWidth + 7
-	if inner < 40 {
-		segW = 5 + 4
-	}
-	perRow := inner / segW
-	if perRow < 1 {
-		perRow = 1
-	}
-	if perRow > len(stats) {
-		perRow = len(stats)
-	}
-	cellW := inner / perRow
-
-	var row strings.Builder
-	cells := 0
-	flush := func() {
-		if cells == 0 {
-			return
-		}
-		out = append(out, a.st.Text.Render(pad(row.String(), inner)))
-		row.Reset()
-		cells = 0
-	}
-	for _, st := range stats {
-		label := weekdayLabel(st.Day, loc)
-		if st.Day == a.day {
-			label = "今"
-		}
-		barW := statBarWidth
-		if inner < 40 {
-			barW = 5
-		}
-		cell := fmt.Sprintf("%s%s", label, a.renderMiniBar(st.Done, st.Total, barW))
-		row.WriteString(pad(cell, cellW))
-		cells++
-		if cells == perRow {
-			flush()
-		}
-	}
-	flush()
+	// 柱状图高度随可用空间伸缩，最多 5 行，保证轴与标签放得下。
+	_, _, _, bodyH := a.columnLayout()
+	avail := bodyH - a.st.Panel.GetVerticalFrameSize()
+	maxChart := avail - 4
+	chartHeight := min(5, max(2, maxChart-8))
+	chart := a.renderVerticalChart(a.statBarValues(stats, loc), inner, chartHeight)
+	out = append(out, chart...)
 	return out
 }
 
