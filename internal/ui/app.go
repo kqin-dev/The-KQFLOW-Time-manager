@@ -363,6 +363,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		a.view = ViewHelp
 		a.pageScroll = 0
+	case "N":
+		// 大写 N 打开随手记，和 n 区分开（n 未占用，但保留给未来的新建动作）。
+		a.openNote()
 	// 栏位切换只保留 TAB，把 h/l 与左右方向键让给栏内操作（见问题 3）。
 	case "tab":
 		a.switchFocus(1)
@@ -950,6 +953,7 @@ func (a *App) askQuit() {
 
 // menuItems 是中间栏的选项列表（见需求 16、12）。
 var menuItems = []menuItem{
+	{Label: "随手记 / Note", Action: "note"},
 	{Label: "专注计时 / Focus", Action: "timer"},
 	{Label: "历史记录 / History", Action: "history"},
 	{Label: "设置 / Settings", Action: "settings"},
@@ -967,6 +971,8 @@ func (a *App) activateMenuItem(idx int) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	switch menuItems[idx].Action {
+	case "note":
+		a.openNote()
 	case "timer":
 		a.startTimer()
 	case "history":

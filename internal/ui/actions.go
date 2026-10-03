@@ -239,35 +239,66 @@ func (a *App) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.editor.onCommit = nil
 		return a, nil
 	case tea.KeyEnter:
-		value := a.editor.text()
-		commit := a.editor.onCommit
-		a.editor.active = false
-		a.editor.onCommit = nil
-		if commit != nil {
-			return commit(value)
+		// 多行模式下 Enter 是换行，提交要用 Ctrl+S / Ctrl+D。
+		if a.editor.multiline {
+			a.editor.insert('\n')
+			return a, nil
 		}
-		return a, nil
+		return a.commitEditor()
+	case tea.KeyCtrlS, tea.KeyCtrlD:
+		// 多行模式的提交键；单行模式下也顺手支持。
+		return a.commitEditor()
+	case tea.KeyLeft:
+		if a.editor.multiline && a.editor.cursor > 0 && a.editor.value[a.editor.cursor-1] == '\n' {
+			break
+		}
+		a.editor.move(-1)
+	case tea.KeyRight:
+		if a.editor.multiline && a.editor.cursor < len(a.editor.value) && a.editor.value[a.editor.cursor] == '\n' {
+			break
+		}
+		a.editor.move(1)
+	case tea.KeyUp:
+		if a.editor.multiline {
+			a.editor.moveVertical(-1)
+		}
+	case tea.KeyDown:
+		if a.editor.multiline {
+			a.editor.moveVertical(1)
+		}
+	case tea.KeyHome, tea.KeyCtrlA:
+		if a.editor.multiline {
+			a.editor.cursor = a.editor.lineStart()
+		} else {
+			a.editor.cursor = 0
+		}
+	case tea.KeyEnd, tea.KeyCtrlE:
+		if a.editor.multiline {
+			a.editor.cursor = a.editor.lineEnd()
+		} else {
+			a.editor.cursor = len(a.editor.value)
+		}
 	case tea.KeyBackspace:
 		a.editor.backspace()
 	case tea.KeyDelete:
 		a.editor.delete()
-	case tea.KeyLeft:
-		a.editor.move(-1)
-	case tea.KeyRight:
-		a.editor.move(1)
-	case tea.KeyHome, tea.KeyCtrlA:
-		a.editor.cursor = 0
-	case tea.KeyEnd, tea.KeyCtrlE:
-		a.editor.cursor = len(a.editor.value)
 	case tea.KeyCtrlU:
-		a.editor.value = nil
-		a.editor.cursor = 0
+		if a.editor.multiline {
+			// 多行模式下只清掉当前行，避免一句话没打完就把全部字条删光。
+			start, end := a.editor.lineStart(), a.editor.lineEnd()
+			a.editor.value = append(a.editor.value[:start], a.editor.value[end:]...)
+			a.editor.cursor = start
+		} else {
+			a.editor.value = nil
+			a.editor.cursor = 0
+		}
 	case tea.KeyCtrlW:
 		// 删除前一个单词。
 		for a.editor.cursor > 0 && a.editor.value[a.editor.cursor-1] == ' ' {
 			a.editor.backspace()
 		}
-		for a.editor.cursor > 0 && a.editor.value[a.editor.cursor-1] != ' ' {
+		for a.editor.cursor > 0 && a.editor.value[a.editor.cursor-1] != ' ' &&
+			a.editor.value[a.editor.cursor-1] != '\n' {
 			a.editor.backspace()
 		}
 	case tea.KeyRunes:
@@ -280,14 +311,29 @@ func (a *App) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// commitEditor 提交当前输入框内容。
+func (a *App) commitEditor() (tea.Model, tea.Cmd) {
+	value := a.editor.text()
+	commit := a.editor.onCommit
+	a.editor.active = false
+	a.editor.onCommit = nil
+	a.editor.multiline = false
+	if commit != nil {
+		return commit(value)
+	}
+	return a, nil
+}
+
 // insertEditorText 把外部文本（终端粘贴）整段插入输入框。
 //
-// 中文输入法在终端下无法可靠地把组字结果逐个按键送进来，
-// 所以支持直接把文字粘进输入框；换行按空格处理，避免一行标题被拆断。
+// 单行输入框把换行折成空格，避免一行标题被拆断；
+// 多行输入框（自定义字条）保留换行，因为“一行一条”就是它的语义。
 func (a *App) insertEditorText(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	text = strings.ReplaceAll(text, "\n", " ")
+	if !a.editor.multiline {
+		text = strings.ReplaceAll(text, "\n", " ")
+	}
 	for _, r := range text {
 		if r == '\t' {
 			continue
@@ -437,6 +483,16 @@ var settingItems = []settingItem{
 		Edit:  (*App).editQuotes,
 	},
 	{
+		Label: "看板展示随手记",
+		Value: func(a *App) string {
+			if a.cfg.ShowNote {
+				return "开"
+			}
+			return "关"
+		},
+		Edit: func(a *App) { a.toggleShowNote() },
+	},
+	{
 		Label: "数据目录",
 		Value: func(a *App) string { return a.store.Root() },
 	},
@@ -577,9 +633,10 @@ func (a *App) editNickname() {
 
 // editQuotes 编辑自定义字条（见需求 9）。
 //
-// 每行一条；留空则删掉全部自定义字条，回到内置字条。
+// 多行输入：一行一条字条。Enter 换行，Ctrl+S 保存，Esc 取消；
+// 留空表示清空自定义字条，回到内置字条。
 func (a *App) editQuotes() {
-	a.editor.set("自定义字条（每行一条，留空恢复内置）", a.cfg.QuotesText())
+	a.editor.setMultiline("自定义字条（每行一条，ctrl+s 保存）", a.cfg.QuotesText())
 	a.editor.onCommit = func(value string) (tea.Model, tea.Cmd) {
 		a.cfg.Quotes = parseQuoteLines(value)
 		a.saveConfig()

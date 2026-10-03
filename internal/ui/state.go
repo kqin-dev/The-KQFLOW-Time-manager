@@ -80,7 +80,10 @@ type editorState struct {
 	label  string
 	value  []rune
 	cursor int
-	// onCommit 在用户回车确认时被调用，返回新的模型与命令。
+	// multiline 为真时允许换行（自定义字条要一行一条）；
+	// Enter 变成换行，用 Ctrl+S 或 Ctrl+D 提交。
+	multiline bool
+	// onCommit 在用户确认时被调用，返回新的模型与命令。
 	onCommit func(string) (tea.Model, tea.Cmd)
 }
 
@@ -89,6 +92,39 @@ func (e *editorState) set(label, initial string) {
 	e.label = label
 	e.value = []rune(initial)
 	e.cursor = len(e.value)
+	e.multiline = false
+}
+
+// setMultiline 以多行模式打开输入框。
+func (e *editorState) setMultiline(label, initial string) {
+	e.set(label, initial)
+	e.multiline = true
+}
+
+// lineStart 返回光标所在行的起始下标。
+func (e *editorState) lineStart() int {
+	i := e.cursor
+	for i > 0 && e.value[i-1] != '\n' {
+		i--
+	}
+	return i
+}
+
+// lineEnd 返回光标所在行的结束下标（不含换行符）。
+func (e *editorState) lineEnd() int {
+	i := e.cursor
+	for i < len(e.value) && e.value[i] != '\n' {
+		i++
+	}
+	return i
+}
+
+// lineCount 返回当前内容的行数。
+func (e *editorState) lineCount() int {
+	if len(e.value) == 0 {
+		return 1
+	}
+	return strings.Count(string(e.value), "\n") + 1
 }
 
 func (e *editorState) insert(r rune) {
@@ -120,6 +156,34 @@ func (e *editorState) delete() {
 
 func (e *editorState) move(delta int) {
 	e.cursor = clamp(e.cursor+delta, 0, len(e.value))
+}
+
+// moveVertical 在多行模式下上下移动光标，尽量保持列位置。
+func (e *editorState) moveVertical(delta int) {
+	col := e.cursor - e.lineStart()
+	if delta < 0 {
+		start := e.lineStart()
+		if start == 0 {
+			return
+		}
+		prevEnd := start - 1
+		prevStart := prevEnd
+		for prevStart > 0 && e.value[prevStart-1] != '\n' {
+			prevStart--
+		}
+		e.cursor = clamp(prevStart+col, prevStart, prevEnd)
+		return
+	}
+	end := e.lineEnd()
+	if end >= len(e.value) {
+		return
+	}
+	nextStart := end + 1
+	nextEnd := nextStart
+	for nextEnd < len(e.value) && e.value[nextEnd] != '\n' {
+		nextEnd++
+	}
+	e.cursor = clamp(nextStart+col, nextStart, nextEnd)
 }
 
 func (e *editorState) text() string { return strings.TrimSpace(string(e.value)) }

@@ -322,6 +322,8 @@ type DayData struct {
 	Floating      []*Todo              `json:"floating"`
 	Archive       Archive              `json:"archive"`
 	Activity      map[string]*Activity `json:"activity,omitempty"`
+	// Note 是当天的随手记 / 日记。按日保存、过日重置（下一天会新建一份空的）。
+	Note string `json:"note,omitempty"`
 	// CarryAsked 记录当天是否已经问过“是否继承昨日”，避免反复打扰。
 	CarryAsked bool      `json:"carry_asked"`
 	CreatedAt  time.Time `json:"created_at"`

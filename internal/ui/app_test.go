@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1275,7 +1276,10 @@ func TestSettingsNavigation(t *testing.T) {
 	}
 }
 
-// TestCustomQuotes 验证用户可以自定义字条（见问题 9）。
+// TestCustomQuotes 验证用户可以自定义多条字条（见问题 9）。
+//
+// 早期输入框只能输入一行，所以“每行一条”实际只能用一条；
+// 现在输入框支持多行：Enter 换行，Ctrl+S 保存。
 func TestCustomQuotes(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
 	app, _, cfg := newTestApp(t, at)
@@ -1285,31 +1289,66 @@ func TestCustomQuotes(t *testing.T) {
 		t.Fatalf("默认应使用内置字条，实际 %d 条", len(app.customQuotes()))
 	}
 
-	// 通过设置页写入两条自定义字条。
+	// 通过设置页写入三条自定义字条。
 	app.view = ViewSettings
 	app.settingsCursor = settingIndex(t, "自定义字条（每行一条）")
 	press(t, app, "enter")
+	if !app.editor.multiline {
+		t.Fatal("自定义字条应使用多行输入框")
+	}
 	app.editor.value = nil
 	app.editor.cursor = 0
-	for _, r := range "第一条自定义\n第二条自定义" {
-		if r == '\n' {
-			continue // 输入框只接受单行，换行在下面用配置直接验证
-		}
-		app.editor.insert(r)
+
+	// 逐字输入，用 Enter 换行（多行模式下 Enter 不提交）。
+	for _, r := range "第一条" {
+		press(t, app, string(r))
 	}
 	press(t, app, "enter")
-
-	if len(cfg.Quotes) != 1 || cfg.Quotes[0] != "第一条自定义第二条自定义" {
-		t.Fatalf("应写入 1 条字条，实际 %#v", cfg.Quotes)
+	for _, r := range "第二条" {
+		press(t, app, string(r))
 	}
+	press(t, app, "enter")
+	for _, r := range "第三条" {
+		press(t, app, string(r))
+	}
+	// 此时仍应处于编辑状态（Enter 只换行）。
+	if !app.editor.active {
+		t.Fatal("多行模式下 Enter 不应提交")
+	}
+	if got := app.editor.lineCount(); got != 3 {
+		t.Fatalf("应有 3 行，实际 %d：%q", got, string(app.editor.value))
+	}
+
+	// Ctrl+S 保存。
+	app.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if app.editor.active {
+		t.Fatal("Ctrl+S 应提交并关闭输入框")
+	}
+	if len(cfg.Quotes) != 3 {
+		t.Fatalf("应写入 3 条字条，实际 %#v", cfg.Quotes)
+	}
+	if cfg.Quotes[0] != "第一条" || cfg.Quotes[1] != "第二条" || cfg.Quotes[2] != "第三条" {
+		t.Errorf("字条内容不正确: %#v", cfg.Quotes)
+	}
+
 	// 看板应展示自定义字条（可能因宽度不足而折行，所以先去掉空白再比对）。
 	app.view = ViewDashboard
+	app.quoteIdx = 0
 	flat := strings.Join(strings.Fields(app.View()), "")
-	if !strings.Contains(flat, "第一条自定义第二条自定义") {
+	if !strings.Contains(flat, "第一条") {
 		t.Errorf("看板应展示自定义字条，实际输出:\n%s", app.View())
 	}
 	if strings.Contains(flat, Quotes[0]) {
 		t.Error("设置了自定义字条后不应再显示内置字条")
+	}
+	// 轮换应覆盖全部三条。
+	seen := map[string]bool{}
+	for i := 0; i < 60; i++ {
+		seen[app.CurrentQuote()] = true
+		app.NextQuote()
+	}
+	if len(seen) != 3 {
+		t.Errorf("轮换应覆盖 3 条自定义字条，实际覆盖 %d 条: %v", len(seen), seen)
 	}
 
 	// 多行解析：直接验证解析函数。
@@ -1702,6 +1741,198 @@ func TestEditorVisibleWhenAddingTodo(t *testing.T) {
 	}
 	if strings.Count(out, "╭") < 3 {
 		t.Errorf("应保留三个面板的边框，实际 %d 个", strings.Count(out, "╭"))
+	}
+}
+
+// TestRollingStats 验证“连续 7 天统计”取的是滚动窗口（见用户反馈）。
+func TestRollingStats(t *testing.T) {
+	at := time.Date(2026, 10, 7, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+	app.day = "2026-10-07"
+
+	// 造历史：10-01 空，10-02 完成 1/2，10-05 完成 2/2，10-07（今天）0/1。
+	mk := func(day string, done, total int, focus time.Duration) {
+		d := model.NewDayData(day, at)
+		for i := 0; i < total; i++ {
+			item := model.NewTodo(fmt.Sprintf("%s-%d", day, i), model.KindFloating, day, at)
+			if i < done {
+				item.Toggle(at)
+			}
+			d.Floating = append(d.Floating, item)
+		}
+		if focus > 0 {
+			end := at
+			d.Archive.Sessions = append(d.Archive.Sessions,
+				model.Session{Elapsed: focus, SegmentKind: "focus", Ended: &end})
+		}
+		if err := s.SaveDay(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("2026-10-02", 1, 2, 30*time.Minute)
+	mk("2026-10-05", 2, 2, time.Hour)
+	mk("2026-10-07", 0, 1, 0)
+
+	stats := app.rollingStats("2026-10-07", 7)
+	if len(stats) != 7 {
+		t.Fatalf("应返回 7 天，实际 %d", len(stats))
+	}
+	if stats[0].Day != "2026-10-01" || stats[6].Day != "2026-10-07" {
+		t.Errorf("窗口应为 10-01..10-07，实际 %s..%s", stats[0].Day, stats[6].Day)
+	}
+	byDay := map[string]dayStat{}
+	for _, st := range stats {
+		byDay[st.Day] = st
+	}
+	if got := byDay["2026-10-02"]; got.Done != 1 || got.Total != 2 || got.Focus != 30*time.Minute {
+		t.Errorf("10-02 统计不正确: %+v", got)
+	}
+	if got := byDay["2026-10-05"]; got.Done != 2 || got.Total != 2 {
+		t.Errorf("10-05 统计不正确: %+v", got)
+	}
+	// 没有数据的日子标记为无记录。
+	if byDay["2026-10-03"].HasAny {
+		t.Error("10-03 没有数据，不应标记为有记录")
+	}
+	if !byDay["2026-10-02"].HasAny {
+		t.Error("10-02 有数据，应标记为有记录")
+	}
+	// 渲染出来要包含统计标题与今天的标记。
+	lines := app.statsLines(app.contentWidth())
+	flat := strings.Join(strings.Fields(strings.Join(lines, "")), "")
+	if !strings.Contains(flat, "连续7天") {
+		t.Errorf("统计区应包含标题，实际: %v", flat)
+	}
+	if !strings.Contains(flat, "今") {
+		t.Error("统计区应标出今天")
+	}
+}
+
+// TestCurrentStreak 验证连续天数统计。
+func TestCurrentStreak(t *testing.T) {
+	at := time.Date(2026, 10, 7, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+
+	// 10-05、10-06、10-07 都有记录，10-04 空 → 连续 3 天。
+	for _, day := range []string{"2026-10-05", "2026-10-06", "2026-10-07"} {
+		d := model.NewDayData(day, at)
+		item := model.NewTodo("完成的事", model.KindFloating, day, at)
+		item.Toggle(at)
+		d.Floating = append(d.Floating, item)
+		if err := s.SaveDay(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := app.currentStreak("2026-10-07", 30); got != 3 {
+		t.Errorf("连续天数应为 3，实际 %d", got)
+	}
+
+	// 今天没有记录时，从今天起就断了。
+	empty := model.NewDayData("2026-10-08", at)
+	if err := s.SaveDay(empty); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.currentStreak("2026-10-08", 30); got != 0 {
+		t.Errorf("当天无记录时连续天数应为 0，实际 %d", got)
+	}
+}
+
+// TestNoteEditor 验证随手记可以写多行、按日保存并在看板上按需展示。
+func TestNoteEditor(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, cfg := newTestApp(t, at)
+
+	// 从菜单打开随手记。
+	app.focus = FocusMenu
+	app.cursors.menu = 0
+	press(t, app, "enter")
+	if !app.editor.active || !app.editor.multiline {
+		t.Fatal("菜单第一项应打开多行随手记编辑器")
+	}
+
+	// 输入三行：Enter 必须是换行而不是提交。
+	for _, r := range "第一行" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	for _, r := range "第二行" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	for _, r := range "第三行" {
+		press(t, app, string(r))
+	}
+	if !app.editor.active {
+		t.Fatal("Enter 应换行而不是提交")
+	}
+	if got := app.editor.lineCount(); got != 3 {
+		t.Fatalf("应有 3 行，实际 %d", got)
+	}
+
+	// Ctrl+S 保存。
+	app.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if app.editor.active {
+		t.Fatal("Ctrl+S 应保存并关闭")
+	}
+	if want := "第一行\n第二行\n第三行"; app.data.Note != want {
+		t.Fatalf("随手记内容不正确: %q", app.data.Note)
+	}
+	// 落盘校验。
+	saved, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Note != "第一行\n第二行\n第三行" {
+		t.Errorf("随手记应落盘，实际 %q", saved.Note)
+	}
+
+	// 默认不在看板展示。
+	if cfg.ShowNote {
+		t.Fatal("默认不应在看板展示随手记")
+	}
+	app.view = ViewDashboard
+	flat := strings.Join(strings.Fields(app.View()), "")
+	if strings.Contains(flat, "随手记·") {
+		t.Error("未开启展示时看板不应出现随手记")
+	}
+
+	// 开启展示后，看板出现随手记的前几行。
+	cfg.ShowNote = true
+	flat = strings.Join(strings.Fields(app.View()), "")
+	if !strings.Contains(flat, "随手记") {
+		t.Errorf("开启后看板应展示随手记，实际输出:\n%s", app.View())
+	}
+	if !strings.Contains(flat, "第一行") {
+		t.Error("看板应展示随手记的开头内容")
+	}
+
+	// Esc 取消不应改动内容。
+	app.openNote()
+	if app.data.Note != "第一行\n第二行\n第三行" {
+		t.Fatal("打开编辑器不应改动内容")
+	}
+	app.editor.value = []rune("改坏了")
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.data.Note != "第一行\n第二行\n第三行" {
+		t.Errorf("Esc 取消不应写回，实际 %q", app.data.Note)
+	}
+
+	// 第二天是全新的一份，不会带上前一天的随手记。
+	app2, s2, _ := newTestApp(t, time.Date(2026, 10, 4, 9, 0, 0, 0, time.Local))
+	if app2.data.Note != "" {
+		t.Errorf("第二天随手记应为空，实际 %q", app2.data.Note)
+	}
+	_ = s2
+}
+
+// TestNoteNotShownWhenEmpty 验证没有随手记时看板不会留出空区块。
+func TestNoteNotShownWhenEmpty(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, cfg := newTestApp(t, at)
+	cfg.ShowNote = true
+	app.view = ViewDashboard
+	if got := app.notePreviewLines(40, 4); len(got) != 0 {
+		t.Errorf("随手记为空时不应生成预览，实际 %d 行", len(got))
 	}
 }
 

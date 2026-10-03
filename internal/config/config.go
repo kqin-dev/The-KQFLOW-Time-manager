@@ -32,6 +32,8 @@ type Config struct {
 	CountdownMin int `json:"countdown_minutes,omitempty"`
 	// Quotes 是用户自定义的随机字条；为空时使用内置字条（见需求 9）。
 	Quotes []string `json:"quotes,omitempty"`
+	// ShowNote 决定是否在看板上展示当日随手记的前几行。
+	ShowNote bool `json:"show_note,omitempty"`
 	// Timezone 为空时使用系统本地时区。
 	Timezone string `json:"timezone,omitempty"`
 	// Nickname 会出现在看板问候语中。

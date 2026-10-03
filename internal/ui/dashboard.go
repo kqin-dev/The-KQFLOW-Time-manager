@@ -585,6 +585,28 @@ func (a *App) centerContent(width, height int) string {
 		body = append(body, fit(a.st.Muted, center(info, inner, lipgloss.Width(info)), inner))
 	}
 
+	// 剩余空间用来放“连续 7 天统计”和随手记预览。两者都是可选内容，
+	// 但随手记显示在前、优先级更高——用户明确要求看到它的前几行，
+	// 统计条被裁掉几行比随手记整个消失要好。
+	var optional []string
+	if a.showNoteOnBoard() {
+		if note := a.notePreviewLines(inner, 4); len(note) > 0 {
+			optional = append(optional, note...)
+			optional = append(optional, "")
+		}
+	}
+	if s := a.statsLines(inner); len(s) > 0 {
+		optional = append(optional, s...)
+		optional = append(optional, "")
+	}
+	if room := budget - len(body); room > 0 && len(optional) > 0 {
+		if len(optional) <= room {
+			body = append(body, optional...)
+		} else {
+			body = append(body, optional[:room]...)
+		}
+	}
+
 	// 超高时先丢空行（只丢多余的分隔，不丢有内容的行），再丢末尾内容行。
 	body = trimBlankLines(body, budget)
 
@@ -603,6 +625,9 @@ func (a *App) centerContent(width, height int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// showNoteOnBoard 报告用户是否选择在看板上展示随手记。
+func (a *App) showNoteOnBoard() bool { return a.cfg.ShowNote }
 
 // fitText 按显示宽度截断纯文本。
 func fitText(s string, width int) string { return truncate(s, width) }

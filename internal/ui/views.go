@@ -115,14 +115,39 @@ func (a *App) pageContent(styled, _ []string, keepVisible int) string {
 
 // editorContent 渲染输入框内容。
 //
-// 关键点：必须实时显示用户正在输入的字符。光标用反白块表示，
-// 这样在只支持 16 色的终端里也能看清插入点在哪。
+// 关键点：必须实时显示用户正在输入的字符。光标用可见字符而不是“反白的空格”，
+// 低色彩终端下反白背景会被降级掉，那样光标就完全看不见。
+// 多行模式（自定义字条）逐行显示，每行一个条目。
 func (a *App) editorContent() string {
 	inner := a.contentWidth()
 	var lines []string
 	lines = append(lines, a.st.ModalTitle.Render(truncate(a.editor.label, inner)))
-	lines = append(lines, "")
 
+	// 可用行数：中间栏主体高度减去标题、空行与提示行。
+	_, _, _, bodyH := a.columnLayout()
+	avail := bodyH - a.st.Panel.GetVerticalFrameSize()
+	maxValueLines := avail - 4
+	if maxValueLines < 1 {
+		maxValueLines = 1
+	}
+
+	lines = append(lines, "")
+	if a.editor.multiline {
+		lines = append(lines, a.multilineEditorLines(inner, maxValueLines)...)
+	} else {
+		lines = append(lines, a.singleLineEditor(inner))
+	}
+	lines = append(lines, "")
+	if a.editor.multiline {
+		lines = append(lines, a.st.Muted.Render(truncate("enter 换行 · ctrl+s 保存 · esc 取消", inner)))
+	} else {
+		lines = append(lines, a.st.Muted.Render(truncate("enter 确认 · esc 取消 · ctrl+u 清空", inner)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// singleLineEditor 渲染单行输入。
+func (a *App) singleLineEditor(inner int) string {
 	// 内容超宽时只显示光标附近的一段，保证光标始终可见。
 	start := 0
 	if a.editor.cursor > inner-2 {
@@ -145,18 +170,70 @@ func (a *App) editorContent() string {
 	if cursorPos < len(runes) {
 		after = string(runes[cursorPos:])
 	}
-	// 光标用一个可见字符，而不是“反白的空格”：
-	// 低色彩终端会把反白背景降级掉，那样光标就完全看不见，
-	// 用户会以为输入没反应（这正是之前的反馈）。
 	cursor := "▏"
 	input := a.st.Text.Render(before) + a.st.ModalCursor.Render(cursor) + a.st.Text.Render(after)
 	if cursorPos >= len(runes) {
 		input += " "
 	}
-	lines = append(lines, truncateCells(input, inner))
-	lines = append(lines, "")
-	lines = append(lines, a.st.Muted.Render(truncate("enter 确认 · esc 取消 · ctrl+u 清空", inner)))
-	return strings.Join(lines, "\n")
+	return truncateCells(input, inner)
+}
+
+// multilineEditorLines 渲染多行输入，只显示光标附近的若干行。
+func (a *App) multilineEditorLines(inner, maxLines int) []string {
+	text := string(a.editor.value)
+	all := strings.Split(text, "\n")
+
+	// 光标所在行号。
+	line := strings.Count(text[:a.editor.cursor], "\n")
+	if line >= len(all) {
+		line = len(all) - 1
+	}
+	if line < 0 {
+		line = 0
+	}
+	start := 0
+	if line >= maxLines {
+		start = line - maxLines + 1
+	}
+	end := start + maxLines
+	if end > len(all) {
+		end = len(all)
+	}
+
+	out := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		marker := "   "
+		if i == line {
+			marker = " ▸ "
+		}
+		body := all[i]
+		if i == line {
+			// 光标所在行：把光标插到正确位置。
+			lineStart := 0
+			for j := 0; j < i; j++ {
+				lineStart += len([]rune(all[j])) + 1
+			}
+			col := a.editor.cursor - lineStart
+			runes := []rune(body)
+			if col < 0 {
+				col = 0
+			}
+			if col > len(runes) {
+				col = len(runes)
+			}
+			body = string(runes[:col]) + "▏" + string(runes[col:])
+		}
+		if i == line {
+			out = append(out, a.st.ModalCursor.Render(marker)+a.st.Text.Render(truncateCells(body, max(1, inner-3))))
+		} else {
+			out = append(out, a.st.Muted.Render(marker+truncateCells(body, max(1, inner-3))))
+		}
+	}
+	// 补足空行，避免输入框高度跳动。
+	for len(out) < maxLines {
+		out = append(out, "")
+	}
+	return out
 }
 
 // pickContent 渲染选择框内容。
@@ -428,6 +505,7 @@ func helpRows(compact bool) []helpRow {
 		{Key: "t", Desc: "为选中条目添加子任务"},
 		{Key: "d", Desc: "删除选中条目（会先确认）"},
 		{Key: "r", Desc: "从昨日继承（固定 / 未完成 / 两者）"},
+		{Key: "N", Desc: "打开随手记（多行编辑器，按日保存）"},
 		{Key: "计时"},
 		{Key: "enter", Desc: "在中间栏打开计时菜单"},
 		{Key: "space", Desc: "计时中暂停或继续"},
