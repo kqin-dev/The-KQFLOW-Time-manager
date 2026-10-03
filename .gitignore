@@ -4,6 +4,9 @@
 *.exe
 *.test
 
+# 安装包输出（由 setup/build-installer.ps1 生成）
+/dist/
+
 # 开发期缓存（工程内缓存，保证沙箱环境下也能编译）
 /.gocache/
 /.gomodcache/
