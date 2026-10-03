@@ -128,15 +128,21 @@ try {
 
 if ($Retag) {
     Push-Location $repoRoot
+    # git 会把进度写到 stderr（例如 "To https://..."），
+    # 而 $ErrorActionPreference='Stop' 会把原生命令的 stderr 当成错误中断脚本。
+    # 这里临时放宽，只看退出码。
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         $head = (git rev-parse HEAD).Trim()
         Info "把 tag $Tag 强制指到当前 HEAD（$($head.Substring(0,7))）"
-        git tag -f -a $Tag -m "Kairos $Tag" 2>&1 | Out-Null
+        git tag -f -a $Tag -m "Kairos $Tag" 2>$null
         if ($LASTEXITCODE -ne 0) { Fail "本地打 tag 失败" }
-        git push origin "refs/tags/$Tag" --force 2>&1 | Out-Null
+        git push origin "refs/tags/$Tag" --force 2>$null
         if ($LASTEXITCODE -ne 0) { Fail "推送 tag 失败（需要 force push 权限）" }
         Info "tag 已更新"
     } finally {
+        $ErrorActionPreference = $prevEAP
         Pop-Location
     }
 }
