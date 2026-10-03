@@ -855,10 +855,16 @@ func (a *App) handlePickKey(key string) (tea.Model, tea.Cmd) {
 		a.quitting = true
 		return a, tea.Quit
 	case "y":
+		if a.pick.small {
+			break
+		}
 		action := a.pick.items[0].Action
 		a.pick = nil
 		return a.runAction(action)
 	case "n":
+		if a.pick.small {
+			break
+		}
 		action := a.pick.items[len(a.pick.items)-1].Action
 		a.pick = nil
 		return a.runAction(action)
@@ -881,6 +887,26 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		a.setToast("已取消", toastInfo)
 		return a, nil
 	case action == "quit":
+		a.quitting = true
+		return a, tea.Quit
+	case action == "quit_save":
+		// 先把当前编辑的内容交回给它的保存逻辑，再退出。
+		value := a.editor.text()
+		commit := a.editor.onCommit
+		a.editor.active = false
+		a.editor.onCommit = nil
+		a.editor.multiline = false
+		if commit != nil {
+			// 保存逻辑只会设置提示或写盘，不会替换模型，忽略返回值即可。
+			_, _ = commit(value)
+		}
+		a.quitting = true
+		return a, tea.Quit
+	case action == "quit_discard":
+		// 明确丢弃：不改动数据，直接退出。
+		a.editor.active = false
+		a.editor.onCommit = nil
+		a.editor.multiline = false
 		a.quitting = true
 		return a, tea.Quit
 	case action == "del_todo":
@@ -939,7 +965,22 @@ func (a *App) setToast(msg string, kind toastKind) {
 // askQuit 弹出退出确认，避免误触 q 直接退出（见需求 8）。
 //
 // 默认选中“取消”，这样误触后顺手回车也不会退出。
+// 如果随手记 / 自定义字条正开着且内容没保存，会多问一句：
+// 保存并退出、直接退出、取消退出（见用户反馈）。
 func (a *App) askQuit() {
+	if a.editor.active && a.editor.Dirty() && a.editor.multiline {
+		a.pick = &pickState{
+			title: "随手记还没保存",
+			items: []pickItem{
+				{Label: "取消退出，回去继续写", Action: "cancel"},
+				{Label: "保存并退出", Action: "quit_save"},
+				{Label: "直接退出，丢弃改动", Action: "quit_discard"},
+			},
+			cursor: 0,
+			small:  true,
+		}
+		return
+	}
 	quitLabel := "退出 Kairos"
 	if a.timer != nil {
 		quitLabel = "结束计时并退出"

@@ -71,6 +71,9 @@ type pickState struct {
 	title  string
 	items  []pickItem
 	cursor int
+	// small 表示这是个需要逐项确认的选择（两个以上的选项）。
+	// 此时禁用 y/n 快捷键——它们只会被误按到第一项/最后一项。
+	small bool
 }
 
 // ---------- 文本输入 ----------
@@ -80,6 +83,8 @@ type editorState struct {
 	label  string
 	value  []rune
 	cursor int
+	// original 记录打开时的内容，用来判断有没有改动（见 Dirty）。
+	original string
 	// multiline 为真时允许换行（自定义字条要一行一条）；
 	// Enter 变成换行，用 Ctrl+S 或 Ctrl+D 提交。
 	multiline bool
@@ -92,6 +97,7 @@ func (e *editorState) set(label, initial string) {
 	e.label = label
 	e.value = []rune(initial)
 	e.cursor = len(e.value)
+	e.original = initial
 	e.multiline = false
 }
 
@@ -125,6 +131,14 @@ func (e *editorState) lineCount() int {
 		return 1
 	}
 	return strings.Count(string(e.value), "\n") + 1
+}
+
+// Dirty 报告内容相对打开时是否被改过。
+//
+// 用于“随手记没保存就要退出”时给出提示：只有真的改过才值得打扰用户，
+// 打开看一眼又原样退出的情况不该弹窗。
+func (e *editorState) Dirty() bool {
+	return string(e.value) != e.original
 }
 
 func (e *editorState) insert(r rune) {

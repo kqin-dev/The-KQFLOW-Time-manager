@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
+	"github.com/kqin-dev/The-Kairos-Time-manager/internal/version"
 )
 
 // 看板可用的最小终端尺寸；更小的时候只显示一行提示。
@@ -26,16 +27,19 @@ func (a *App) View() string {
 		return a.viewTooSmall()
 	}
 
-	// 输入框优先级最高：无论当前在哪一页，编辑中都要能看见自己在输入什么。
+	// 选择框优先级最高：它常常是“在编辑器之上”弹出的确认（例如
+	// 随手记没保存就问“保存还是丢弃”），必须盖住下面的输入框，
+	// 否则用户看不到这个提问。
+	if a.pick != nil {
+		return clipBlock(a.renderCenterBox(a.pickContent()), a.width, a.height)
+	}
+	// 输入框次之：无论当前在哪一页，编辑中都要能看见自己在输入什么。
 	if a.editor.active {
 		return clipBlock(a.renderCenterBox(a.editorContent()), a.width, a.height)
 	}
-	// 自定义时段编辑器与选择框同样占用中间栏。
+	// 自定义时段编辑器同样占用中间栏。
 	if a.custom != nil {
 		return clipBlock(a.renderCenterBox(a.customContent()), a.width, a.height)
-	}
-	if a.pick != nil {
-		return clipBlock(a.renderCenterBox(a.pickContent()), a.width, a.height)
 	}
 
 	switch a.view {
@@ -681,12 +685,31 @@ func trimBlankLines(lines []string, n int) []string {
 
 // renderFooter 渲染底部时段看条（见需求 20）。
 func (a *App) renderFooter() string {
-	bar := a.renderTimerBar(a.width)
-	hints := a.renderHints()
-	if bar == "" {
-		return hints
+	var rows []string
+	if bar := a.renderTimerBar(a.width); bar != "" {
+		rows = append(rows, bar)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, bar, hints)
+	rows = append(rows, a.versionedHints())
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// versionedHints 渲染按键提示行，并在右端放上版本号。
+//
+// 版本号随每次发布更新（见 internal/version），放在这里既随时可见，
+// 又不会占用中间栏的内容空间。窄终端上提示行已经占满，版本号就单独
+// 占一行——它不该因为屏幕小就消失（排查问题时最先要问的就是版本）。
+func (a *App) versionedHints() string {
+	hints := a.renderHints()
+	ver := version.String()
+	gap := a.width - lipgloss.Width(hints) - lipgloss.Width(ver)
+	if hints == "" {
+		return a.st.Muted.Render(ver)
+	}
+	if gap < 1 {
+		// 放不下就换一行，而不是不显示。
+		return lipgloss.JoinVertical(lipgloss.Left, hints, a.st.Muted.Render(ver))
+	}
+	return hints + strings.Repeat(" ", gap) + a.st.Muted.Render(ver)
 }
 
 // renderTimerBar 渲染进度条；没有计时时显示当日时间进度。

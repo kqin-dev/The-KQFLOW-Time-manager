@@ -267,6 +267,45 @@ kair --where     # 只打印当前数据目录
 - 计时中断、退出、跨日都会立即落盘，进行中的计时段也会先记录再退出；
 - 主文件损坏时自动回退到最近的可用备份。
 
+## 版本号
+
+版本号只有一个权威来源：`internal/version/version.go` 里的 `Version`。
+看板最底一行的右端、帮助页末尾、`kair -version`、`kair -h` 读的都是它，
+不会出现“界面显示一个版本、命令行显示另一个”。
+
+**发布新版本时只需改这一处：**
+
+```go
+// internal/version/version.go
+var Version = "1.0.0"
+```
+
+需要给某次构建打不同版本号（本地测试、CI 产物）时用 `-ldflags` 覆盖：
+
+```powershell
+go build -trimpath -ldflags "-s -w `
+  -X github.com/kqin-dev/The-Kairos-Time-manager/internal/version.Version=1.0.0-rc1" `
+  -o kair.exe ./cmd/kair
+```
+
+窄终端上按键提示行会占满一整行，此时版本号**单独占一行**显示——
+它不该因为屏幕小就消失，排查问题时最先要问的就是「你用的是哪个版本」。
+
+## 随手记没保存就想退出
+
+写随手记时按 `q` 或 `Ctrl+C`，如果内容改过且没保存，不会直接退出，而是问一句：
+
+```
+随手记还没保存
+  取消退出，回去继续写      ← 默认选中，误触回车不会丢数据
+  保存并退出
+  直接退出，丢弃改动
+```
+
+`j`/`k` 选择、`enter` 确定、`esc` 取消。打开看一眼又原样退出（或改回原样）
+不会被多问一次；这个提示只对随手记这类**多行**输入生效——单行输入框里的
+`q` 是标题里要输入的字符，不能被吞掉。
+
 ## 开发
 
 ```powershell
@@ -295,6 +334,7 @@ internal/config/     配置读写与数据目录定位
 internal/model/      TODO / GOAL / TASK / 计时记录等数据结构
 internal/store/      按日分库的本地存储、备份与恢复
 internal/ui/         Bubble Tea 界面：看板、设置、历史、帮助
+internal/version/    版本号（全项目唯一权威来源）
 ```
 
 ## 许可

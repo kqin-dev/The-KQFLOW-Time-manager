@@ -236,6 +236,22 @@ func (a *App) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.insertEditorText(string(msg.Runes))
 		return a, nil
 	}
+
+	// 随手记（多行输入）里按 q / ctrl+c 想退出时，先问清“保存还是丢弃”，
+	// 不要让写到一半的内容悄悄丢掉（见用户反馈）。
+	//
+	// 只在多行输入里这么做：单行输入框用于标题/设置项，里面的 q
+	// 是**要输入的字符**，吞掉它就没法打 q 了。
+	if a.editor.multiline && (msg.String() == "q" || msg.Type == tea.KeyCtrlC) {
+		if a.editor.Dirty() {
+			a.askQuit()
+			return a, nil
+		}
+		// 没改过就照旧退出，不必多问一次。
+		a.quitting = true
+		return a, tea.Quit
+	}
+
 	switch msg.Type {
 	case tea.KeyEsc:
 		a.editor.active = false

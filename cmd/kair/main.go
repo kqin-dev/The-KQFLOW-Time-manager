@@ -15,10 +15,8 @@ import (
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/config"
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/store"
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/ui"
+	"github.com/kqin-dev/The-Kairos-Time-manager/internal/version"
 )
-
-// version 会在编译时通过 -ldflags 覆盖。
-var version = "0.1.0-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -37,7 +35,7 @@ func run() error {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("Kairos %s\n", version)
+		fmt.Printf("Kairos %s\n", version.Version)
 		return nil
 	}
 
@@ -123,6 +121,8 @@ func printFarewell(st *store.Store) {
 func usage() {
 	fmt.Fprintf(os.Stderr, `Kairos — 每天向前一点的时间管理器
 
+版本: %s
+
 用法:
   kair [选项]
 
@@ -139,5 +139,5 @@ func usage() {
 
 计时:
   中间栏按 enter 选择番茄钟 / 倒计时 / 正计时 / 自定义，计时中 space 暂停、enter 归档、esc 中断
-`)
+`, version.Version)
 }
