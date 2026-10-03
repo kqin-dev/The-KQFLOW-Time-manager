@@ -12,10 +12,10 @@ import (
 )
 
 // TestRenderPreviewsForReview 把各界面渲染成纯文本，便于人工检查排版。
-// 默认跳过，只在 KAIR_PREVIEW=1 时运行。
+// 默认跳过，只在 KQFLOW_PREVIEW=1 时运行。
 func TestRenderPreviewsForReview(t *testing.T) {
-	if os.Getenv("KAIR_PREVIEW") == "" {
-		t.Skip("需要设置 KAIR_PREVIEW=1 才渲染预览")
+	if os.Getenv("KQFLOW_PREVIEW") == "" {
+		t.Skip("需要设置 KQFLOW_PREVIEW=1 才渲染预览")
 	}
 	ansi := regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")
 	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
