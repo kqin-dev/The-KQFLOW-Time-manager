@@ -53,27 +53,64 @@ func truncateCells(s string, width int) string {
 
 // ---------- 中间栏内容 ----------
 
-// pageLineWidth 返回整页内容可用的字符数。
-//
-// 帮助/设置/历史是内容较多的整页，用终端宽度（留出面板边框与左右空白），
-// 而不是中间栏的窄宽度；否则说明文字会被迫折成很多行，甚至被截断。
-func (a *App) pageLineWidth() int {
-	frame := a.st.pageStyle(a.IsCompact()).GetHorizontalFrameSize()
-	w := a.width - frame - 4
-	if w < 16 {
-		w = 16
+// scrollIntoView 保证 keepVisible 行在窗口内，必要时调整偏移。
+func scrollIntoView(offset, total, height, keepVisible int) (int, int) {
+	if height < 1 {
+		height = 1
 	}
-	return w
+	maxOffset := total - height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if keepVisible >= 0 {
+		if keepVisible < offset {
+			offset = keepVisible
+		}
+		if keepVisible >= offset+height {
+			offset = keepVisible - height + 1
+		}
+		if offset > maxOffset {
+			offset = maxOffset
+		}
+		if offset < 0 {
+			offset = 0
+		}
+	}
+	start, end := offset, offset+height
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+	return start, end
 }
 
-// pageContent 把整页内容裁剪成能放进中间栏的文本块。
-func (a *App) pageContent(styled, _ []string) string {
+// pageContent 把整页内容裁剪成能放进中间栏的文本块，并按需滚动。
+//
+// keepVisible 是要保持在可视区内的行号（例如设置页的光标），-1 表示不关心。
+func (a *App) pageContent(styled, _ []string, keepVisible int) string {
 	inner := a.contentWidth()
 	fitted := make([]string, 0, len(styled))
 	for _, l := range styled {
 		fitted = append(fitted, truncateCells(l, inner))
 	}
-	return strings.Join(fitted, "\n")
+
+	// 可用行数 = 中间栏主体高度 - 面板边框。
+	_, _, _, bodyH := a.columnLayout()
+	avail := bodyH - a.st.Panel.GetVerticalFrameSize()
+	if avail < 1 {
+		avail = 1
+	}
+	start, end := scrollIntoView(a.pageScroll, len(fitted), avail, keepVisible)
+	a.pageScroll = start
+	return strings.Join(fitted[start:end], "\n")
 }
 
 // editorContent 渲染输入框内容。
@@ -176,7 +213,7 @@ func (a *App) carryContent() string {
 // ---------- 设置页 ----------
 
 func (a *App) settingsLines() (styled, plain []string) {
-	inner := a.pageLineWidth()
+	inner := a.contentWidth()
 	labelW := inner - 16
 	if labelW > 30 {
 		labelW = 30
@@ -309,7 +346,7 @@ func (a *App) collectHistory(limit int) ([]historyStat, error) {
 }
 
 func (a *App) historyLines() (styled, plain []string) {
-	inner := a.pageLineWidth()
+	inner := a.contentWidth()
 	stats, err := a.collectHistory(14)
 
 	add := func(s, p string) {
@@ -431,7 +468,7 @@ func shortDesc(s string) string {
 //
 // 说明文字宁可换到下一行也不截断：早期宽度算错导致只剩光秃秃的按键名。
 func (a *App) helpLines() (styled, plain []string) {
-	inner := a.pageLineWidth()
+	inner := a.contentWidth()
 	rows := helpRows(a.IsCompact())
 	keyW := 0
 	for _, r := range rows {
@@ -467,11 +504,14 @@ func (a *App) helpLines() (styled, plain []string) {
 			}
 			continue
 		}
-		for i, dl := range wrapBalanced(r.Desc, descW) {
+		// 折行时每行再收 1 列：折行算法只需满足“不超过 descW”，
+		// 但续行会多一层缩进，留出余量才不会顶到边框。
+		for i, dl := range wrapBalanced(r.Desc, descW-1) {
 			if i == 0 {
 				add("  "+a.st.HintKey.Render(keyText)+"  "+a.st.Text.Render(dl), "  "+keyText+"  "+dl)
 			} else {
-				add("  "+strings.Repeat(" ", keyW)+"  "+a.st.Text.Render(dl), "  "+strings.Repeat(" ", keyW)+"  "+dl)
+				// 续行缩进到说明列下方，读起来明显是同一项的后半句。
+				add("  "+strings.Repeat(" ", keyW+2)+a.st.Text.Render(dl), "  "+strings.Repeat(" ", keyW+2)+dl)
 			}
 		}
 	}
@@ -485,15 +525,15 @@ func (a *App) handleHelpKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "q", "?":
 		a.view = ViewDashboard
-		a.helpScroll = 0
+		a.pageScroll = 0
 	case "j", "down":
-		a.helpScroll++
+		a.pageScroll++
 	case "k", "up":
-		if a.helpScroll > 0 {
-			a.helpScroll--
+		if a.pageScroll > 0 {
+			a.pageScroll--
 		}
 	case "g", "home":
-		a.helpScroll = 0
+		a.pageScroll = 0
 	case "ctrl+c":
 		a.quitting = true
 		return a, tea.Quit

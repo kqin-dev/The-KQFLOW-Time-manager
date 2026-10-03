@@ -1482,15 +1482,27 @@ func TestLeftPanelsRenderSeparately(t *testing.T) {
 // TestHelpDescriptionsNotClipped 验证帮助页不会把说明文字截掉（见用户反馈的截图）。
 //
 // 早期帮助页宽度算错，面板只有 20 多列，于是只剩下光秃秃的按键名，
-// 说明全被截断，看起来像渲染坏掉。
+// 说明全被截断，看起来像渲染坏掉。现在帮助页复用中间栏，内容多时滚动查看，
+// 所以这里把所有滚动位置的内容拼起来检查。
 func TestHelpDescriptionsNotClipped(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
 	for _, size := range [][2]int{{144, 45}, {120, 36}, {100, 30}, {80, 24}} {
 		app, _, _ := newTestApp(t, at)
 		app.width, app.height = size[0], size[1]
 		app.view = ViewHelp
-		out := app.View()
-		flat := strings.Join(strings.Fields(out), "")
+		app.pageScroll = 0
+
+		// 逐屏收集，模拟用户按 j 往下滚。
+		var all []string
+		for i := 0; i < 40; i++ {
+			all = append(all, strings.Fields(app.View())...)
+			before := app.pageScroll
+			press(t, app, "j")
+			if app.pageScroll == before {
+				break
+			}
+		}
+		flat := strings.Join(all, "")
 
 		for _, want := range []string{
 			"在当前栏内上下移动",
@@ -1498,18 +1510,69 @@ func TestHelpDescriptionsNotClipped(t *testing.T) {
 			"从昨日继承",
 		} {
 			if !strings.Contains(flat, want) {
-				t.Errorf("%dx%d：帮助页缺少说明 %q", size[0], size[1], want)
+				t.Errorf("%dx%d：滚动后帮助页仍缺少说明 %q", size[0], size[1], want)
 			}
 		}
-		lines := strings.Split(out, "\n")
-		panelW := 0
-		for _, l := range lines {
-			if w := lipgloss.Width(l); w > panelW {
-				panelW = w
+		// 每一屏都不能超出终端。
+		app.view = ViewHelp
+		app.pageScroll = 0
+		out := app.View()
+		for i, l := range strings.Split(out, "\n") {
+			if w := lipgloss.Width(l); w > size[0] {
+				t.Errorf("%dx%d：帮助页第 %d 行宽 %d 超出终端", size[0], size[1], i, w)
 			}
 		}
-		if panelW > size[0] {
-			t.Errorf("%dx%d：帮助页宽度 %d 超出终端", size[0], size[1], panelW)
+		if len(strings.Split(out, "\n")) > size[1] {
+			t.Errorf("%dx%d：帮助页行数超出终端", size[0], size[1])
+		}
+	}
+}
+
+// TestPagesUseCenterColumn 验证帮助/设置/历史复用中间栏（见用户反馈）。
+//
+// 这三个二级页不再单独铺满屏幕，而是和二级菜单一样只占中间栏，
+// 左右两侧的 TODO 与 GOAL 面板保持可见。
+func TestPagesUseCenterColumn(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
+	for _, v := range []struct {
+		name string
+		view View
+		key  string
+	}{
+		{"帮助", ViewHelp, "帮助"},
+		{"设置", ViewSettings, "设置"},
+		{"历史", ViewHistory, "历史"},
+	} {
+		app, s, _ := newTestApp(t, at)
+		app.width, app.height = 120, 36
+		app.data.Fixed = []*model.Todo{model.NewTodo("固定项", model.KindFixed, app.day, at)}
+		app.data.Archive.Goals = []model.Goal{*model.NewGoal("归档目标", at)}
+		if err := s.SaveDay(app.data); err != nil {
+			t.Fatal(err)
+		}
+		app.reload()
+		app.view = v.view
+
+		out := app.View()
+		flat := strings.Join(strings.Fields(out), "")
+		if !strings.Contains(flat, v.key) {
+			t.Errorf("%s：二级页应正常渲染", v.name)
+		}
+		// 左右面板必须仍然可见——这正是复用中间栏的意义。
+		for _, want := range []string{"固定项", "GOAL"} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("%s：二级页把 %q 盖住了，应只占中间栏", v.name, want)
+			}
+		}
+		// 三栏边框都在。
+		if n := strings.Count(out, "╭"); n < 3 {
+			t.Errorf("%s：应保留三个面板边框，实际 %d 个", v.name, n)
+		}
+		// 每行宽度必须等于终端宽度。
+		for i, l := range strings.Split(out, "\n") {
+			if lw := lipgloss.Width(l); lw != app.width {
+				t.Errorf("%s：第 %d 行宽 %d，应等于 %d", v.name, i, lw, app.width)
+			}
 		}
 	}
 }

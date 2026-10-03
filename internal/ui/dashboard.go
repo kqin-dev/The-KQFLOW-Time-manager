@@ -40,11 +40,15 @@ func (a *App) View() string {
 
 	switch a.view {
 	case ViewHistory:
-		return clipBlock(a.renderPageView(a.historyLines()), a.width, a.height)
+		styled, plain := a.historyLines()
+		return clipBlock(a.renderCenterBox(a.pageContent(styled, plain, -1)), a.width, a.height)
 	case ViewSettings:
-		return clipBlock(a.renderPageView(a.settingsLines()), a.width, a.height)
+		styled, plain := a.settingsLines()
+		// 设置页让光标所在行始终可见。
+		return clipBlock(a.renderCenterBox(a.pageContent(styled, plain, a.settingsCursorRow(styled, plain))), a.width, a.height)
 	case ViewHelp:
-		return clipBlock(a.renderPageView(a.helpLines()), a.width, a.height)
+		styled, plain := a.helpLines()
+		return clipBlock(a.renderCenterBox(a.pageContent(styled, plain, -1)), a.width, a.height)
 	case ViewCarry:
 		return clipBlock(a.renderCenterBox(a.carryContent()), a.width, a.height)
 	default:
@@ -57,53 +61,21 @@ func (a *App) View() string {
 	}
 }
 
-// renderPageView 渲染帮助 / 设置 / 历史这类内容较多的整页。
-//
-// 这类页面需要比中间栏更宽的空间，所以单独给一块居中的面板：
-// 宽度按内容自适应并夹到终端内，整体居中。
-// 不再用“把浮层拼到看板上”的做法——那样会盖住左右面板的边框，把界面画花。
-func (a *App) renderPageView(styled, plain []string) string {
-	style := a.st.pageStyle(a.IsCompact())
-	frame := style.GetHorizontalFrameSize()
-
-	natural := 0
-	for _, l := range plain {
-		if w := lipgloss.Width(l); w > natural {
-			natural = w
+// settingsCursorRow 返回设置页当前选中项在内容行里的下标。
+func (a *App) settingsCursorRow(styled, plain []string) int {
+	// 行数一一对应，直接按 marker 找更稳：选中行以 ▸ 开头。
+	for i, p := range plain {
+		if strings.HasPrefix(p, "▸") {
+			return i
 		}
 	}
-	inner := natural
-	if maxW := a.width - frame - 4; inner > maxW {
-		inner = maxW
-	}
-	if inner < 8 {
-		inner = 8
-	}
-
-	// 内容高于终端时按 a.helpScroll 滚动（帮助页内容最长，共用同一个偏移）。
-	if avail := a.height - style.GetVerticalFrameSize(); avail > 0 && len(styled) > avail {
-		maxScroll := len(styled) - avail
-		if a.helpScroll > maxScroll {
-			a.helpScroll = maxScroll
-		}
-		if a.helpScroll < 0 {
-			a.helpScroll = 0
-		}
-		styled = styled[a.helpScroll : a.helpScroll+avail]
-	}
-
-	fitted := make([]string, 0, len(styled))
-	for _, l := range styled {
-		fitted = append(fitted, truncateCells(l, inner))
-	}
-	panel := style.Width(inner).Render(strings.Join(fitted, "\n"))
-	return centerBlock(panel, a.width, a.height)
+	return -1
 }
 
 // viewTooSmall 在终端过小时给出提示。
 //
 // 这段输出同样必须装进终端：早期它固定输出 5 行、每行 30 多列，
-// 在一个 10×3 的窗口里会溢出并糊掉整屏（用户看到的“渲染异常”）。
+// 在一个 10×3 的窗口里会溢出并糊掉整屏。
 func (a *App) viewTooSmall() string {
 	if a.width <= 0 || a.height <= 0 {
 		return "Kairos"
@@ -114,7 +86,6 @@ func (a *App) viewTooSmall() string {
 		a.st.Muted.Render(truncateCells(full, a.width)),
 		a.st.Muted.Render(truncateCells("ctrl+c 退出", a.width)),
 	}
-	// 只保留真正有内容、且放得下的行。
 	var lines []string
 	for _, l := range candidates {
 		if len(lines) >= a.height {
@@ -126,7 +97,6 @@ func (a *App) viewTooSmall() string {
 		lines = append(lines, l)
 	}
 	if len(lines) == 0 {
-		// 窄到连一个宽字符都放不下时，退回 ASCII，保证一定有内容。
 		return truncateCells("Kairos", a.width)
 	}
 	return clipBlock(strings.Join(lines, "\n"), a.width, a.height)
@@ -134,8 +104,8 @@ func (a *App) viewTooSmall() string {
 
 // columnLayout 计算三栏宽度与看板主体高度。
 //
-// 看板和中间栏内容（二级菜单、整页面板）共用这一份计算，
-// 保证弹窗永远落在中间栏里，不会盖住左右两侧的边框。
+// 看板与中间栏内容（二级菜单、输入框、二级页）共用这一份计算，
+// 保证它们永远落在中间栏里，不会盖住左右两侧的边框。
 func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
 	header := a.renderHeader()
 	footer := a.renderFooter()
@@ -189,21 +159,17 @@ func (a *App) renderDashboard() string {
 	right := a.renderGoalPanel(rightWidth, bodyHeight)
 	center := a.renderCenterPanel(centerWidth, bodyHeight)
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
-	out := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
-
 	if a.celebrate != nil {
 		elapsed := time.Since(a.celebrate.started)
 		t := float64(elapsed) / float64(celebrateFor)
 		if t > 1 {
 			t = 1
 		}
-		overlay := a.celebrateFrame(t, centerWidth, bodyHeight)
-		center = a.renderCenterPanel(centerWidth, bodyHeight)
-		center = overlayBox(center, overlay, centerWidth, bodyHeight)
-		body = lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
-		out = lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+		center = overlayBox(center, a.celebrateFrame(t, centerWidth, bodyHeight), centerWidth, bodyHeight)
 	}
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
+	out := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 	// 最后一道防线：整个看板必须正好装进终端。
 	return clipBlock(out, a.width, a.height)
 }
@@ -223,51 +189,6 @@ func (a *App) renderCenterBox(content string) string {
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
 	return clipBlock(lipgloss.JoinVertical(lipgloss.Left, header, body, footer), a.width, a.height)
-}
-
-// centerBlock 把一段渲染好的内容居中放在 width×height 的空白画布上。
-func centerBlock(block string, width, height int) string {
-	if width <= 0 || height <= 0 {
-		return block
-	}
-	lines := strings.Split(block, "\n")
-	blockW := 0
-	for _, l := range lines {
-		if w := lipgloss.Width(l); w > blockW {
-			blockW = w
-		}
-	}
-	if blockW > width {
-		blockW = width
-	}
-	left := (width - blockW) / 2
-	if left < 0 {
-		left = 0
-	}
-	top := (height - len(lines)) / 2
-	if top < 0 {
-		top = 0
-	}
-
-	out := make([]string, 0, height)
-	for i := 0; i < top && len(out) < height; i++ {
-		out = append(out, strings.Repeat(" ", width))
-	}
-	for _, l := range lines {
-		if len(out) >= height {
-			break
-		}
-		l = truncateCells(l, blockW)
-		line := strings.Repeat(" ", left) + l
-		if w := lipgloss.Width(line); w < width {
-			line += strings.Repeat(" ", width-w)
-		}
-		out = append(out, line)
-	}
-	for len(out) < height {
-		out = append(out, strings.Repeat(" ", width))
-	}
-	return strings.Join(out, "\n")
 }
 
 // overlayBox 在已经渲染好的面板文本上叠加另一段内容（用于庆祝特效）。

@@ -102,8 +102,8 @@ type App struct {
 	animPhase float64
 	frame     int
 
-	// helpScroll 是帮助页的滚动偏移。
-	helpScroll int
+	// pageScroll 是帮助/设置/历史这类二级页的滚动偏移。
+	pageScroll int
 	// settingsCursor 是设置页当前选中的项。
 	settingsCursor int
 
@@ -362,7 +362,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.askQuit()
 	case "?":
 		a.view = ViewHelp
-		a.helpScroll = 0
+		a.pageScroll = 0
 	// 栏位切换只保留 TAB，把 h/l 与左右方向键让给栏内操作（见问题 3）。
 	case "tab":
 		a.switchFocus(1)

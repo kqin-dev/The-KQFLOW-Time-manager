@@ -155,11 +155,11 @@ func TestHelpPageScrolls(t *testing.T) {
 	// 故意用很矮的终端，逼出滚动。
 	app.width, app.height = 100, minHeight
 	app.view = ViewHelp
-	app.helpScroll = 0
+	app.pageScroll = 0
 	first := app.View()
 
 	press(t, app, "j", "j", "j")
-	if app.helpScroll == 0 {
+	if app.pageScroll == 0 {
 		t.Fatal("按 j 应向下滚动帮助内容")
 	}
 	if app.View() == first {
@@ -167,8 +167,8 @@ func TestHelpPageScrolls(t *testing.T) {
 	}
 	// 滚回顶部。
 	press(t, app, "g")
-	if app.helpScroll != 0 {
-		t.Errorf("按 g 应回到顶部，实际 %d", app.helpScroll)
+	if app.pageScroll != 0 {
+		t.Errorf("按 g 应回到顶部，实际 %d", app.pageScroll)
 	}
 	if app.View() != first {
 		t.Error("回到顶部后内容应与初始一致")
