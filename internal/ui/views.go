@@ -183,17 +183,31 @@ func (a *App) singleLineEditor(inner int) string {
 // 光标位置按“显示宽度”计算，不能按 rune 个数：中文一个字占两列，
 // 用 rune 下标定位会让画出来的光标跑到文字前面去（用户报过这个问题）。
 func (a *App) multilineEditorLines(inner, maxLines int) []string {
-	text := string(a.editor.value)
-	all := strings.Split(text, "\n")
+	all := strings.Split(string(a.editor.value), "\n")
 
-	// 光标所在行号。
-	line := strings.Count(text[:a.editor.cursor], "\n")
+	// 光标所在行号 = 光标之前的换行数。
+	// 关键：这里必须按 rune 切片，不能直接对字符串做 text[:cursor]——
+	// 字符串切片走的是字节偏移，而 cursor 是 rune 下标，
+	// 一旦有中文就会切在半个字符上，行号与列位全错（这正是用户报的 bug）。
+	runes := a.editor.value
+	cur := clamp(a.editor.cursor, 0, len(runes))
+	line := 0
+	lineStartRune := 0
+	for i := 0; i < cur; i++ {
+		if runes[i] == '\n' {
+			line++
+			lineStartRune = i + 1
+		}
+	}
 	if line >= len(all) {
 		line = len(all) - 1
 	}
 	if line < 0 {
 		line = 0
 	}
+	// 光标在其所在行内的 rune 偏移。
+	colRune := cur - lineStartRune
+
 	start := 0
 	if line >= maxLines {
 		start = line - maxLines + 1
@@ -203,13 +217,6 @@ func (a *App) multilineEditorLines(inner, maxLines int) []string {
 		end = len(all)
 	}
 
-	// 光标在其所在行内的字符下标。
-	lineStartRune := 0
-	for j := 0; j < line; j++ {
-		lineStartRune += len([]rune(all[j])) + 1
-	}
-	colRune := a.editor.cursor - lineStartRune
-
 	out := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
 		marker := "   "
@@ -218,19 +225,27 @@ func (a *App) multilineEditorLines(inner, maxLines int) []string {
 		}
 		body := all[i]
 		if i == line {
-			runes := []rune(body)
+			lineRunes := []rune(body)
 			if colRune < 0 {
 				colRune = 0
 			}
-			if colRune > len(runes) {
-				colRune = len(runes)
+			if colRune > len(lineRunes) {
+				colRune = len(lineRunes)
 			}
-			before := string(runes[:colRune])
-			after := string(runes[colRune:])
-			// 光标前的内容按显示宽度裁剪，保证光标落在正确的列上。
+			// 光标列 = 光标前内容的显示宽度（中文占两列，不能用 rune 个数）。
+			wantCol := lipgloss.Width(string(lineRunes[:colRune]))
+
 			avail := max(1, inner-3)
-			before = truncateCellsFromEnd(before, max(1, avail-1))
-			rendered := a.st.Text.Render(before) + a.st.ModalCursor.Render("▏") + a.st.Text.Render(after)
+			// 先把整行裁到可用宽度。
+			visible := truncateCells(body, avail)
+			// 光标在可见范围之外时，从左侧裁掉多余部分，保证光标始终可见。
+			if over := wantCol - lipgloss.Width(visible); over > 0 {
+				visible = truncateCellsFromEnd(visible, max(0, lipgloss.Width(visible)-over))
+			}
+			// 按显示列切开可见文本，在切口处画光标；全部用宽度算。
+			col := min(wantCol, lipgloss.Width(visible))
+			left, cue, right := splitAtColumn(visible, col)
+			rendered := a.st.Text.Render(left) + a.st.ModalCursor.Render(cue) + a.st.Text.Render(right)
 			out = append(out, a.st.ModalCursor.Render(marker)+truncateCells(rendered, avail))
 			continue
 		}
@@ -241,6 +256,44 @@ func (a *App) multilineEditorLines(inner, maxLines int) []string {
 		out = append(out, "")
 	}
 	return out
+}
+
+// splitAtColumn 在显示列 col 处切分字符串，返回左侧、该列上的一个单元、右侧。
+//
+// 全部按显示宽度推进，不依赖 rune 下标——中文占两列，混排时用 rune 下标必然错位。
+// 若 col 正好落在宽字符的中间，则把该字符归到左侧，光标落在它后面。
+func splitAtColumn(s string, col int) (left, cur, right string) {
+	if col < 0 {
+		col = 0
+	}
+	var l, r strings.Builder
+	w := 0
+	placed := false
+	for _, ch := range s {
+		cw := lipgloss.Width(string(ch))
+		switch {
+		case placed:
+			r.WriteRune(ch)
+		case w+cw <= col:
+			l.WriteRune(ch)
+			w += cw
+		case w >= col:
+			// 光标正好可以落在这里，把当前字符交给右侧，光标单独占位。
+			placed = true
+			cur = "▏"
+			r.WriteRune(ch)
+		default:
+			// 光标落在宽字符中间：该字符归左侧，光标跟在它后面。
+			l.WriteRune(ch)
+			w += cw
+			placed = true
+			cur = "▏"
+		}
+	}
+	if !placed {
+		cur = "▏"
+	}
+	return l.String(), cur, r.String()
 }
 
 // truncateCellsFromEnd 从左侧裁剪，保留字符串末尾 width 列。

@@ -1798,7 +1798,7 @@ func TestRollingStats(t *testing.T) {
 		t.Error("10-02 有数据，应标记为有记录")
 	}
 	// 渲染出来要包含统计标题与今天的标记。
-	lines := app.statsLines(app.contentWidth())
+	lines := app.statsLines(app.contentWidth(), 12)
 	flat := strings.Join(strings.Fields(strings.Join(lines, "")), "")
 	if !strings.Contains(flat, "连续7天") {
 		t.Errorf("统计区应包含标题，实际: %v", flat)
@@ -2002,7 +2002,7 @@ func stripStyles(s string) string {
 	return b.String()
 }
 
-// TestVerticalChartBars 验证竖向柱状图：归一化高度 + 柱子与标签对齐。
+// TestVerticalChartBars 验证竖向柱状图：归一化高度 + 柱子与标签对齐 + 铺满可用宽度。
 func TestVerticalChartBars(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
 	app, _, _ := newTestApp(t, at)
@@ -2012,66 +2012,113 @@ func TestVerticalChartBars(t *testing.T) {
 		{Label: "三", Value: 10}, {Label: "四", Value: 0}, {Label: "五", Value: 50},
 		{Label: "今", Value: 25, Today: true},
 	}
-	lines := app.renderVerticalChart(vals, 52, 4)
-	if len(lines) == 0 {
-		t.Fatal("柱状图不应为空")
+	inner := 72
+	maxH := 4
+	lines := app.renderVerticalChart(vals, inner, maxH)
+	if len(lines) != maxH+2 {
+		t.Fatalf("应有 %d 行柱 + 轴 + 标签 = %d 行，实际 %d", maxH, maxH+2, len(lines))
 	}
-	// 柱子用方块字符；最高的一天应占满 maxHeight（归一化）。
-	body := strings.Join(lines[:4], "\n")
-	plain := stripStyles(body)
-	if !strings.Contains(plain, "█") {
-		t.Errorf("柱状图应包含方块字符，实际:\n%s", plain)
+
+	// 推算出柱子的几何位置：与实现同样的规则。
+	// 这里只断言“柱子和标签成对出现且间隔均匀”，不重复实现细节。
+	plot := lines[:maxH]
+	axis := stripStyles(lines[maxH])
+	labels := stripStyles(lines[maxH+1])
+
+	// 轴必须以 └ 开头，且长度与柱子覆盖范围一致。
+	if !strings.HasPrefix(axis, "└") {
+		t.Errorf("坐标轴应以 └ 开头，实际 %q", axis)
 	}
-	// 每根柱子占 1 列、间隔 1 列 → 第 i 根柱子在显示第 1+2i 列。
-	for i := range vals {
-		col := 1 + 2*i
+	// 找出轴上的横线段，作为每根柱子的列范围。
+	var segs [][2]int
+	inSeg := false
+	start := 0
+	for i, r := range []rune(axis) {
+		if r == '─' && !inSeg {
+			inSeg, start = true, i
+		} else if r != '─' && inSeg {
+			inSeg = false
+			segs = append(segs, [2]int{start, i - 1})
+		}
+	}
+	if inSeg {
+		segs = append(segs, [2]int{start, len([]rune(axis)) - 1})
+	}
+	if len(segs) != len(vals) {
+		t.Fatalf("轴上应有 %d 段横线（每根柱子一段），实际 %d：%q", len(vals), len(segs), axis)
+	}
+	// 柱子要有实际宽度（不是一根细线）。
+	for i, sg := range segs {
+		if w := sg[1] - sg[0] + 1; w < 1 {
+			t.Errorf("第 %d 根柱子宽度 %d 过小", i, w)
+		}
+	}
+	// 每根有值的柱子都应在自己的列范围内出现方块字符。
+	// 注意：这里按**显示列**取字符，不能按 rune 下标（标签是宽字符）。
+	for i, v := range vals {
+		if v.Value == 0 {
+			continue
+		}
 		found := false
-		for _, l := range lines[:4] {
-			r := []rune(stripStyles(l))
-			if col < len(r) && (r[col] == '█' || r[col] == '▄') {
-				found = true
+		for _, l := range plot {
+			p := stripStyles(l)
+			for col := segs[i][0]; col <= segs[i][1]; col++ {
+				if ch := cellAt(p, col); ch == "█" || ch == "▄" {
+					found = true
+					break
+				}
+			}
+			if found {
 				break
 			}
 		}
-		if !found && vals[i].Value > 0 {
-			t.Errorf("第 %d 根柱子（值 %d）应出现在第 %d 列", i, vals[i].Value, col)
+		if !found {
+			t.Errorf("第 %d 根柱子（值 %d）应在列 %v 出现方块字符", i, v.Value, segs[i])
 		}
 	}
-	// 轴与标签行必须存在，且标签落在柱子所在列。
-	axis := stripStyles(lines[len(lines)-2])
-	if !strings.HasPrefix(axis, "└") {
-		t.Errorf("应有坐标轴，实际 %q", axis)
-	}
-	labels := []rune(stripStyles(lines[len(lines)-1]))
+	// 标签必须落在各自柱子的列范围内。
 	for i, v := range vals {
-		col := 1 + 2*i
-		want := []rune(v.Label)[0]
-		if col >= len(labels) {
-			t.Fatalf("标签行太短: %q", string(labels))
+		want := string([]rune(v.Label)[0])
+		ok := false
+		for col := segs[i][0]; col <= segs[i][1]+1; col++ {
+			if cellAt(labels, col) == want {
+				ok = true
+				break
+			}
 		}
-		if labels[col] != want {
-			t.Errorf("第 %d 个标签应在第 %d 列，实际 %q（整行 %q）", i, col, string(labels[col]), string(labels))
+		if !ok {
+			t.Errorf("第 %d 个标签 %q 应落在柱子列范围 %v，实际标签行 %q",
+				i, v.Label, segs[i], labels)
 		}
 	}
-	// 归一化：最高值的柱子应达到最大高度。
-	maxH := 4
-	top := 0
+	// 归一化：最高的一天应占满 maxH 行。
 	for i, v := range vals {
 		if v.Value != 50 {
 			continue
 		}
-		col := 1 + 2*i
 		filled := 0
-		for _, l := range lines[:maxH] {
-			r := []rune(stripStyles(l))
-			if col < len(r) && (r[col] == '█' || r[col] == '▄') {
+		for _, l := range plot {
+			p := stripStyles(l)
+			hit := false
+			for col := segs[i][0]; col <= segs[i][1]; col++ {
+				if ch := cellAt(p, col); ch == "█" || ch == "▄" {
+					hit = true
+					break
+				}
+			}
+			if hit {
 				filled++
 			}
 		}
-		top = filled
+		if filled != maxH {
+			t.Errorf("最高的一天应占满 %d 行，实际 %d 行", maxH, filled)
+		}
 	}
-	if top != maxH {
-		t.Errorf("最高的一天应占满 %d 行，实际 %d 行", maxH, top)
+	// 图表整体不应超出内容宽度。
+	for i, l := range lines {
+		if w := lipgloss.Width(stripStyles(l)); w > inner {
+			t.Errorf("第 %d 行宽 %d 超出内容宽度 %d", i, w, inner)
+		}
 	}
 }
 

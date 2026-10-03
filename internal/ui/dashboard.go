@@ -585,21 +585,44 @@ func (a *App) centerContent(width, height int) string {
 		body = append(body, fit(a.st.Muted, center(info, inner, lipgloss.Width(info)), inner))
 	}
 
-	// 剩余空间用来放“连续 7 天统计”和随手记预览。两者都是可选内容，
-	// 但随手记显示在前、优先级更高——用户明确要求看到它的前几行，
-	// 统计条被裁掉几行比随手记整个消失要好。
+	// 剩余空间放“连续 7 天统计”和随手记预览。
+	//
+	// 两者都想要，但用户的诉求是“要看得到柱状图”，所以按下面的优先级分配：
+	//   1. 先给柱状图留够最小高度（表头 + 柱 + 轴 + 标签）；
+	//   2. 再给随手记预览，行数随剩余空间伸缩（3 → 2 → 1 行）；
+	//   3. 两者都放不下时保柱状图，随手记只留标题。
 	var optional []string
-	if a.showNoteOnBoard() {
-		if note := a.notePreviewLines(inner, 4); len(note) > 0 {
-			optional = append(optional, note...)
+	room := budget - len(body)
+	noteLines := 0
+	if a.showNoteOnBoard() && room > 0 {
+		// 柱状图至少要 minStats 行才画得出形状。
+		const minStats = 5
+		for n := 3; n >= 1; n-- {
+			note := a.notePreviewLines(inner, n)
+			if len(note) == 0 {
+				break
+			}
+			if room-(len(note)+1) >= minStats {
+				optional = append(optional, note...)
+				optional = append(optional, "")
+				noteLines = len(note) + 1
+				break
+			}
+			if n == 1 {
+				// 空间实在不够：只留随手记标题（1 行），其余给统计。
+				optional = append(optional, note[:1]...)
+				optional = append(optional, "")
+				noteLines = 2
+			}
+		}
+	}
+	if room > 0 {
+		if s := a.statsLines(inner, room-noteLines); len(s) > 0 {
+			optional = append(optional, s...)
 			optional = append(optional, "")
 		}
 	}
-	if s := a.statsLines(inner); len(s) > 0 {
-		optional = append(optional, s...)
-		optional = append(optional, "")
-	}
-	if room := budget - len(body); room > 0 && len(optional) > 0 {
+	if room > 0 && len(optional) > 0 {
 		if len(optional) <= room {
 			body = append(body, optional...)
 		} else {

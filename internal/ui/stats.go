@@ -150,35 +150,62 @@ func (a *App) statBarValues(stats []dayStat, loc *time.Location) []dayValue {
 
 // renderVerticalChart 画竖向柱状图（见用户草图）。
 //
-// 空白区域高度有限，所以柱高是**归一化相对高度**：最高的一天占满 maxHeight，
-// 其余按比例缩放，而不是绝对分钟数。
+// 两点要求：
+//   - 空白区域高度有限，柱高是**归一化相对高度**：最高的一天占满 maxHeight，
+//     其余按比例缩放，而不是绝对分钟数。
+//   - 柱子要有足够宽度并撑满可用横向空间，否则会缩成一根细线，看不出对比。
 func (a *App) renderVerticalChart(values []dayValue, inner, maxHeight int) []string {
-	if len(values) == 0 || maxHeight < 2 {
+	n := len(values)
+	if n == 0 || maxHeight < 2 {
 		return nil
 	}
-	// 每天两列（柱 + 间隔），最少也要留出这个宽度。
-	if inner < len(values)*2 {
-		maxHeight = min(maxHeight, 3)
+
+	// 先定柱子宽度与间距，让整体尽量铺满 inner。
+	// 起点留 1 列给 Y 轴；末尾再留 3 列——日期标签是宽字符（占两列），
+	// 最后一根柱子的标签会向两侧各溢出 1 列，不留就会被截掉。
+	usable := inner - 4
+	if usable < n {
+		usable = n
 	}
+	barW, gap := 1, 1
+	for w := 3; w >= 1; w-- {
+		total := n*w + (n-1)*1
+		if total <= usable {
+			barW, gap = w, 1
+			// 还有余量就把间距摊开一些，让图更舒展。
+			if n > 1 {
+				extra := usable - total
+				gap = 1 + extra/(n-1)
+			}
+			break
+		}
+	}
+	step := barW + gap
+	if last := 1 + (n-1)*step + barW - 1; last > inner-2 {
+		// 兜底：整体右端不得越过标签所需的位置。
+		step = max(1, (inner-4-barW)/max(1, n-1))
+	}
+	chartW := n*barW + (n-1)*gap
+	if chartW > inner-1 {
+		chartW = max(1, inner-1)
+	}
+	_ = chartW
+
+	// 归一化到 maxHeight 行，用半格（maxHeight*2 个单位）保证小数不被压成 0。
 	maxVal := 0
 	for _, v := range values {
 		if v.Value > maxVal {
 			maxVal = v.Value
 		}
 	}
-
-	// 归一化到 maxHeight 行；每行用半高块与整高块拼出更平滑的柱。
-	// 用“半格”为单位，避免小数值全部塌成 0 或 1。
 	halfUnits := maxHeight * 2
-	heights := make([]int, len(values))
+	heights := make([]int, n)
 	for i, v := range values {
-		if maxVal <= 0 {
-			heights[i] = 0
+		if maxVal <= 0 || v.Value <= 0 {
 			continue
 		}
 		h := v.Value * halfUnits / maxVal
-		if v.Value > 0 && h < 1 {
-			// 有值就至少给半格，否则看起来和没记录一样。
+		if h < 1 {
 			h = 1
 		}
 		heights[i] = h
@@ -186,53 +213,86 @@ func (a *App) renderVerticalChart(values []dayValue, inner, maxHeight int) []str
 
 	var out []string
 	for row := maxHeight - 1; row >= 0; row-- {
-		var b strings.Builder
-		b.WriteString(" ")
-		for i, v := range values {
+		line := make([]rune, max(1, inner))
+		for i := range line {
+			line[i] = ' '
+		}
+		// 每根柱子画 barW 宽的实心块。
+		for i := range values {
 			cellBottom := row * 2
 			level := heights[i]
-			var ch string
-			style := a.st.BarFilled
-			if v.Today {
-				style = a.st.OK
-			}
+			var ch rune
 			switch {
 			case level >= cellBottom+2:
-				ch = "█"
+				ch = '█'
 			case level == cellBottom+1:
-				ch = "▄"
+				ch = '▄'
 			default:
-				ch = " "
-				style = a.st.BarEmpty
+				continue
 			}
-			b.WriteString(style.Render(ch))
-			if i < len(values)-1 {
-				b.WriteString(" ")
+			startCol := 1 + i*step
+			for k := 0; k < barW; k++ {
+				col := startCol + k
+				if col >= 0 && col < len(line) {
+					line[col] = ch
+				}
 			}
 		}
-		out = append(out, b.String())
+		out = append(out, a.st.BarFilled.Render(strings.TrimRight(string(line), " ")))
 	}
 
-	// 坐标轴：一条横线加日期标签。
-	// 每根柱子占 1 列、间隔 1 列，所以第 i 根柱子在显示列 2i 上；
-	// 标签用同样间距逐字给出，才能正好落在柱子正下方（首列留空对齐 "└"）。
-	axis := a.st.BarEmpty.Render("└" + strings.Repeat("─", max(1, len(values)*2-1)))
-	out = append(out, axis)
-
-	var labels strings.Builder
-	labels.WriteString(" ")
-	for i, v := range values {
-		style := a.st.Muted
-		if v.Today {
-			style = a.st.Accent
-		}
-		labels.WriteString(style.Render(firstCell(v.Label)))
-		if i < len(values)-1 {
-			labels.WriteString(" ")
+	// 坐标轴：与柱子同宽同位置，像草图那样一条横线。
+	axis := make([]rune, max(1, inner))
+	for i := range axis {
+		axis[i] = ' '
+	}
+	axis[0] = '└'
+	for i := range values {
+		startCol := 1 + i*step
+		for k := 0; k < barW; k++ {
+			col := startCol + k
+			if col >= 0 && col < len(axis) {
+				axis[col] = '─'
+			}
 		}
 	}
-	out = append(out, labels.String())
+	out = append(out, a.st.BarEmpty.Render(strings.TrimRight(string(axis), " ")))
+
+	// 日期标签：居中放在各自柱子下方。
+	//
+	// 标签是宽字符（占两列），所以必须按“显示列”摆放，
+	// 不能像柱子那样用 rune 下标——否则宽字符会让后面的标签整体错位。
+	out = append(out, a.st.Muted.Render(a.renderChartLabels(values, inner, step, barW)))
 	return out
+}
+
+// renderChartLabels 按显示列摆放日期标签，保证每个标签居中在柱子下方。
+func (a *App) renderChartLabels(values []dayValue, inner, step, barW int) string {
+	var b strings.Builder
+	col := 0
+	writePad := func(to int) {
+		for col < to {
+			b.WriteByte(' ')
+			col++
+		}
+	}
+	for i, v := range values {
+		label := firstCell(v.Label)
+		lw := lipgloss.Width(label)
+		// 柱子中心列；宽字符向左挪半格，视觉上正好居中。
+		center := 1 + i*step + (barW-1)/2
+		start := center - (lw-1)/2
+		if start < col {
+			start = col
+		}
+		if start+lw > inner {
+			break
+		}
+		writePad(start)
+		b.WriteString(label)
+		col += lw
+	}
+	return strings.TrimRight(b.String(), " ")
 }
 
 // firstCell 取文本的第一个显示单元，保证标签恰好占一列，和柱子对齐。
@@ -244,9 +304,13 @@ func firstCell(s string) string {
 }
 
 // statsLines 生成“连续 7 天统计”区块（竖向柱状图）。
-func (a *App) statsLines(inner int) []string {
+//
+// maxLines 是整个区块可用的行数。空间紧张时先压缩表头（两行并一行），
+// 且只画一天没记录的日期标签，把省下的行留给柱状图——
+// 用户的诉求是“要能看到柱状图”，标题被压掉一点无妨。
+func (a *App) statsLines(inner, maxLines int) []string {
 	stats := a.rollingStats(a.day, 7)
-	if len(stats) == 0 {
+	if len(stats) == 0 || maxLines < 2 {
 		return nil
 	}
 	var totalDone, totalTodos int
@@ -263,20 +327,34 @@ func (a *App) statsLines(inner int) []string {
 	streak := a.currentStreak(a.day, 365)
 	loc := a.cfg.Location()
 
-	var out []string
+	// 表头：宽裕时两行（总数 + 连续天数），紧张时压成一行。
+	compact := maxLines < 9
+	var head []string
 	title := fmt.Sprintf("连续 7 天 · 完成 %d/%d · 专注 %s",
 		totalDone, totalTodos, clock.HumanDuration(totalFocus))
-	out = append(out, fit(a.st.PanelTitle, center(title, inner, lipglossWidth(title)), inner))
-	sub := fmt.Sprintf("连续 %d 天有记录 · 活跃 %d 天", streak, activeDays)
-	out = append(out, fit(a.st.Muted, center(sub, inner, lipglossWidth(sub)), inner))
+	if compact {
+		title = fmt.Sprintf("7 天 · %d/%d · %s · 连续 %d 天",
+			totalDone, totalTodos, clock.HumanDuration(totalFocus), streak)
+		head = append(head, fit(a.st.PanelTitle, center(title, inner, lipglossWidth(title)), inner))
+	} else {
+		head = append(head, fit(a.st.PanelTitle, center(title, inner, lipglossWidth(title)), inner))
+		sub := fmt.Sprintf("连续 %d 天有记录 · 活跃 %d 天", streak, activeDays)
+		head = append(head, fit(a.st.Muted, center(sub, inner, lipglossWidth(sub)), inner))
+	}
 
-	// 柱状图高度随可用空间伸缩，最多 5 行，保证轴与标签放得下。
-	_, _, _, bodyH := a.columnLayout()
-	avail := bodyH - a.st.Panel.GetVerticalFrameSize()
-	maxChart := avail - 4
-	chartHeight := min(5, max(2, maxChart-8))
-	chart := a.renderVerticalChart(a.statBarValues(stats, loc), inner, chartHeight)
-	out = append(out, chart...)
+	// 柱状图拿到剩余行数，并以“每根柱子 1 行 + 轴 + 标签行中一天无标签”为目标。
+	rest := maxLines - len(head)
+	labelRows := 2 // 轴 + 日期标签
+	chartHeight := rest - labelRows
+	if chartHeight > 6 {
+		chartHeight = 6
+	}
+	if chartHeight < 1 {
+		// 连柱状图都放不下：只留表头，宁可不画也不要半截图。
+		return head
+	}
+	out := head
+	out = append(out, a.renderVerticalChart(a.statBarValues(stats, loc), inner, chartHeight)...)
 	return out
 }
 
