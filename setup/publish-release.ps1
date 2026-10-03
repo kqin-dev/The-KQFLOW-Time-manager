@@ -15,6 +15,7 @@
 #   -Draft       创建为草稿而非直接发布
 #   -NotesFile   自定义发布说明文件，默认 setup/release-notes.md
 #   -WhatIfOnly  只校验与打印，不发任何请求
+#   -Retag       把 tag 强制指到当前 HEAD 再发布（修已发布版本的产物时用）
 
 [CmdletBinding()]
 param(
@@ -23,6 +24,7 @@ param(
     [string]$Version = '',
     [switch]$Draft,
     [string]$NotesFile = '',
+    [switch]$Retag,
     [switch]$WhatIfOnly
 )
 
@@ -81,7 +83,6 @@ if ($WhatIfOnly) {
 }
 
 # ---------- 请求头 ----------
-
 $headers = @{
     Authorization          = "Bearer $Token"
     Accept                 = 'application/vnd.github+json'
@@ -121,6 +122,23 @@ try {
     Invoke-GitHub -Method DELETE -Uri "https://api.github.com/repos/$owner/$repo/releases/$($existing.id)" | Out-Null
 } catch {
     # 404 就是还没有，正常
+}
+
+# ---------- 1b. 需要时把 tag 指到当前 HEAD ----------
+
+if ($Retag) {
+    Push-Location $repoRoot
+    try {
+        $head = (git rev-parse HEAD).Trim()
+        Info "把 tag $Tag 强制指到当前 HEAD（$($head.Substring(0,7))）"
+        git tag -f -a $Tag -m "Kairos $Tag" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "本地打 tag 失败" }
+        git push origin "refs/tags/$Tag" --force 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "推送 tag 失败（需要 force push 权限）" }
+        Info "tag 已更新"
+    } finally {
+        Pop-Location
+    }
 }
 
 # ---------- 2. 创建 Release ----------
