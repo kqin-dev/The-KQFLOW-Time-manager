@@ -38,8 +38,9 @@ type Config struct {
 	Nickname string `json:"nickname,omitempty"`
 	// DataDir 为空时使用默认数据目录；用于让用户把数据库放到别处。
 	DataDir string `json:"data_dir,omitempty"`
-	// DisableMouse 关闭鼠标支持，方便在终端里原生选择复制文本。
-	DisableMouse bool `json:"disable_mouse,omitempty"`
+	// Mouse 打开鼠标上报。默认关闭：一旦开启，终端就无法用鼠标选中文本，
+	// 连带把“选中→复制→粘贴中文”这条最可靠的输入路径也堵死了。
+	Mouse bool `json:"mouse,omitempty"`
 }
 
 // Default 返回默认配置。

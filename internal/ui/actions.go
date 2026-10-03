@@ -227,6 +227,12 @@ func (a *App) deleteCurrent() (tea.Model, tea.Cmd) {
 // ---------- 文本输入处理 ----------
 
 func (a *App) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 粘贴进来的整段文本：一次性插入，不当作按键序列解释。
+	// Bubble Tea v1 用 KeyMsg{Paste: true} 表示括号粘贴的内容。
+	if msg.Paste {
+		a.insertEditorText(string(msg.Runes))
+		return a, nil
+	}
 	switch msg.Type {
 	case tea.KeyEsc:
 		a.editor.active = false
@@ -272,6 +278,22 @@ func (a *App) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.editor.insert(' ')
 	}
 	return a, nil
+}
+
+// insertEditorText 把外部文本（终端粘贴）整段插入输入框。
+//
+// 中文输入法在终端下无法可靠地把组字结果逐个按键送进来，
+// 所以支持直接把文字粘进输入框；换行按空格处理，避免一行标题被拆断。
+func (a *App) insertEditorText(text string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = strings.ReplaceAll(text, "\n", " ")
+	for _, r := range text {
+		if r == '\t' {
+			continue
+		}
+		a.editor.insert(r)
+	}
 }
 
 // ---------- 计时 ----------

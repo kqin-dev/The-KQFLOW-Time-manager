@@ -83,9 +83,11 @@ func run() error {
 		return err
 	}
 
-	// 鼠标支持默认开启，方便点击与滚轮；某些终端下会妨碍选中文本，因此可关。
+	// 括号粘贴是 Bubble Tea 的默认行为，粘贴进来的中文会整段写入输入框。
+	// 鼠标上报默认关闭——它会让终端无法用鼠标选中文本，反而堵死“复制粘贴中文”这条路。
+	// 需要鼠标时可在配置里把 mouse 设为 true。
 	opts := []tea.ProgramOption{tea.WithAltScreen()}
-	if !cfg.DisableMouse {
+	if cfg.Mouse {
 		opts = append(opts, tea.WithMouseCellMotion())
 	}
 	prog := tea.NewProgram(app, opts...)

@@ -233,51 +233,43 @@ func (a *App) renderEditor() string {
 	return a.modalBox(inner, lines)
 }
 
-// pageWidth 返回整页浮层的内容宽度：以纯文本行的最大宽度为准。
-//
-// 不能拿已上色的字符串去量：ANSI 转义序列会让宽度计算偏大，
-// 结果面板被撑到终端宽度、说明文字被迫折成两行。
-func (a *App) pageWidth(plainLines []string, prefer int) int {
-	natural := 0
-	for _, l := range plainLines {
-		if w := lipgloss.Width(l); w > natural {
-			natural = w
-		}
-	}
-	if prefer > 0 && natural > prefer {
-		natural = prefer
-	}
-	avail := a.overlayInner()
-	// 永远不要在终端里左右顶到边：留出空白既好看，也能避免某些终端
-	// 在最后一列自动换行而多出一行。
-	if avail > a.width-4 {
-		avail = a.width - 4
-	}
-	if natural > avail {
-		natural = avail
-	}
-	if natural < 8 {
-		natural = 8
-	}
-	return natural
-}
-
 // renderPage 渲染整页浮层。
 //
 // 帮助、设置、历史是“整页”而不是浮层：直接把面板居中铺在空白背景上，
 // 不再叠在看板之上。早期用 overlay 拼接时，看板的面板边框会从浮层两侧露出来，
 // 看起来像界面被撕开，也让人误以为必须全屏才能看清。
 //
-// sized 与 plain 一一对应：sized[i] 是上色后的行，plain[i] 是同一行的纯文本，
-// 宽度只按 plain 计算。
-func (a *App) renderPage(sized, plain []string, prefer int) string {
-	inner := a.pageWidth(plain, prefer)
+// width 是内容区宽度（不含边框）。各页面按自身内容算好宽度后传进来，
+// 这样面板不会为了“填满屏幕”而把内容挤成一条。
+func (a *App) renderPage(sized, plain []string, width int) string {
+	if width <= 0 {
+		natural := 0
+		for _, l := range plain {
+			if w := lipgloss.Width(l); w > natural {
+				natural = w
+			}
+		}
+		width = natural
+	}
+	if width < 8 {
+		width = 8
+	}
 	fitted := make([]string, 0, len(sized))
 	for _, l := range sized {
-		fitted = append(fitted, truncateCells(l, inner))
+		fitted = append(fitted, truncateCells(l, width))
 	}
-	panel := a.st.pageStyle(a.IsCompact()).Width(inner).Render(strings.Join(fitted, "\n"))
+	panel := a.st.pageStyle(a.IsCompact()).Width(width).Render(strings.Join(fitted, "\n"))
 	return centerBlock(panel, a.width, a.height)
+}
+
+// pageInnerWidth 返回整页可用的最大内容宽度，保证面板连同边框能装进终端。
+func (a *App) pageInnerWidth() int {
+	frame := a.st.pageStyle(a.IsCompact()).GetHorizontalFrameSize()
+	w := a.width - frame - 4
+	if w < 8 {
+		w = 8
+	}
+	return w
 }
 
 // centerBlock 把一段渲染好的内容居中放在 width×height 的空白画布上。
@@ -380,7 +372,7 @@ func (a *App) renderSettings() string {
 	add("", "")
 	add(a.st.Muted.Render(hint), hint)
 
-	return a.renderPage(styled, plain, 90)
+	return a.renderPage(styled, plain, a.pageInnerWidth())
 }
 
 func orDash(s string) string {
@@ -520,7 +512,7 @@ func (a *App) renderHistory() string {
 	add("", "")
 	add(a.st.Muted.Render("  esc / q 返回看板"), "  esc / q 返回看板")
 
-	return a.renderPage(styled, plain, 110)
+	return a.renderPage(styled, plain, a.pageInnerWidth())
 }
 
 // ---------- 帮助页 ----------
@@ -690,7 +682,7 @@ func (a *App) renderHelp() string {
 		styled = styled[a.helpScroll : a.helpScroll+avail]
 		plain = plain[a.helpScroll : a.helpScroll+avail]
 	}
-	return a.renderPage(styled, plain, 92)
+	return a.renderPage(styled, plain, inner)
 }
 
 // handleHelpKey 处理帮助页按键（支持滚动）。

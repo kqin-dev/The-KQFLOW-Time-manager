@@ -295,6 +295,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.setToast("计时时段已完成，按 enter 结束并归档", toastInfo)
 		}
 		return a, nil
+
 	case tea.KeyMsg:
 		return a.handleKey(m)
 	}

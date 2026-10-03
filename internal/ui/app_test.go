@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/config"
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
@@ -1475,6 +1476,104 @@ func TestLeftPanelsRenderSeparately(t *testing.T) {
 	// 两栏标题都在。
 	if !strings.Contains(fixedView, "固定") || !strings.Contains(fixedView, "临时") {
 		t.Error("左栏应同时显示固定与临时两栏标题")
+	}
+}
+
+// TestHelpDescriptionsNotClipped 验证帮助页不会把说明文字截掉（见用户反馈的截图）。
+//
+// 早期帮助页宽度算错，面板只有 20 多列，于是只剩下光秃秃的按键名，
+// 说明全被截断，看起来像渲染坏掉。
+func TestHelpDescriptionsNotClipped(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
+	for _, size := range [][2]int{{144, 45}, {120, 36}, {100, 30}, {80, 24}} {
+		app, _, _ := newTestApp(t, at)
+		app.width, app.height = size[0], size[1]
+		out := app.renderHelp()
+		flat := strings.Join(strings.Fields(out), "")
+
+		for _, want := range []string{
+			"在当前栏内上下移动",
+			"为选中条目添加子任务",
+			"从昨日继承",
+		} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("%dx%d：帮助页缺少说明 %q", size[0], size[1], want)
+			}
+		}
+		lines := strings.Split(out, "\n")
+		panelW := 0
+		for _, l := range lines {
+			if w := lipgloss.Width(l); w > panelW {
+				panelW = w
+			}
+		}
+		if panelW > size[0] {
+			t.Errorf("%dx%d：帮助页宽度 %d 超出终端", size[0], size[1], panelW)
+		}
+	}
+}
+
+// TestPasteInsertsText 验证粘贴进来的中文会整段写入输入框。
+//
+// 中文输入法在终端里无法可靠地逐键送字，粘贴是主要的输入路径。
+func TestPasteInsertsText(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+
+	app.focus = FocusFloating
+	press(t, app, "a")
+	if !app.editor.active {
+		t.Fatal("输入框应处于激活状态")
+	}
+
+	// 模拟终端粘贴：Bubble Tea v1 用 KeyMsg{Paste: true} 表示括号粘贴。
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("买牛奶 和 面包"), Paste: true})
+	if got := string(app.editor.value); got != "买牛奶 和 面包" {
+		t.Fatalf("粘贴内容应进入输入框，实际 %q", got)
+	}
+	// 粘贴内容里的字符不应被当成快捷键（例如 a/d/q）。
+	if !app.editor.active {
+		t.Error("粘贴不应关闭输入框")
+	}
+
+	// 粘贴多行时应把换行折成空格，避免标题被拆断。
+	app.editor.value = nil
+	app.editor.cursor = 0
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("第一行\n第二行"), Paste: true})
+	if got := string(app.editor.value); got != "第一行 第二行" {
+		t.Errorf("多行粘贴应折成一行，实际 %q", got)
+	}
+
+	press(t, app, "enter")
+	if len(app.data.Floating) != 1 {
+		t.Fatalf("应新增 1 项，实际 %d", len(app.data.Floating))
+	}
+	if app.data.Floating[0].Title != "第一行 第二行" {
+		t.Errorf("标题不正确: %q", app.data.Floating[0].Title)
+	}
+	saved, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Floating) != 1 || saved.Floating[0].Title != "第一行 第二行" {
+		t.Errorf("中文标题应落盘: %+v", saved.Floating)
+	}
+}
+
+// TestPasteIgnoredWhenNoEditor 验证没有输入框时粘贴不会造成意外操作。
+func TestPasteIgnoredWhenNoEditor(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	before := len(app.data.All())
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("dq"), Paste: true})
+	if app.quitting {
+		t.Error("粘贴内容不应触发退出")
+	}
+	if app.pick != nil {
+		t.Error("粘贴内容不应触发删除确认")
+	}
+	if len(app.data.All()) != before {
+		t.Error("粘贴内容不应改动数据")
 	}
 }
 
