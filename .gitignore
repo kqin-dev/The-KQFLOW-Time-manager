@@ -1,4 +1,7 @@
 # 构建产物
+/kqf.exe
+/kqf
+# 旧名字的产物（改名前的遗留，防止误提交）
 /kair.exe
 /kair
 *.exe
@@ -16,6 +19,9 @@
 /preview.txt.*.txt
 
 # 本地数据目录（真正的数据库不应进版本库）
+/kqflow-data/
+**/kqflow-data/
+# 改名前的数据目录名，防止误提交旧数据
 /kairos-data/
 **/kairos-data/
 

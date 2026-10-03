@@ -7,9 +7,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/config"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
 // addTarget 描述“添加”要落到哪一栏。

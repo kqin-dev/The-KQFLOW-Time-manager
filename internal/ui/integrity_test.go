@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
 // TestDayBarLabelDistinguishesFromWorkProgress 验证底部那条是“今日已过”而不是“今日进度”。
@@ -155,7 +155,7 @@ func TestPruneOrphansKeepsSubtaskActivity(t *testing.T) {
 func TestPruneOrphansCleansControlChars(t *testing.T) {
 	at := time.Date(2026, 10, 3, 20, 0, 0, 0, time.Local)
 	data := model.NewDayData("2026-10-03", at)
-	data.Note = "你好，Kairos\n\x00"
+	data.Note = "你好，KQFLOW\n\x00"
 	item := model.NewTodo("带\x00控制字符", model.KindFixed, "2026-10-03", at)
 	item.Tasks = []model.Task{{ID: "task_1", Title: "子\x07任务", Status: model.StatusTodo}}
 	data.Fixed = []*model.Todo{item}
@@ -163,7 +163,7 @@ func TestPruneOrphansCleansControlChars(t *testing.T) {
 	if !data.PruneOrphans() {
 		t.Fatal("应当报告发生了清理")
 	}
-	if data.Note != "你好，Kairos" {
+	if data.Note != "你好，KQFLOW" {
 		t.Errorf("随手记里的 NUL 应被清掉，实际 %q", data.Note)
 	}
 	if data.Fixed[0].Title != "带控制字符" {
@@ -188,8 +188,8 @@ func TestStripControlChars(t *testing.T) {
 		want        string
 	}{
 		// 多行模式去掉控制字符外，还会去掉末尾的空行/空白（见 model.Sanitize）。
-		{"你好，Kairos\n\x00", true, "你好，Kairos"},
-		{"你好，Kairos\n\x00", false, "你好，Kairos"},
+		{"你好，KQFLOW\n\x00", true, "你好，KQFLOW"},
+		{"你好，KQFLOW\n\x00", false, "你好，KQFLOW"},
 		{"a\x00b\x07c", false, "abc"},
 		{"第一行\n第二行", true, "第一行\n第二行"},
 		{"第一行\n第二行\n\n", true, "第一行\n第二行"},

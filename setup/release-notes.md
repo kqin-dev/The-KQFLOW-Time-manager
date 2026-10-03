@@ -1,6 +1,6 @@
 第一个正式版本。
 
-Kairos 是一个用 Go 编写的命令行时间管理器：编译成单个可执行文件，不依赖运行环境；数据以可读 JSON 存在本地，不上传任何地方。
+KQFLOW 是一个用 Go 编写的命令行时间管理器：编译成单个可执行文件，不依赖运行环境；数据以可读 JSON 存在本地，不上传任何地方。
 
 ```
 Good afternoon，Kqin-dev！  2026-10-03 周六 · 20:31:56 · 日界线 04:00      今日专注 2m
@@ -31,8 +31,8 @@ Good afternoon，Kqin-dev！  2026-10-03 周六 · 20:31:56 · 日界线 04:00  
 
 | 文件 | 适合谁 |
 | --- | --- |
-| `Kairos-1.0.0-setup.exe` | **推荐**。安装向导会问装到哪、默认把目录加进 PATH，之后在任意终端输入 `kair` 即可 |
-| `kair-1.0.0-windows-amd64.exe` | 绿色版。放到任意目录、把该目录加入 PATH 就能用，数据存在同级 `kairos-data` |
+| `KQFLOW-1.0.0-setup.exe` | **推荐**。安装向导会问装到哪、默认把目录加进 PATH，之后在任意终端输入 `kqf` 即可 |
+| `kqf-1.0.0-windows-amd64.exe` | 绿色版。放到任意目录、把该目录加入 PATH 就能用，数据存在同级 `kqflow-data` |
 
 ## 功能
 
@@ -52,14 +52,14 @@ Good afternoon，Kqin-dev！  2026-10-03 周六 · 20:31:56 · 日界线 04:00  
 
 安装向导里有几件事值得留意：
 
-- **安装位置**：默认 `C:\Program Files\Kairos`。如果不小心选了桌面、下载或临时目录，向导会提醒你换一个。
-- **加入 PATH**：默认勾选，请保持勾选——这样在任意终端直接输入 `kair` 就能启动。
+- **安装位置**：默认 `C:\Program Files\KQFLOW`。如果不小心选了桌面、下载或临时目录，向导会提醒你换一个。
+- **加入 PATH**：默认勾选，请保持勾选——这样在任意终端直接输入 `kqf` 就能启动。
 - **升级**：新版本装到同一位置即可直接覆盖，**你的数据不会被覆盖或删除**。如果换了安装目录，向导会检测到旧数据并询问是否复制过去。
 - **卸载**：会问你数据怎么处理，**默认保留**；要删除必须再确认一次。
 
 ## 数据存在哪
 
-默认是 `kair.exe` 同级的 `kairos-data/`，也可以用 `KAIROS_HOME` 环境变量指定到别处，方便备份和迁移。里面是可读的 JSON，随时能自己查看或改。
+默认是 `kqf.exe` 同级的 `kqflow-data/`，也可以用 `KQFLOW_HOME` 环境变量指定到别处，方便备份和迁移。里面是可读的 JSON，随时能自己查看或改。
 
 ## 输入法与鼠标
 
@@ -68,15 +68,15 @@ Good afternoon，Kqin-dev！  2026-10-03 周六 · 20:31:56 · 日界线 04:00  
   而是贴在终端窗口的某个角落。文字一点不差地进到输入框，只是候选窗看着有点远，不影响使用。
 - **默认不接管鼠标**：一旦接管，终端就无法用鼠标选中文本，会给复制粘贴带来不便。
   确实需要鼠标的话，可以在 `config.json` 里把 `mouse` 设为 `true`。
-- 粘贴当然也支持：在别处打好中文 `Ctrl+C`，回到 Kairos 打开输入框后 `Ctrl+V` 即可。
+- 粘贴当然也支持：在别处打好中文 `Ctrl+C`，回到 KQFLOW 打开输入框后 `Ctrl+V` 即可。
 - 目前只提供 **Windows x64** 的预编译包；代码本身跨平台，其它平台可以从源码构建。
 
 ## 反馈
 
-遇到问题或有建议，欢迎到 [Issues](https://github.com/kqin-dev/The-Kairos-Time-manager/issues) 提。如果能附上截图，定位排版类问题会快很多。
+遇到问题或有建议，欢迎到 [Issues](https://github.com/kqin-dev/The-KQFLOW-Time-manager/issues) 提。如果能附上截图，定位排版类问题会快很多。
 
-**完整说明见 [README](https://github.com/kqin-dev/The-Kairos-Time-manager#readme)。**
+**完整说明见 [README](https://github.com/kqin-dev/The-KQFLOW-Time-manager#readme)。**
 
 ---
 
-**Full Changelog**: https://github.com/kqin-dev/The-Kairos-Time-manager/commits/v1.0.0
+**Full Changelog**: https://github.com/kqin-dev/The-KQFLOW-Time-manager/commits/v1.0.0

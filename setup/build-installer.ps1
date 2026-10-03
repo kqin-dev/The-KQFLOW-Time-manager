@@ -1,17 +1,17 @@
-﻿# 构建 Kairos 安装包。
+﻿# 构建 KQFLOW 安装包。
 #
 # 做三件事：
 #   1. 从 internal/version/version.go 读出唯一权威的版本号；
-#   2. 用它编译 kair.exe（同时把版本号注入二进制）；
-#   3. 调用 Inno Setup 的 ISCC 生成 dist\Kairos-<版本>-setup.exe。
+#   2. 用它编译 kqf.exe（同时把版本号注入二进制）；
+#   3. 调用 Inno Setup 的 ISCC 生成 dist\KQFLOW-<版本>-setup.exe。
 #
 # 用法：
 #   pwsh -File setup\build-installer.ps1                 # 正常构建
-#   pwsh -File setup\build-installer.ps1 -SkipGoBuild    # 复用已有 kair.exe
+#   pwsh -File setup\build-installer.ps1 -SkipGoBuild    # 复用已有 kqf.exe
 #   pwsh -File setup\build-installer.ps1 -Iscc <路径>    # 指定 ISCC.exe
 #
 # 参数：
-#   -SkipGoBuild  跳过 go build，直接用仓库根目录已有的 kair.exe
+#   -SkipGoBuild  跳过 go build，直接用仓库根目录已有的 kqf.exe
 #   -Iscc         指定 ISCC.exe 路径，默认自动查找
 #   -OutDir       输出目录，默认 <仓库根>\dist
 
@@ -50,27 +50,27 @@ if ($version -notmatch '^\d+\.\d+\.\d+') {
     Write-Host "警告: 版本号 `"$version`" 看起来不是语义化版本，安装包文件名会照用。" -ForegroundColor Yellow
 }
 
-# ---------- 2. 编译 kair.exe ----------
+# ---------- 2. 编译 kqf.exe ----------
 
-$exePath = Join-Path $repoRoot 'kair.exe'
+$exePath = Join-Path $repoRoot 'kqf.exe'
 
 if ($SkipGoBuild) {
     if (-not (Test-Path $exePath)) {
         Fail "指定了 -SkipGoBuild，但 $exePath 不存在"
     }
-    Info "跳过编译，复用已有的 kair.exe"
+    Info "跳过编译，复用已有的 kqf.exe"
 } else {
     if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
         Fail "PATH 里找不到 go，无法编译。请安装 Go 或用 -SkipGoBuild 复用已有 exe。"
     }
 
-    # 版本号注入二进制，保证 kair -version 与安装包一致。
-    $ldflags = "-s -w -X github.com/kqin-dev/The-Kairos-Time-manager/internal/version.Version=$version"
-    Info "编译 kair.exe（-ldflags `"$ldflags`"）"
+    # 版本号注入二进制，保证 kqf -version 与安装包一致。
+    $ldflags = "-s -w -X github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version.Version=$version"
+    Info "编译 kqf.exe（-ldflags `"$ldflags`"）"
 
     Push-Location $repoRoot
     try {
-        & go build -trimpath -ldflags $ldflags -o $exePath ./cmd/kair
+        & go build -trimpath -ldflags $ldflags -o $exePath ./cmd/kqf
         if ($LASTEXITCODE -ne 0) { Fail "go build 失败（退出码 $LASTEXITCODE）" }
     } finally {
         Pop-Location
@@ -78,7 +78,7 @@ if ($SkipGoBuild) {
 }
 
 $sizeMB = [math]::Round((Get-Item $exePath).Length / 1MB, 2)
-Info "kair.exe 就绪（$sizeMB MB）"
+Info "kqf.exe 就绪（$sizeMB MB）"
 
 # 顺手确认二进制里的版本号真的是我们要发的那个。
 try {
@@ -88,7 +88,7 @@ try {
         Write-Host "警告: 二进制自报版本与 $version 不一致，请检查 -SkipGoBuild 是否复用了旧文件。" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "警告: 无法执行 kair.exe -version 校验版本（$($_.Exception.Message)）" -ForegroundColor Yellow
+    Write-Host "警告: 无法执行 kqf.exe -version 校验版本（$($_.Exception.Message)）" -ForegroundColor Yellow
 }
 
 # ---------- 3. 找 ISCC ----------
@@ -142,7 +142,7 @@ if (-not $OutDir) { $OutDir = Join-Path $repoRoot 'dist' }
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 $OutDir = (Resolve-Path $OutDir).Path
 
-$issPath = Join-Path $setupDir 'kairos.iss'
+$issPath = Join-Path $setupDir 'kqflow.iss'
 if (-not (Test-Path $issPath)) { Fail "找不到安装脚本：$issPath" }
 
 Info "编译安装脚本（输出到 $OutDir）"
@@ -157,7 +157,7 @@ Info "ISCC 编译通过"
 
 # ---------- 5. 汇报产物 ----------
 
-$installer = Join-Path $OutDir "Kairos-$version-setup.exe"
+$installer = Join-Path $OutDir "KQFLOW-$version-setup.exe"
 if (-not (Test-Path $installer)) {
     $found = Get-ChildItem $OutDir -Filter '*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($found) { $installer = $found.FullName } else { Fail "编译成功但没找到输出文件，请检查 $OutDir" }

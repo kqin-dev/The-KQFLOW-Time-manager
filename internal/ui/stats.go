@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
 )
 
 // dayStat 是某一天的完成度与专注时长，用于连续 7 天统计。

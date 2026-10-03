@@ -1,6 +1,6 @@
-// Package config 负责 Kairos 的配置与数据目录定位。
+// Package config 负责 KQFLOW 的配置与数据目录定位。
 //
-// 默认数据目录与可执行文件同级，因此整个 kair.exe 加一个 kairos-data 文件夹
+// 默认数据目录与可执行文件同级，因此整个 kqf.exe 加一个 kqflow-data 文件夹
 // 就能直接拷走使用，符合“无环境依赖可直接分发”的要求。
 package config
 
@@ -17,7 +17,7 @@ import (
 // FileName 是配置文件名。
 const FileName = "config.json"
 
-// Config 是 Kairos 的全部可配置项。
+// Config 是 KQFLOW 的全部可配置项。
 type Config struct {
 	SchemaVersion int `json:"schema_version"`
 	// DayCutoff 是日界线：新的一天从当地时间几点开始（见需求 19）。
@@ -182,7 +182,7 @@ func FormatClock(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", h, m)
 }
 
-// Paths 汇总 Kairos 用到的所有路径。
+// Paths 汇总 KQFLOW 用到的所有路径。
 type Paths struct {
 	// Root 是数据根目录。
 	Root string
@@ -190,10 +190,10 @@ type Paths struct {
 	ConfigFile string
 }
 
-// Dir 返回数据根目录：优先 KAIROS_HOME 环境变量，其次配置里的 DataDir，
-// 最后是可执行文件同级的 kairos-data。
+// Dir 返回数据根目录：优先 KQFLOW_HOME 环境变量，其次配置里的 DataDir，
+// 最后是可执行文件同级的 kqflow-data。
 func Dir(cfg *Config) (string, error) {
-	if env := os.Getenv("KAIROS_HOME"); env != "" {
+	if env := os.Getenv("KQFLOW_HOME"); env != "" {
 		return filepath.Abs(env)
 	}
 	if cfg != nil && cfg.DataDir != "" {
@@ -204,14 +204,14 @@ func Dir(cfg *Config) (string, error) {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = resolved
 		}
-		return filepath.Join(filepath.Dir(exe), "kairos-data"), nil
+		return filepath.Join(filepath.Dir(exe), "kqflow-data"), nil
 	}
 	// 无法定位可执行文件时退回用户主目录，保证程序仍可运行。
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("无法确定数据目录: %w", err)
 	}
-	return filepath.Join(home, ".kairos"), nil
+	return filepath.Join(home, ".kqflow"), nil
 }
 
 // Resolve 返回完整的路径集合，并在需要时创建目录。

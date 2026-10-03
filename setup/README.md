@@ -1,7 +1,7 @@
 # 打包与安装
 
 本目录放 Windows 安装包的构建脚本。产物是单文件安装程序
-`dist\Kairos-<版本>-setup.exe`。
+`dist\KQFLOW-<版本>-setup.exe`。
 
 ## 依赖
 
@@ -18,10 +18,10 @@
 ## 用法
 
 ```powershell
-# 正常构建：读版本号 → 编译 kair.exe → 出安装包
+# 正常构建：读版本号 → 编译 kqf.exe → 出安装包
 pwsh -File setup\build-installer.ps1
 
-# 复用已有的 kair.exe（不再编译）
+# 复用已有的 kqf.exe（不再编译）
 pwsh -File setup\build-installer.ps1 -SkipGoBuild
 
 # 指定 ISCC 与输出目录
@@ -29,7 +29,7 @@ pwsh -File setup\build-installer.ps1 -Iscc 'D:\Inno_Setup_7\ISCC.exe' -OutDir .\
 ```
 
 版本号从 `internal/version/version.go` 读，并注入二进制，
-所以 `kair -version` 与安装包文件名一定一致。脚本最后会自己核对一次。
+所以 `kqf -version` 与安装包文件名一定一致。脚本最后会自己核对一次。
 
 > 如果 PowerShell 报「未对文件进行数字签名」，用进程级策略绕过即可：
 > `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`。
@@ -40,7 +40,7 @@ pwsh -File setup\build-installer.ps1 -Iscc 'D:\Inno_Setup_7\ISCC.exe' -OutDir .\
 
 | 文件 | 作用 |
 | --- | --- |
-| `kairos.iss` | Inno Setup 安装脚本 |
+| `kqflow.iss` | Inno Setup 安装脚本 |
 | `build-installer.ps1` | 构建脚本（读版本、编译、调 ISCC） |
 
 ## 安装程序的四项行为约定
@@ -48,7 +48,7 @@ pwsh -File setup\build-installer.ps1 -Iscc 'D:\Inno_Setup_7\ISCC.exe' -OutDir .\
 改脚本时**不要破坏**这几条，它们都对应明确的用户需求：
 
 1. **可自选安装路径 + 位置提醒**
-   默认 `{autopf}\Kairos`。选了桌面 / 下载 / 文档 / 临时目录 / 盘符根 /
+   默认 `{autopf}\KQFLOW`。选了桌面 / 下载 / 文档 / 临时目录 / 盘符根 /
    系统关键目录会弹提醒；用户选「否」就留在目录页重选。
 
 2. **默认勾选加入 PATH + 提醒**
@@ -58,7 +58,7 @@ pwsh -File setup\build-installer.ps1 -Iscc 'D:\Inno_Setup_7\ISCC.exe' -OutDir .\
    所以只能提醒，不能替用户改回来。
 
 3. **覆盖升级绝不碰用户数据**
-   数据目录 `kairos-data` **不在 `[Files]` 里**，所以 Inno 永远不会覆盖或删除它。
+   数据目录 `kqflow-data` **不在 `[Files]` 里**，所以 Inno 永远不会覆盖或删除它。
    卸载的 `[UninstallDelete]` 只列了程序自己放进去的文件；
    **不要**加 `filesandordirs` 去删整个 `{app}`，那会把用户数据一起带走。
    如果用户换了安装目录，`PrepareToInstall` 会从注册表的 `InstallLocation`
@@ -80,12 +80,12 @@ pwsh -File setup\build-installer.ps1 -Iscc 'D:\Inno_Setup_7\ISCC.exe' -OutDir .\
 ## 手动验证安装包
 
 ```powershell
-$installer = '.\dist\Kairos-1.0.0-setup.exe'
-$dir = "$env:TEMP\kair-check"
+$installer = '.\dist\KQFLOW-1.0.0-setup.exe'
+$dir = "$env:TEMP\kqf-check"
 
 # 装
 & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$dir" "/LOG=$dir.log"
-& "$dir\kair.exe" -version
+& "$dir\kqf.exe" -version
 
 # 升级（数据应原封不动）
 & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$dir"
@@ -94,5 +94,5 @@ $dir = "$env:TEMP\kair-check"
 & "$dir\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
-验证完记得卸载测试安装，并确认注册表里没有残留的 Kairos 卸载项。
+验证完记得卸载测试安装，并确认注册表里没有残留的 KQFLOW 卸载项。
 完整发布清单见 [../SKILL/references/release.md](../SKILL/references/release.md)。

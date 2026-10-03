@@ -1,20 +1,20 @@
 ---
-name: kairos-project-dev
-description: Develop, fix, test, and release the Kairos Go terminal time-manager (The-Kairos-Time-manager). Use when the task mentions Kairos or kair, its Bubble Tea dashboard/TODO/GOAL/pomodoro UI, its day-boundary or day-sharded JSON storage, its Inno Setup installer, its version number, or when continuing development of this repository in any form.
+name: kqflow-project-dev
+description: Develop, fix, test, and release the KQFLOW Go terminal time-manager (The-KQFLOW-Time-manager). Use when the task mentions KQFLOW or kqf, its Bubble Tea dashboard/TODO/GOAL/pomodoro UI, its day-boundary or day-sharded JSON storage, its Inno Setup installer, its version number, or when continuing development of this repository in any form.
 ---
 
-# Kairos 项目开发手册
+# KQFLOW 项目开发手册
 
 本 Skill 让 Agent 快速成为**熟悉本项目细节、能继续管理和开发它**的开发者。
 它只写模型猜不到的东西：本仓库特有的构建方式、渲染约定、已经踩过的坑和验证方式。
 
 ## When to use this skill
 
-**适用**：任何针对本仓库（Kairos / `kair`）的改动——修 bug、加功能、改排版、
+**适用**：任何针对本仓库（KQFLOW / `kqf`）的改动——修 bug、加功能、改排版、
 调数据格式、改安装包、发版本、审查代码。
 
-**不适用**：与 Kairos 无关的通用 Go 或 Bubble Tea 问题；与其它项目的时间管理工具。
-如果只是问「怎么用 kair」而不是「怎么改 kair」，读 [references/project-map.md](references/project-map.md)
+**不适用**：与 KQFLOW 无关的通用 Go 或 Bubble Tea 问题；与其它项目的时间管理工具。
+如果只是问「怎么用 kqf」而不是「怎么改 kqf」，读 [references/project-map.md](references/project-map.md)
 的用户功能部分即可，不要按开发流程走。
 
 ## 0. 先做这三件事
@@ -59,13 +59,13 @@ description: Develop, fix, test, and release the Kairos Go terminal time-manager
 
 - **无法验证真实终端观感**：本环境没有交互式终端。TUI 的最终观感只能由用户在
   真实终端确认。交付时必须明确说明「已用离屏渲染验证到什么程度」，不要声称已确认观感。
-- **不要用 `Start-Process` 直接跑 `kair.exe`**：TUI 在没有真控制台时会挂住，
+- **不要用 `Start-Process` 直接跑 `kqf.exe`**：TUI 在没有真控制台时会挂住，
   留下僵死进程。验证数据逻辑请调 Go 接口（`App` / `store`）而不是跑二进制。
   验证安装包用 `/VERYSILENT` 静默参数。
 - **修改编辑器 / 输入相关的按键时**：一定要想「这个键本来是文本吗」。
   单行输入框里的 `q` 是要输入的字符；随手记（多行）里的 `esc` / `q` 才是关闭意图。
 - **删除任何东西之前**：先确认它是「程序产生的」还是「用户的」。
-  用户数据（`kairos-data/`）永远不主动删除，只在用户明确确认后删。
+  用户数据（`kqflow-data/`）永远不主动删除，只在用户明确确认后删。
 - **数据字段改名或改语义**：必须能在读入老文件时补默认值，不能让程序崩或丢记录。
 - **不确定用户意图时**：先问，不要顺手扩大改动范围。用户明确说「先解决已知问题」时，
   只修那个问题，不要夹带其它改动。
@@ -87,4 +87,4 @@ description: Develop, fix, test, and release the Kairos Go terminal time-manager
 
 本 Skill 不带脚本。项目自身的构建脚本是 `setup/build-installer.ps1`
 （打 Windows 安装包），说明见 [references/release.md](references/release.md)。
-它的副作用：会重新编译 `<root>/kair.exe` 并写出 `<root>/dist/` 下的安装包。
+它的副作用：会重新编译 `<root>/kqf.exe` 并写出 `<root>/dist/` 下的安装包。

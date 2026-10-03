@@ -1,4 +1,4 @@
-# Kairos — The-Kairos-Time-manager
+# KQFLOW — The-KQFLOW-Time-manager
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8.svg)](https://go.dev)
@@ -8,7 +8,7 @@
 >
 > 每天向前一点的时间管理器：每日 TODO、长期 GOAL、番茄钟与专注计时、随手记、历史统计，全部装在一个终端看板里。
 
-Kairos 是一个用 Go 编写的命令行时间管理工具。它编译成**单个可执行文件**，不依赖运行环境；数据以可读的 JSON 存在本地，不上传任何地方。
+KQFLOW 是一个用 Go 编写的命令行时间管理工具。它编译成**单个可执行文件**，不依赖运行环境；数据以可读的 JSON 存在本地，不上传任何地方。
 
 ```
 Good afternoon，Kqin-dev！  2026-10-03 周六 · 20:31:56 · 日界线 04:00      今日专注 2m
@@ -44,12 +44,12 @@ tab:切换栏  j/k:移动  space:勾选  a:添加  t:子任务  r:继承昨日  
 
 ### 方式一：安装程序（推荐）
 
-到 [Releases](https://github.com/kqin-dev/The-Kairos-Time-manager/releases) 下载 `Kairos-<版本>-setup.exe`，双击运行。
+到 [Releases](https://github.com/kqin-dev/The-KQFLOW-Time-manager/releases) 下载 `KQFLOW-<版本>-setup.exe`，双击运行。
 
 安装向导会：
 
-- **让你自选安装位置**。默认是 `C:\Program Files\Kairos`。如果不小心选了桌面、下载、临时目录这类位置，向导会提醒你换一个——放在这些地方容易被清理掉，也不方便升级。
-- **默认勾选「加入 PATH」**。请保持勾选，这样在任意终端直接输入 `kair` 就能启动；取消时会再提醒一次。
+- **让你自选安装位置**。默认是 `C:\Program Files\KQFLOW`。如果不小心选了桌面、下载、临时目录这类位置，向导会提醒你换一个——放在这些地方容易被清理掉，也不方便升级。
+- **默认勾选「加入 PATH」**。请保持勾选，这样在任意终端直接输入 `kqf` 就能启动；取消时会再提醒一次。
 - 可选创建桌面快捷方式（默认不勾）。
 
 安装包支持**直接覆盖升级**：新版本装到同一位置即可，**你的数据不会被覆盖或删除**。如果你换了安装目录，向导会检测到旧数据并询问是否复制过去（旧目录里的数据始终保留，不会被删）。
@@ -58,20 +58,20 @@ tab:切换栏  j/k:移动  space:勾选  a:添加  t:子任务  r:继承昨日  
 
 ### 方式二：绿色版（免安装）
 
-下载 `kair.exe` 放到任意目录，把该目录加入 `PATH`，然后：
+下载 `kqf.exe` 放到任意目录，把该目录加入 `PATH`，然后：
 
 ```powershell
-kair
+kqf
 ```
 
-数据会存在 `kair.exe` 同级的 `kairos-data` 目录里，整个目录可以随便拷贝到别的机器。
+数据会存在 `kqf.exe` 同级的 `kqflow-data` 目录里，整个目录可以随便拷贝到别的机器。
 
 ### 方式三：从源码构建
 
 ```powershell
-git clone https://github.com/kqin-dev/The-Kairos-Time-manager.git
-cd The-Kairos-Time-manager
-go build -trimpath -ldflags "-s -w" -o kair.exe ./cmd/kair
+git clone https://github.com/kqin-dev/The-KQFLOW-Time-manager.git
+cd The-KQFLOW-Time-manager
+go build -trimpath -ldflags "-s -w" -o kqf.exe ./cmd/kqf
 ```
 
 需要 **Go 1.24 或更高版本**。项目只依赖 [Bubble Tea](https://github.com/charmbracelet/bubbletea) 与 [Lipgloss](https://github.com/charmbracelet/lipgloss)，构建产物是纯静态单文件（约 4.3 MB）。
@@ -89,7 +89,7 @@ pwsh -File setup\build-installer.ps1
 | 顶栏 | 按时段变化的问候语、当前逻辑日与星期、系统时间、今日专注时长 |
 | 左栏上 | **TODAY · 固定**：长期坚持的事项，每天自动出现（带独立边框） |
 | 左栏下 | **TODAY · 临时**：当天临时安排，可选择性继承昨日未完成项（带独立边框） |
-| 中间栏 | Kairos 渐变 ASCII 艺术字、今日完成度、功能选项、随手记预览、连续 7 天统计、随机字条 |
+| 中间栏 | KQFLOW 渐变 ASCII 艺术字、今日完成度、功能选项、随手记预览、连续 7 天统计、随机字条 |
 | 右栏 | **GOAL**：与日程无关的长期目标，完成后归档到当天 |
 | 底栏 | 时段看条、按键提示、版本号 |
 
@@ -175,18 +175,18 @@ pwsh -File setup\build-installer.ps1
 
 ## 版本号
 
-看板最底一行的右端、帮助页末尾、`kair -version` 显示的都是同一个版本号：
+看板最底一行的右端、帮助页末尾、`kqf -version` 显示的都是同一个版本号：
 
 ```powershell
-kair -version      # Kairos 1.0.0
+kqf -version      # KQFLOW 1.0.0
 ```
 
 版本号只有一个权威来源：`internal/version/version.go`。**发布新版本只需改这一处**，界面与命令行会一起更新。需要给某次构建打不同版本号时用 `-ldflags` 覆盖：
 
 ```powershell
 go build -trimpath -ldflags "-s -w `
-  -X github.com/kqin-dev/The-Kairos-Time-manager/internal/version.Version=1.0.0-rc1" `
-  -o kair.exe ./cmd/kair
+  -X github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version.Version=1.0.0-rc1" `
+  -o kqf.exe ./cmd/kqf
 ```
 
 ## 输入中文 / 输入法
@@ -198,14 +198,14 @@ go build -trimpath -ldflags "-s -w `
 如果你更习惯先写好再贴，粘贴同样支持：
 
 1. 在别处（记事本、浏览器…）打好中文，`Ctrl+C` 复制；
-2. 回到 Kairos，按 `a` / `A` / `e` 或 `N` 打开输入框；
+2. 回到 KQFLOW，按 `a` / `A` / `e` 或 `N` 打开输入框；
 3. `Ctrl+V` 粘贴，中文会整段进入输入框。
 
 单行输入框里粘贴的多行文本会自动折成一行（换行变空格），不会被当成多个条目；随手记这类多行输入框则保留换行。输入框内 `Backspace` / 方向键 / `Ctrl+U` 清空 / `Ctrl+W` 删词都可用。
 
-另外 Kairos **默认不接管鼠标**：一旦接管，终端就无法用鼠标选中文本，会给「复制粘贴」带来不便。需要鼠标可在 `config.json` 里把 `mouse` 设为 `true`。
+另外 KQFLOW **默认不接管鼠标**：一旦接管，终端就无法用鼠标选中文本，会给「复制粘贴」带来不便。需要鼠标可在 `config.json` 里把 `mouse` 设为 `true`。
 
-> 这些表现来自终端与输入法之间的交互方式，不是 Kairos 能控制的：程序只收到最终上屏的字符，收不到组字过程，也无从告诉输入法光标在哪。
+> 这些表现来自终端与输入法之间的交互方式，不是 KQFLOW 能控制的：程序只收到最终上屏的字符，收不到组字过程，也无从告诉输入法光标在哪。
 
 ## 随手记 / 日记
 
@@ -300,10 +300,10 @@ GOAL 完成或取消时，`goals.json` 与当天数据文件会同时写盘，�
 
 ## 数据存放
 
-数据默认放在可执行文件同级的 `kairos-data/`，因此把 `kair.exe` 和这个目录一起拷走就能带走全部进度。
+数据默认放在可执行文件同级的 `kqflow-data/`，因此把 `kqf.exe` 和这个目录一起拷走就能带走全部进度。
 
 ```
-kairos-data/
+kqflow-data/
   config.json      配置（日界线、默认时长、昵称、时区）
   goals.json       与日期无关的长期 GOAL
   days/
@@ -311,12 +311,12 @@ kairos-data/
   backup/          每次写入前的自动备份，保留最近 5 个版本
 ```
 
-也可以用环境变量 `KAIROS_HOME` 或命令行参数指定位置：
+也可以用环境变量 `KQFLOW_HOME` 或命令行参数指定位置：
 
 ```powershell
-kair --data-dir D:\my-kairos
-$env:KAIROS_HOME = "D:\my-kairos"; kair
-kair --where     # 只打印当前数据目录
+kqf --data-dir D:\my-kqflow
+$env:KQFLOW_HOME = "D:\my-kqflow"; kqf
+kqf --where     # 只打印当前数据目录
 ```
 
 ### 数据安全
@@ -359,7 +359,7 @@ kair --where     # 只打印当前数据目录
 ```powershell
 go test ./...                            # 全部单元测试
 go vet ./...                             # 静态检查
-go run ./cmd/kair                        # 直接运行
+go run ./cmd/kqf                        # 直接运行
 pwsh -File setup\build-installer.ps1     # 打安装包（需要 Inno Setup 6/7）
 ```
 
@@ -375,12 +375,12 @@ pwsh -File setup\build-installer.ps1     # 打安装包（需要 Inno Setup 6/7�
 - 极端小窗口（1×1、10×3 等）下的提示文本同样不溢出；
 - ASCII 字在任何宽度下都不会被折行、字条折行均衡；
 - **一批“关闭编辑器”的按键逐个走查**，确保没有一条会静默丢弃未保存内容；
-- 版本号在任意宽度下都可见，且与 `kair -version` 一致。
+- 版本号在任意宽度下都可见，且与 `kqf -version` 一致。
 
 代码结构：
 
 ```
-cmd/kair/            入口：命令行参数与启动
+cmd/kqf/            入口：命令行参数与启动
 internal/clock/      逻辑日、日界线、问候语、时长格式化
 internal/config/     配置读写与数据目录定位
 internal/model/      TODO / GOAL / TASK / 计时记录等数据结构

@@ -1,4 +1,4 @@
-// Package ui 实现 Kairos 的终端界面。
+// Package ui 实现 KQFLOW 的终端界面。
 package ui
 
 import "github.com/charmbracelet/lipgloss"
@@ -19,7 +19,7 @@ type Theme struct {
 	BorderHi  lipgloss.Color // 聚焦时的边框
 }
 
-// DefaultTheme 返回 Kairos 的默认配色。
+// DefaultTheme 返回 KQFLOW 的默认配色。
 var DefaultTheme = Theme{
 	Bg:        lipgloss.Color("#101418"),
 	Surface:   lipgloss.Color("#161b22"),

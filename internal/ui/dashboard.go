@@ -7,9 +7,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/version"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version"
 )
 
 // 看板可用的最小终端尺寸；更小的时候只显示一行提示。
@@ -21,7 +21,7 @@ const (
 // View 渲染当前界面。
 func (a *App) View() string {
 	if a.width == 0 || a.height == 0 {
-		return "正在启动 Kairos…"
+		return "正在启动 KQFLOW…"
 	}
 	if a.width < minWidth || a.height < minHeight {
 		return a.viewTooSmall()
@@ -82,7 +82,7 @@ func (a *App) settingsCursorRow(styled, plain []string) int {
 // 在一个 10×3 的窗口里会溢出并糊掉整屏。
 func (a *App) viewTooSmall() string {
 	if a.width <= 0 || a.height <= 0 {
-		return "Kairos"
+		return "KQFLOW"
 	}
 	full := fmt.Sprintf("当前 %d×%d，至少需要 %d×%d", a.width, a.height, minWidth, minHeight)
 	candidates := []string{
@@ -101,7 +101,7 @@ func (a *App) viewTooSmall() string {
 		lines = append(lines, l)
 	}
 	if len(lines) == 0 {
-		return truncateCells("Kairos", a.width)
+		return truncateCells("KQFLOW", a.width)
 	}
 	return clipBlock(strings.Join(lines, "\n"), a.width, a.height)
 }
@@ -125,8 +125,13 @@ func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
 	if a.width < 90 {
 		leftW, rightW = 24, 22
 	}
-	// 中间栏至少要能完整放下完整版 Logo（44 列），否则字会被截断并折行。
-	// 中间栏内容宽 = centerW - 4（边框 2 + 内边距 2）。
+	// 中间栏的最小宽度按「内容」定，不按 Logo 定。
+	//
+	// 中间栏不只有 Logo：帮助、设置、历史、随手记、统计都挤在这里，
+	// 太窄会把说明文字折得七零八落。而完整版 KQFLOW 字模有 52 列，
+	// 要放它得让 centerW ≥ 56，那会把左右面板在 80 列以下挤爆
+	// （左栏会变成负数）。所以这里保证内容够用，Logo 交给 pickLogo
+	// 按可用宽度自动降档——字永远不会被折行，只是小一点。
 	const minCenterWidth = 48
 	centerW = a.width - leftW - rightW
 	if centerW < minCenterWidth {

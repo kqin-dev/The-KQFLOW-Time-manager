@@ -6,7 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/version"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version"
 )
 
 // TestVersionVisibleOnBoard 验证版本号在看板上可见（见用户需求）。

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
 // assertNoOverflow 检查渲染结果没有超出终端宽高。

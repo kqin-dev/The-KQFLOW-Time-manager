@@ -2,7 +2,7 @@
 
 ## 这是什么
 
-Kairos（可执行文件 `kair.exe`）是一个用 Go 写的命令行时间管理器。
+KQFLOW（可执行文件 `kqf.exe`）是一个用 Go 写的命令行时间管理器。
 单个静态可执行文件，无运行环境依赖，数据以 JSON 存在本地。
 目标平台是 Windows（安装包为 Inno Setup），但代码本身是跨平台的。
 
@@ -25,10 +25,10 @@ Kairos（可执行文件 `kair.exe`）是一个用 Go 写的命令行时间管�
 ## 代码结构
 
 ```
-cmd/kair/main.go        入口：命令行参数、配置装配、启动 Bubble Tea
+cmd/kqf/main.go        入口：命令行参数、配置装配、启动 Bubble Tea
 internal/version/       Version 常量 —— 全项目版本号唯一权威来源
 internal/clock/         逻辑日、日界线、问候语、时长与时钟格式化
-internal/config/        配置结构、读写、数据目录定位（KAIROS_HOME > DataDir > exe 同级）
+internal/config/        配置结构、读写、数据目录定位（KQFLOW_HOME > DataDir > exe 同级）
 internal/model/         TODO / GOAL / TASK / Session / Activity / DayData 等数据结构
 internal/store/         按日分库的持久化、原子写、备份与恢复
 internal/ui/            Bubble Tea 界面（最大的一块，见下）
@@ -53,11 +53,11 @@ SKILL/                  本手册
 
 ## 数据存储
 
-数据目录默认是**可执行文件同级的 `kairos-data/`**，可用 `KAIROS_HOME`
+数据目录默认是**可执行文件同级的 `kqflow-data/`**，可用 `KQFLOW_HOME`
 环境变量或配置里的 `data_dir` 覆盖。
 
 ```
-kairos-data/
+kqflow-data/
 ├── config.json          配置
 ├── goals.json           长期 GOAL
 ├── days/
@@ -129,4 +129,4 @@ kairos-data/
 | 退出确认 | `askQuit()`；关闭编辑器确认是 `askCloseEditor()` |
 | 统计与柱状图 | `stats.go` |
 | 版本号 | `internal/version/version.go` |
-| 安装包 | `setup/kairos.iss` + `setup/build-installer.ps1` |
+| 安装包 | `setup/kqflow.iss` + `setup/build-installer.ps1` |

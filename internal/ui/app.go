@@ -9,10 +9,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/config"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/store"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/store"
 )
 
 // View 是当前显示的页面。
@@ -45,7 +45,7 @@ const (
 	FocusGoals
 )
 
-// App 是 Kairos 的根模型。
+// App 是 KQFLOW 的根模型。
 type App struct {
 	store *store.Store
 	cfg   *config.Config
@@ -1021,12 +1021,12 @@ func (a *App) askQuit() {
 		}
 		return
 	}
-	quitLabel := "退出 Kairos"
+	quitLabel := "退出 KQFLOW"
 	if a.timer != nil {
 		quitLabel = "结束计时并退出"
 	}
 	a.pick = &pickState{
-		title: "确定要退出 Kairos 吗？",
+		title: "确定要退出 KQFLOW 吗？",
 		items: []pickItem{
 			{Label: "取消，继续使用", Action: "cancel"},
 			{Label: quitLabel, Action: "quit"},

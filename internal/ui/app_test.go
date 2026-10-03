@@ -8,10 +8,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/config"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/store"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/store"
 )
 
 // newTestApp 构造一个隔离的 App，固定时间与数据目录。

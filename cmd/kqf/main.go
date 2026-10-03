@@ -1,6 +1,6 @@
-// 命令 kair 是 Kairos 时间管理器的入口。
+// 命令 kqf 是 KQFLOW 时间管理器的入口。
 //
-// Kairos 是一个无环境依赖、可直接分发的命令行时间管理工具：
+// KQFLOW 是一个无环境依赖、可直接分发的命令行时间管理工具：
 // 每日 TODO、长期 GOAL、番茄钟与计时、历史统计，全部数据保存在本地。
 package main
 
@@ -11,16 +11,16 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/config"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/store"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/ui"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/version"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/store"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/ui"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version"
 )
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "kair:", err)
+		fmt.Fprintln(os.Stderr, "kqf:", err)
 		os.Exit(1)
 	}
 }
@@ -35,7 +35,7 @@ func run() error {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("Kairos %s\n", version.Version)
+		fmt.Printf("KQFLOW %s\n", version.Version)
 		return nil
 	}
 
@@ -114,25 +114,25 @@ func printFarewell(st *store.Store) {
 	}
 	done, total := data.Counts()
 	focus, _ := data.FocusTotal()
-	fmt.Printf("\nKairos · %s · 完成 %d/%d 项待办 · 今日专注 %s\n",
+	fmt.Printf("\nKQFLOW · %s · 完成 %d/%d 项待办 · 今日专注 %s\n",
 		day, done, total, clock.HumanDuration(focus))
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `Kairos — 每天向前一点的时间管理器
+	fmt.Fprintf(os.Stderr, `KQFLOW — 每天向前一点的时间管理器
 
 版本: %s
 
 用法:
-  kair [选项]
+  kqf [选项]
 
 选项:
-  -data-dir <路径>   指定数据目录（默认放在可执行文件同级的 kairos-data）
+  -data-dir <路径>   指定数据目录（默认放在可执行文件同级的 kqflow-data）
   -where             只打印数据目录后退出
   -version           只打印版本号后退出
   -h, -help          显示本帮助
 
-数据目录也可以用环境变量 KAIROS_HOME 指定。
+数据目录也可以用环境变量 KQFLOW_HOME 指定。
 
 看板操作:
   tab 切换栏位 · j/k 移动 · space 勾选 · a 添加 · t 加子任务 · r 继承昨日 · ? 帮助 · q 退出

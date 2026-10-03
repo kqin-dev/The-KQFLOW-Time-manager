@@ -1,4 +1,4 @@
-﻿# 用 GitHub API 发布 Kairos Release。
+﻿# 用 GitHub API 发布 KQFLOW Release。
 #
 # 之所以不用 gh CLI：本机没有安装它。这里直接用 REST API，
 # 凭据从 Git 凭据管理器读取（应用内不保存任何 token）。
@@ -32,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $owner = 'kqin-dev'
-$repo = 'The-Kairos-Time-manager'
+$repo = 'The-KQFLOW-Time-manager'
 
 function Info($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Fail($m) { Write-Host "错误: $m" -ForegroundColor Red; exit 1 }
@@ -50,14 +50,14 @@ Info "版本 $Version，tag $Tag"
 
 # ---------- 产物 ----------
 
-$setupExe = Join-Path $repoRoot "dist\Kairos-$Version-setup.exe"
-$portableExe = Join-Path $repoRoot 'kair.exe'
+$setupExe = Join-Path $repoRoot "dist\KQFLOW-$Version-setup.exe"
+$portableExe = Join-Path $repoRoot 'kqf.exe'
 if (-not (Test-Path $setupExe)) { Fail "找不到安装包：$setupExe（先跑 setup\build-installer.ps1）" }
 if (-not (Test-Path $portableExe)) { Fail "找不到绿色版：$portableExe" }
 
 $assets = @(
-    @{ Path = $setupExe;    Name = "Kairos-$Version-setup.exe"; Label = 'Windows 安装程序' },
-    @{ Path = $portableExe; Name = "kair-$Version-windows-amd64.exe"; Label = 'Windows 绿色版' }
+    @{ Path = $setupExe;    Name = "KQFLOW-$Version-setup.exe"; Label = 'Windows 安装程序' },
+    @{ Path = $portableExe; Name = "kqf-$Version-windows-amd64.exe"; Label = 'Windows 绿色版' }
 )
 foreach ($a in $assets) {
     $mb = [math]::Round((Get-Item $a.Path).Length / 1MB, 2)
@@ -75,7 +75,7 @@ if ($WhatIfOnly) {
     Write-Host ''
     Info "仅校验模式：以下请求不会真的发出"
     Write-Host "    POST https://api.github.com/repos/$owner/$repo/releases"
-    Write-Host "      tag_name=$Tag  name=Kairos $Tag  draft=$($Draft.IsPresent)"
+    Write-Host "      tag_name=$Tag  name=KQFLOW $Tag  draft=$($Draft.IsPresent)"
     foreach ($a in $assets) {
         Write-Host "    POST https://uploads.github.com/repos/$owner/$repo/releases/<id>/assets?name=$($a.Name)"
     }
@@ -87,7 +87,7 @@ $headers = @{
     Authorization          = "Bearer $Token"
     Accept                 = 'application/vnd.github+json'
     'X-GitHub-Api-Version' = '2022-11-28'
-    'User-Agent'           = 'kairos-release-script'
+    'User-Agent'           = 'kqflow-release-script'
 }
 
 function Invoke-GitHub {
@@ -136,7 +136,7 @@ if ($Retag) {
     try {
         $head = (git rev-parse HEAD).Trim()
         Info "把 tag $Tag 强制指到当前 HEAD（$($head.Substring(0,7))）"
-        git tag -f -a $Tag -m "Kairos $Tag" 2>$null
+        git tag -f -a $Tag -m "KQFLOW $Tag" 2>$null
         if ($LASTEXITCODE -ne 0) { Fail "本地打 tag 失败" }
         git push origin "refs/tags/$Tag" --force 2>$null
         if ($LASTEXITCODE -ne 0) { Fail "推送 tag 失败（需要 force push 权限）" }
@@ -151,7 +151,7 @@ if ($Retag) {
 
 $payload = @{
     tag_name         = $Tag
-    name             = "Kairos $Tag"
+    name             = "KQFLOW $Tag"
     body             = $body
     draft            = [bool]$Draft
     prerelease       = $false

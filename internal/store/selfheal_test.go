@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/store"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/store"
 )
 
 // TestSelfHealRoundTrip 验证“读入 → 自愈 → 写回 → 再读入”的数据是干净的。

@@ -1,4 +1,4 @@
-module github.com/kqin-dev/The-Kairos-Time-manager
+module github.com/kqin-dev/The-KQFLOW-Time-manager
 
 go 1.26.5
 

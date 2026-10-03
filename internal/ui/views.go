@@ -8,8 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/version"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version"
 )
 
 // ---------- 尺寸与文本工具 ----------
@@ -704,7 +704,7 @@ func (a *App) helpLines() (styled, plain []string) {
 	}
 	add("", "")
 	add(a.st.Muted.Render("  esc / q / ? 返回看板 · j/k 滚动"), "  esc / q / ? 返回看板 · j/k 滚动")
-	add(a.st.Muted.Render(truncate("  Kairos "+version.Version, inner)), "  Kairos "+version.Version)
+	add(a.st.Muted.Render(truncate("  KQFLOW "+version.Version, inner)), "  KQFLOW "+version.Version)
 	return styled, plain
 }
 

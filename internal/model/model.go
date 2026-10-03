@@ -1,4 +1,4 @@
-// Package model 定义 Kairos 的核心数据结构。
+// Package model 定义 KQFLOW 的核心数据结构。
 //
 // 设计要点：
 //   - TODO / GOAL / TASK 都是“条目”，用 ID 互相引用，重命名不会断链。

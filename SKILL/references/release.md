@@ -10,7 +10,7 @@
 var Version = "1.0.0"
 ```
 
-看板底栏、帮助页、`kair -version`、`kair -h` 都会跟着变。
+看板底栏、帮助页、`kqf -version`、`kqf -h` 都会跟着变。
 不要在别处硬编码版本字符串。
 
 ## 2. 全量验证
@@ -46,14 +46,14 @@ README 是用户在 Hub 上看到的第一份东西，发布前必须过一遍�
 pwsh -File setup\build-installer.ps1
 ```
 
-脚本做三件事：读版本号 → 编译 `kair.exe`（注入版本）→ 调 ISCC 出安装包。
-产物：`dist\Kairos-<版本>-setup.exe`。
+脚本做三件事：读版本号 → 编译 `kqf.exe`（注入版本）→ 调 ISCC 出安装包。
+产物：`dist\KQFLOW-<版本>-setup.exe`。
 
 有用参数：
 
 | 参数 | 作用 |
 | --- | --- |
-| `-SkipGoBuild` | 复用已有的 `kair.exe`（不再编译） |
+| `-SkipGoBuild` | 复用已有的 `kqf.exe`（不再编译） |
 | `-Iscc <路径>` | 指定 `ISCC.exe` |
 | `-OutDir <目录>` | 指定输出目录，默认 `<root>\dist` |
 
@@ -62,28 +62,28 @@ pwsh -File setup\build-installer.ps1
 至少验这五件事，全部可以用静默参数完成：
 
 ```powershell
-$installer = '<root>\dist\Kairos-<版本>-setup.exe'
-$dir = "$env:TEMP\kair-check"
+$installer = '<root>\dist\KQFLOW-<版本>-setup.exe'
+$dir = "$env:TEMP\kqf-check"
 
 # a) 装得上
 & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$dir" "/LOG=$dir.log"
-& "$dir\kair.exe" -version          # 应与版本号一致
+& "$dir\kqf.exe" -version          # 应与版本号一致
 
 # b) 升级不丢数据
-#    在 $dir\kairos-data 里放一份数据，再装一次，确认文件哈希不变
+#    在 $dir\kqflow-data 里放一份数据，再装一次，确认文件哈希不变
 # c) 换目录升级会把旧数据带过去（静默下默认“是”）
 # d) 卸载默认保留数据
 & "$dir\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 
 # e) 换一个「默认风格」的安装路径再装一次（最关键、最容易漏）
-& $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=C:\Program Files\Kairos"
+& $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=C:\Program Files\KQFLOW"
 ```
 
 **第 e 件为什么必须做**：曾出过这样的事故——脚本里
 `ExpandConstant('{userprofile}')` 常量名写错（正确是 `{userpf}`）。
 这是**运行期**错误，编译器不报；而「位置是否合理」的判断在 `%TEMP%` 路径下
 会提前返回，所以只测 `%TEMP%` 永远发现不了，用户装到
-`C:\Program Files\Kairos` 才会以退出码 1 失败。**只测一种路径不足以验证安装包。**
+`C:\Program Files\KQFLOW` 才会以退出码 1 失败。**只测一种路径不足以验证安装包。**
 
 改过 `.iss` 之后要重走这个清单，并且**重新上传 Release 附件**——
 用户下载的是附件，不是你本地那份。
@@ -94,12 +94,12 @@ $dir = "$env:TEMP\kair-check"
 ```powershell
 Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
                  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
-  Where-Object { $_.DisplayName -like '*Kairos*' }
+  Where-Object { $_.DisplayName -like '*KQFLOW*' }
 ```
 
 ## 6. 安装包的行为约定（改脚本时不要破坏）
 
-- **允许自选安装路径**，默认 `{autopf}\Kairos`；选了桌面 / 下载 / 文档 / 临时 /
+- **允许自选安装路径**，默认 `{autopf}\KQFLOW`；选了桌面 / 下载 / 文档 / 临时 /
   盘符根 / 系统关键目录会提醒，用户反悔可以留在目录页重选。
 - **默认勾选加入 PATH**（`addtopath`）。真正写入的是 `[Code]` 里的
   `AddDirToUserPath`（由 `CurStepChanged` 在 `ssPostInstall` 调用），
@@ -108,7 +108,7 @@ Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
   **改任务名或删任务时，务必确认这两处代码仍引用 `addtopath`**——
   任务本身只是个勾选框，不绑动作就等于没实现（这个坑真实发生过，
   而且是发布后被用户发现的）。
-- **升级不碰数据**：`kairos-data` 不在 `[Files]` 里，所以 Inno 永远不会覆盖或删除它。
+- **升级不碰数据**：`kqflow-data` 不在 `[Files]` 里，所以 Inno 永远不会覆盖或删除它。
   卸载的 `[UninstallDelete]` 只列了程序自己放进去的文件，**不要**加
   `filesandordirs` 删整个 `{app}`。
 - **换目录升级会问是否复制旧数据**（`PrepareToInstall` + 注册表里的 `InstallLocation`）。
@@ -132,9 +132,9 @@ git push origin main
 
 ## 8. 在 GitHub 建 Release
 
-1. 打 tag：`git tag -a v1.0.0 -m "Kairos v1.0.0"`，推送 tag。
-2. 新建 Release，选该 tag，标题写 `Kairos v1.0.0`。
-3. **上传 `dist\Kairos-<版本>-setup.exe`** 作为附件。
+1. 打 tag：`git tag -a v1.0.0 -m "KQFLOW v1.0.0"`，推送 tag。
+2. 新建 Release，选该 tag，标题写 `KQFLOW v1.0.0`。
+3. **上传 `dist\KQFLOW-<版本>-setup.exe`** 作为附件。
 4. Release 说明里写：新增 / 修复 / 破坏性变更（如有）、以及升级方式
    （直接覆盖安装，数据不受影响）。
 5. 确认 `LICENSE`（MIT）与仓库地址无误。

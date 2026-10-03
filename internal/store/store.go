@@ -1,4 +1,4 @@
-// Package store 是 Kairos 的本地数据层。
+// Package store 是 KQFLOW 的本地数据层。
 //
 // 布局（见需求 4）：
 //
@@ -21,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/config"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
 // Store 提供全部数据读写能力。

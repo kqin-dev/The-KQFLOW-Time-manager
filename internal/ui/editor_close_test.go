@@ -5,7 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
 )
 
 // startCountUpTimer 起一个不设终点的计时，并选中“自由专注”。

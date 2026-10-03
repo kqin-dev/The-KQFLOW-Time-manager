@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
 func newTestStore(t *testing.T) *Store {
