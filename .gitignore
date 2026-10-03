@@ -1,0 +1,23 @@
+# 构建产物
+/kair.exe
+/kair
+*.exe
+*.test
+
+# 开发期缓存（工程内缓存，保证沙箱环境下也能编译）
+/.gocache/
+/.gomodcache/
+
+# 开发期渲染预览
+/preview.txt
+/preview.txt.*.txt
+
+# 本地数据目录（真正的数据库不应进版本库）
+/kairos-data/
+**/kairos-data/
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

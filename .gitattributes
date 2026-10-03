@@ -1,0 +1,17 @@
+# 统一使用 LF 换行，避免 Windows 上提交后再到别的平台看到整文件改动
+* text=auto eol=lf
+
+*.go    text eol=lf
+*.md    text eol=lf
+*.mod   text eol=lf
+*.sum   text eol=lf
+
+# 二进制文件不做换行转换
+*.exe   binary
+*.png   binary
+*.jpg   binary
+*.ico   binary
+
+# GitHub 语言识别：这些目录不算代码
+.gocache/     linguist-vendored
+.gomodcache/  linguist-vendored
