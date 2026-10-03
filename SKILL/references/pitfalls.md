@@ -113,6 +113,27 @@
 - **写完 commit message 用 `[System.IO.File]::WriteAllText` + UTF8Encoding($false)**，
   别用 `Set-Content -Encoding utf8`（会加 BOM）。
 
+## 数据写入：Windows 上的偶发失败
+
+| 现象 | 根因 | 正确做法 |
+| --- | --- | --- |
+| 界面偶尔弹「保存失败：… rename …tmpXXXX…」 | 原子写入最后一步 `os.Rename` 在 Windows 走 `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`，目标文件正被别的进程打开时返回 `Access is denied` | **退避重试**，别一次失败就报错 |
+
+`Access is denied` 的常见来源：杀毒/Defender 实时防护刚扫完一个**刚写完的** json、
+Windows 索引服务、资源管理器预览、同步盘（OneDrive 等）读取。这些锁几乎总是瞬时的。
+
+要点：
+
+- 重试是**安全**的：rename 失败不会损坏原文件（目标内容保持原样）。
+- 但重试预算要短（项目里约 0.55 秒），否则界面会卡住。
+- 错误识别别只匹配英文文案，Windows 会本地化（中文是「拒绝访问」）。
+- 临时文件要 `defer os.Remove` 兜底，失败时不留碎屑。
+
+**测试这类逻辑的坑**：用独占锁复现时，别用 `os.ReadFile` 去验证“原文件没被改坏”——
+你自己也持有锁，读同样被拒绝，取到的是空内容，会误判成文件被清空。
+用 `os.Stat` 看大小。另外用 `GENERIC_WRITE` 加锁会把文件截断成 0 字节，
+制造锁时只用 `GENERIC_READ`。
+
 ## 上一次测试写错反而掩盖真 bug
 
 发生过不止一次：测试里的断言本身用错了坐标系（按 rune 下标比对显示列），
