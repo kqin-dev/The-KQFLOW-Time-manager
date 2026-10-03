@@ -183,7 +183,10 @@ begin
   if Pos(LowerPath(ExpandConstant('{%TMP}')), D) = 1 then begin Result := True; Exit; end;
   { 盘符根目录，或系统关键目录本身。 }
   if (Length(D) = 2) and (D[2] = ':') then begin Result := True; Exit; end;
-  if D = LowerPath(ExpandConstant('{userprofile}')) then begin Result := True; Exit; end;
+  { 用户主目录的常量名是 userpf；若误写成 userprofile，会在运行期抛
+    "Unknown constant"，静默安装直接以退出码 1 失败。
+    注意注释里也不要写花括号常量，预处理器照样会去解析。 }
+  if D = LowerPath(ExpandConstant('{userpf}')) then begin Result := True; Exit; end;
   if D = LowerPath(ExpandConstant('{win}')) then begin Result := True; Exit; end;
   if D = LowerPath(ExpandConstant('{sys}')) then begin Result := True; Exit; end;
 
