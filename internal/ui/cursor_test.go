@@ -118,6 +118,116 @@ func TestCJKCursorLongLine(t *testing.T) {
 	}
 }
 
+// TestHighlightWidthStaysNearText 验证选中行的底色不会拖得比文字长得多。
+//
+// 用户反馈“设置里光标长达一行半”：根因是选中行被 pad 到整个内容宽度，
+// 一行 35 列的设置项会拖出上百列的蓝条，看起来像光标有 1.5 行那么长。
+func TestHighlightWidthStaysNearText(t *testing.T) {
+	at := time.Date(2026, 10, 3, 20, 26, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.width, app.height = 170, 48
+	app.view = ViewSettings
+	inner := app.contentWidth()
+
+	plainWidth := func(s string) int { return lipgloss.Width(ansiRE.ReplaceAllString(s, "")) }
+
+	for cur := range settingItems {
+		app.settingsCursor = cur
+		styled, plain := app.settingsLines()
+		if len(styled) != len(plain) {
+			t.Fatalf("styled 与 plain 行数不一致：%d vs %d", len(styled), len(plain))
+		}
+		found := 0
+		for i, s := range styled {
+			p := ansiRE.ReplaceAllString(s, "")
+			if !strings.HasPrefix(p, "▸") {
+				continue
+			}
+			found++
+			textW := lipgloss.Width(plain[i])
+			hlW := plainWidth(s)
+			// 底色最多比文字宽一点（留出光标余量），绝不能铺满整行。
+			if hlW > textW+4 {
+				t.Errorf("选中项 %q：底色宽 %d，文字宽 %d，拖得太长", settingItems[cur].Label, hlW, textW)
+			}
+			if hlW > inner {
+				t.Errorf("选中项 %q：底色宽 %d 超出内容宽度 %d", settingItems[cur].Label, hlW, inner)
+			}
+		}
+		if found != 1 {
+			t.Errorf("应恰好有一行选中标记，实际 %d 行", found)
+		}
+	}
+}
+
+// TestAllRowKindsFitPanelWidth 验证各类行的显示宽度都不超过内容宽度。
+//
+// 一旦超宽，终端会把这一行折成两行，看起来就像界面被撑破了。
+func TestAllRowKindsFitPanelWidth(t *testing.T) {
+	at := time.Date(2026, 10, 3, 20, 26, 0, 0, time.Local)
+	for _, size := range [][2]int{{213, 56}, {170, 48}, {140, 40}, {120, 34}, {100, 30}} {
+		app, _, _ := newTestApp(t, at)
+		app.width, app.height = size[0], size[1]
+		inner := app.contentWidth()
+
+		app.view = ViewSettings
+		for cur := range settingItems {
+			app.settingsCursor = cur
+			styled, _ := app.settingsLines()
+			for i, s := range styled {
+				if w := lipgloss.Width(ansiRE.ReplaceAllString(s, "")); w > inner {
+					t.Errorf("%dx%d 设置页第 %d 行宽 %d 超出 %d", size[0], size[1], i, w, inner)
+				}
+			}
+		}
+		app.view = ViewHelp
+		if styled, _ := app.helpLines(); true {
+			for i, s := range styled {
+				if w := lipgloss.Width(ansiRE.ReplaceAllString(s, "")); w > inner {
+					t.Errorf("%dx%d 帮助页第 %d 行宽 %d 超出 %d", size[0], size[1], i, w, inner)
+				}
+			}
+		}
+		app.view = ViewHistory
+		if styled, _ := app.historyLines(); true {
+			for i, s := range styled {
+				if w := lipgloss.Width(ansiRE.ReplaceAllString(s, "")); w > inner {
+					t.Errorf("%dx%d 历史页第 %d 行宽 %d 超出 %d", size[0], size[1], i, w, inner)
+				}
+			}
+		}
+	}
+}
+
+// TestHighlightWidthHelper 直接锁定选中行底色的宽度算法。
+//
+// 早期实现是 pad(text, inner)：文字 35 列、内容宽 145 列时，
+// 底色被拉到 145 列，于是看起来“光标长达一行半”。
+func TestHighlightWidthHelper(t *testing.T) {
+	// 底色 = 文字宽度 + 2，远小于内容宽度。
+	if got := highlightWidth("abc", 100); got != 5 {
+		t.Errorf("highlightWidth(abc, 100) = %d，期望 5", got)
+	}
+	// 中文按显示宽度算：4 个字 = 8 列，+2 = 10。
+	if got := highlightWidth("中文内容", 100); got != 10 {
+		t.Errorf("highlightWidth(中文内容, 100) = %d，期望 10", got)
+	}
+	// 内容宽度更小时夹到内容宽度。
+	if got := highlightWidth("abc", 4); got != 4 {
+		t.Errorf("highlightWidth(abc, 4) = %d，期望 4", got)
+	}
+	// padTo 只补到目标宽度，不超宽。
+	if got := padTo("abc", 5); got != "abc  " {
+		t.Errorf("padTo(abc, 5) = %q，期望 %q", got, "abc  ")
+	}
+	if got := padTo("abc", 2); got != "abc" {
+		t.Errorf("padTo(abc, 2) = %q，应原样返回", got)
+	}
+	if got := padTo("中文", 5); lipgloss.Width(got) != 5 {
+		t.Errorf("padTo(中文, 5) 显示宽度 = %d，期望 5", lipgloss.Width(got))
+	}
+}
+
 // cellAt 返回字符串在显示列 col 上的那个单元（可能是宽字符）。
 //
 // 测试里必须用它来核对列位置：直接用 rune 下标会在有中文时得到错误结论。

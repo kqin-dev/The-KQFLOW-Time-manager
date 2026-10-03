@@ -329,7 +329,7 @@ func (a *App) pickContent() string {
 	for i, it := range a.pick.items {
 		label := truncate("  "+it.Label, inner)
 		if i == a.pick.cursor {
-			lines = append(lines, a.st.ModalCursor.Render(pad(label, inner)))
+			lines = append(lines, a.st.ModalCursor.Render(padTo(label, highlightWidth(label, inner))))
 		} else {
 			lines = append(lines, a.st.Text.Render(label))
 		}
@@ -423,13 +423,33 @@ func (a *App) settingsLines() (styled, plain []string) {
 func addSettingRow(styled, plain *[]string, a *App, i int, item settingItem, text string, inner int) {
 	switch {
 	case i == a.settingsCursor:
-		*styled = append(*styled, a.st.ModalCursor.Render(pad(text, inner)))
+		// 选中行的底色只铺到文字末尾再加一点余量，不要铺满整行。
+		// 早期这里 pad 到整个内容宽度，于是短短一行设置项会拖出一条
+		// 上百列的蓝条，看起来像“光标有一行半那么长”。
+		*styled = append(*styled, a.st.ModalCursor.Render(padTo(text, highlightWidth(text, inner))))
 	case item.Edit != nil:
 		*styled = append(*styled, a.st.Text.Render(text))
 	default:
 		*styled = append(*styled, a.st.Muted.Render(text))
 	}
 	*plain = append(*plain, text)
+}
+
+// highlightWidth 返回选中行底色该铺多宽：文字宽度 + 少量余量，且不超过内容宽度。
+func highlightWidth(text string, inner int) int {
+	w := lipgloss.Width(text) + 2
+	if w > inner {
+		w = inner
+	}
+	return w
+}
+
+// padTo 把文本按显示宽度补空格到 width 列（已足够宽则原样返回）。
+func padTo(s string, width int) string {
+	if w := lipgloss.Width(s); w < width {
+		return s + strings.Repeat(" ", width-w)
+	}
+	return s
 }
 
 func orDash(s string) string {

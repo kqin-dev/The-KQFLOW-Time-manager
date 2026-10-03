@@ -243,7 +243,7 @@ func (a *App) customContent() string {
 			marker, i+1, pad(truncate(seg.Name, nameW), nameW),
 			segKindLabel(seg.Kind), clock.ClockString(seg.Dur)), inner)
 		if i == a.custom.cursor {
-			lines = append(lines, a.st.ModalCursor.Render(pad(line, inner)))
+			lines = append(lines, a.st.ModalCursor.Render(padTo(line, highlightWidth(line, inner))))
 		} else {
 			lines = append(lines, a.st.Text.Render(line))
 		}
