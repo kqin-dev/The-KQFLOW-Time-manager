@@ -207,6 +207,11 @@ func (a *App) reload() error {
 	}
 
 	a.day, a.prevDay, a.data, a.goals = day, prev, data, goals
+	// 自愈：早期版本删条目时不会清理悬空引用，这里读入后顺手修一次，
+	// 让老数据在下一轮迭代后自动变干净。
+	if a.data.PruneOrphans() {
+		_ = a.saveDay()
+	}
 	a.clampCursors()
 	return nil
 }

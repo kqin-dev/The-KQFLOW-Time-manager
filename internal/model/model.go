@@ -330,6 +330,129 @@ type DayData struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// Sanitize 去掉文本里的控制字符，并折叠首尾空白。
+//
+// keepNewline 为真时保留换行（随手记、自定义字条是多行的）。
+// 终端粘贴偶尔会带进 NUL 之类的控制字符，它们会以 \u0000 的形式写进
+// JSON，既看不见又让数据文件变脆，所以入库前统一清掉。
+func Sanitize(s string, keepNewline bool) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' && keepNewline {
+			return r
+		}
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+	if keepNewline {
+		return strings.TrimRight(s, " \t\n")
+	}
+	return strings.TrimSpace(s)
+}
+
+// PruneOrphans 清理指向“已经不存在的条目”的残留引用。
+//
+// 背景：计时记录里的 todo_ref、以及按条目名聚合的 activity，
+// 在用户删除对应 TODO 之后就悬空了。多轮迭代后这些残留会一直留在
+// 当日数据里，让数据看起来自相矛盾（例如 TODO 全删了，activity 里
+// 还列着三个已经不存在的条目）。这里把它们收拾干净：
+//
+//   - session 一律保留（时长是真实发生过的，删掉会篡改历史），
+//     只把失效的 todo_ref 清空；
+//   - activity 只在“它确实对应某个已被删除的条目”时才删。
+//     “自由专注”这类不来自任何条目的记录必须保留。
+//
+// 判断依据是：该名字是否只出现在“引用已删除条目”的计时记录里——
+// 是则由这些记录产生，应当清掉；否则（例如自由专注）保留。
+//
+// 顺带把文本字段里的控制字符清掉（老数据里可能已经写进去了）。
+//
+// 返回是否发生了改动，便于调用方决定要不要写盘。
+func (d *DayData) PruneOrphans() bool {
+	if d == nil {
+		return false
+	}
+	changed := false
+
+	// 0) 文本字段：去掉控制字符（例如粘贴带进来的 NUL）。
+	if cleaned := Sanitize(d.Note, true); cleaned != d.Note {
+		d.Note = cleaned
+		changed = true
+	}
+	cleanTodo := func(t *Todo) {
+		if t == nil {
+			return
+		}
+		if cleaned := Sanitize(t.Title, false); cleaned != t.Title {
+			t.Title = cleaned
+			changed = true
+		}
+		for i := range t.Tasks {
+			if cleaned := Sanitize(t.Tasks[i].Title, false); cleaned != t.Tasks[i].Title {
+				t.Tasks[i].Title = cleaned
+				changed = true
+			}
+		}
+	}
+	for _, t := range d.Fixed {
+		cleanTodo(t)
+	}
+	for _, t := range d.Floating {
+		cleanTodo(t)
+	}
+
+	// 收集所有仍然存在的条目 ID 与名字。
+	ids := make(map[string]bool)
+	names := make(map[string]bool)
+	add := func(t *Todo) {
+		if t == nil {
+			return
+		}
+		ids[t.ID] = true
+		names[t.Title] = true
+		for _, task := range t.Tasks {
+			names[task.Title] = true
+		}
+	}
+	for _, t := range d.Fixed {
+		add(t)
+	}
+	for _, t := range d.Floating {
+		add(t)
+	}
+
+	// 1) session：todo_ref 指向已删除的条目时清空引用，并记下它属于“孤儿”。
+	orphanNames := make(map[string]bool)
+	for i := range d.Archive.Sessions {
+		s := &d.Archive.Sessions[i]
+		if s.TodoRef != "" && !ids[s.TodoRef] {
+			orphanNames[s.TodoName] = true
+			s.TodoRef = ""
+			changed = true
+		}
+	}
+
+	// 2) activity：名字已不存在、且它是被上面这些孤儿记录带出来的，才删。
+	// 注意不要把 map 置为 nil——别处会直接往里写，nil map 写入会 panic；
+	// 空 map 在 JSON 里因为 omitempty 同样不会被序列化。
+	if d.Activity == nil {
+		d.Activity = map[string]*Activity{}
+	}
+	for name := range d.Activity {
+		if names[name] {
+			continue
+		}
+		if !orphanNames[name] {
+			// 不来自任何条目（例如“自由专注”），保留。
+			continue
+		}
+		delete(d.Activity, name)
+		changed = true
+	}
+	return changed
+}
+
 // NewDayData 创建一个空的当日数据库。
 func NewDayData(day string, now time.Time) *DayData {
 	return &DayData{

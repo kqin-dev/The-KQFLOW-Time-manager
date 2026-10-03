@@ -221,6 +221,9 @@ func (a *App) deleteCurrent() (tea.Model, tea.Cmd) {
 		}
 	}
 	a.clampCursors()
+	// 条目删掉后，计时记录里的引用与按名聚合的投入统计会悬空，
+	// 顺手清理，别让数据看起来自相矛盾。
+	a.data.PruneOrphans()
 	return a, saveCmd(a.saveDay)
 }
 
@@ -327,19 +330,30 @@ func (a *App) commitEditor() (tea.Model, tea.Cmd) {
 // insertEditorText 把外部文本（终端粘贴）整段插入输入框。
 //
 // 单行输入框把换行折成空格，避免一行标题被拆断；
-// 多行输入框（自定义字条）保留换行，因为“一行一条”就是它的语义。
+// 多行输入框（自定义字条、随手记）保留换行，因为“一行一条”就是它的语义。
+// 控制字符（NUL 等）会被丢掉：终端粘贴偶尔会带进来，落到 JSON 里
+// 会变成 \u0000，既看不见也让数据文件变得很脆。
 func (a *App) insertEditorText(text string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	if !a.editor.multiline {
 		text = strings.ReplaceAll(text, "\n", " ")
 	}
+	text = stripControlChars(text, a.editor.multiline)
 	for _, r := range text {
 		if r == '\t' {
 			continue
 		}
 		a.editor.insert(r)
 	}
+}
+
+// stripControlChars 去掉不可打印的控制字符（实现见 model.Sanitize）。
+//
+// 这里只是给 ui 层一个短名字，实际规则统一放在 model 里，
+// 免得两处实现随时间漂移。
+func stripControlChars(s string, keepNewline bool) string {
+	return model.Sanitize(s, keepNewline)
 }
 
 // ---------- 计时 ----------

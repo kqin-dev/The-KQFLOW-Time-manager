@@ -815,9 +815,23 @@ func (a *App) renderDayBar(width int) string {
 			b.WriteString(a.st.BarEmpty.Render("─"))
 		}
 	}
-	head := fmt.Sprintf("今日进度 %d%% · %s → %s · 按 enter 开始专注",
-		int(p*100), clock.TimeOfDay(start), clock.DayEndLabel(end))
+	head := fmt.Sprintf("今日已过 %d%% · %s · 按 enter 开始专注",
+		int(p*100), dayRangeLabel(start, end, cut))
 	return lipgloss.JoinVertical(lipgloss.Left, a.st.Muted.Render(truncate(head, width)), b.String())
+}
+
+// dayRangeLabel 返回逻辑日的起止展示文本。
+//
+// 逻辑日通常跨到次日，起止时刻看起来一样（例如 04:00 → 04:00），
+// 容易让人以为跨度为零，所以这种情况下标出“次日”。
+// 日界线为 00:00 时它就是一个自然日（00:00 → 24:00），不加“次日”；
+// 注意此时 DayEnd 落在次日 00:00，单看日历日是“下一天”，
+// 所以不能只按日历日判断，否则会出现“次日 24:00”这种写法。
+func dayRangeLabel(start, end time.Time, cut time.Duration) string {
+	if cut > 0 && start.Day() != end.Day() {
+		return clock.TimeOfDay(start) + " → 次日 " + clock.DayEndLabel(end)
+	}
+	return clock.TimeOfDay(start) + " → " + clock.DayEndLabel(end)
 }
 
 // renderHints 渲染按键提示。
