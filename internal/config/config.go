@@ -6,7 +6,9 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -293,10 +295,73 @@ func atomicWrite(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("关闭临时文件失败: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := replaceFile(tmpName, path); err != nil {
 		return fmt.Errorf("替换 %s 失败: %w", path, err)
 	}
 	return nil
+}
+
+// renameRetries / renameRetryDelay 控制“改名被占用”时的重试。
+//
+// 总等待约 0.55 秒，足够让一次杀毒扫描或索引放手；再久就该报错而不是继续卡住界面。
+const (
+	renameRetries    = 10
+	renameRetryDelay = 20 * time.Millisecond
+)
+
+// replaceFile 把 src 改名覆盖到 dst。
+//
+// Windows 上 os.Rename 走 MoveFileEx(MOVEFILE_REPLACE_EXISTING)，当目标文件
+// 正被别的进程打开时会直接返回 Access is denied —— 典型来源是：
+//   - 杀毒 / Defender 实时防护刚扫到一个刚写完的 json，句柄还没放；
+//   - Windows 索引服务、资源管理器预览、编辑器打开了该文件；
+//   - 同步盘（OneDrive 等）正在读取。
+//
+// 这些锁都是瞬时的，所以这里退避重试几次再放弃。之前不重试，界面就会
+// 冒出“保存失败：…… rename …… 失败”，而内容其实差点就写进去了。
+func replaceFile(src, dst string) error {
+	var err error
+	delay := renameRetryDelay
+	for attempt := 0; attempt < renameRetries; attempt++ {
+		if err = os.Rename(src, dst); err == nil {
+			return nil
+		}
+		if !isTransientRenameErr(err) {
+			return err
+		}
+		time.Sleep(delay)
+		if delay < 120*time.Millisecond {
+			delay *= 2
+		}
+	}
+	return err
+}
+
+// isTransientRenameErr 判断改名错误是否属于“稍后重试可能成功”的那类。
+func isTransientRenameErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		return true
+	}
+	// Windows 的共享冲突 / 锁定冲突；非 Windows 上这两个常量通常也能编译，
+	// 但用一个宽松的字符串兜底更保险（错误文案可能随 Windows 语言本地化）。
+	msg := err.Error()
+	for _, s := range []string{
+		"Access is denied",
+		"being used by another process",
+		"used by another process",
+		"cannot access the file",
+		"拒绝访问",
+		"另一个程序",
+		"正由另一进程使用",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // AtomicWrite 导出原子写入，供存储层复用。

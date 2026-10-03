@@ -11,7 +11,7 @@ package version
 //	go build -ldflags "-X github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version.Version=1.2.3"
 //
 // 没覆盖时就用这里写的值，保证任何构建产物都有正确的版本号。
-var Version = "2.0.0"
+var Version = "2.0.1"
 
 // String 返回适合展示的版本号（带 v 前缀）。
 func String() string { return "v" + Version }
