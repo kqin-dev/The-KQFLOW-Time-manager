@@ -887,28 +887,49 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		a.setToast("已取消", toastInfo)
 		return a, nil
 	case action == "quit":
+		// 计时中退出要把已用时长归档，否则这段时间白记了（见需求 21）。
+		if a.timer != nil {
+			a.stopTimer(a.timer.finished)
+			if err := a.saveDay(); err != nil {
+				a.quitting = true
+				return a, tea.Quit
+			}
+		}
 		a.quitting = true
 		return a, tea.Quit
 	case action == "quit_save":
 		// 先把当前编辑的内容交回给它的保存逻辑，再退出。
-		value := a.editor.text()
-		commit := a.editor.onCommit
-		a.editor.active = false
-		a.editor.onCommit = nil
-		a.editor.multiline = false
-		if commit != nil {
-			// 保存逻辑只会设置提示或写盘，不会替换模型，忽略返回值即可。
-			_, _ = commit(value)
+		a.commitEditorValue()
+		if a.timer != nil {
+			a.stopTimer(a.timer.finished)
+			if err := a.saveDay(); err != nil {
+				a.quitting = true
+				return a, tea.Quit
+			}
 		}
 		a.quitting = true
 		return a, tea.Quit
 	case action == "quit_discard":
-		// 明确丢弃：不改动数据，直接退出。
-		a.editor.active = false
-		a.editor.onCommit = nil
-		a.editor.multiline = false
+		// 明确丢弃随手记的改动，但计时记录仍要归档——那是真实发生过的。
+		a.closeEditor()
+		if a.timer != nil {
+			a.stopTimer(a.timer.finished)
+			if err := a.saveDay(); err != nil {
+				a.quitting = true
+				return a, tea.Quit
+			}
+		}
 		a.quitting = true
 		return a, tea.Quit
+	case action == "close_save":
+		// 保存并回到看板（不退出程序）。
+		a.commitEditorValue()
+		return a, nil
+	case action == "close_discard":
+		// 明确不保存，直接关闭编辑器。
+		a.closeEditor()
+		a.setToast("已放弃随手记的改动", toastInfo)
+		return a, nil
 	case action == "del_todo":
 		return a.deleteCurrent()
 	case action == "del_goal":
@@ -962,10 +983,29 @@ func (a *App) setToast(msg string, kind toastKind) {
 	a.toastKind = kind
 }
 
+// askCloseEditor 在随手记等内容没保存就要关闭时，问清怎么处理。
+//
+// 和 askQuit 的区别在于收尾动作：这里只关闭编辑器回到看板，
+// 不退出程序；而 askQuit 的“保存”之后会退出。
+//
+// 默认选中“继续编辑”，误触回车不会丢数据。
+func (a *App) askCloseEditor() {
+	a.pick = &pickState{
+		title: "随手记还没保存",
+		items: []pickItem{
+			{Label: "继续编辑", Action: "cancel"},
+			{Label: "保存并关闭", Action: "close_save"},
+			{Label: "不保存，关闭", Action: "close_discard"},
+		},
+		cursor: 0,
+		small:  true,
+	}
+}
+
 // askQuit 弹出退出确认，避免误触 q 直接退出（见需求 8）。
 //
 // 默认选中“取消”，这样误触后顺手回车也不会退出。
-// 如果随手记 / 自定义字条正开着且内容没保存，会多问一句：
+// 如果随手记正开着且内容没保存，会多问一句：
 // 保存并退出、直接退出、取消退出（见用户反馈）。
 func (a *App) askQuit() {
 	if a.editor.active && a.editor.Dirty() && a.editor.multiline {
@@ -1028,8 +1068,9 @@ func (a *App) activateMenuItem(idx int) (tea.Model, tea.Cmd) {
 	case "help":
 		a.view = ViewHelp
 	case "quit":
-		a.quitting = true
-		return a, tea.Quit
+		// 一律走确认流程：随手记没保存时它会多问一句“保存还是丢弃”，
+		// 不能在这里直接退出绕开保护。
+		a.askQuit()
 	}
 	return a, nil
 }

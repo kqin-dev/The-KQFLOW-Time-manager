@@ -85,8 +85,9 @@ type editorState struct {
 	cursor int
 	// original 记录打开时的内容，用来判断有没有改动（见 Dirty）。
 	original string
-	// multiline 为真时允许换行（自定义字条要一行一条）；
+	// multiline 为真时允许换行（随手记、自定义字条）；
 	// Enter 变成换行，用 Ctrl+S 或 Ctrl+D 提交。
+	// 同时也决定 esc / q 关闭时要不要先问“保存还是丢弃”。
 	multiline bool
 	// onCommit 在用户确认时被调用，返回新的模型与命令。
 	onCommit func(string) (tea.Model, tea.Cmd)

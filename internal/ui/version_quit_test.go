@@ -54,70 +54,183 @@ func TestVersionInHelpPage(t *testing.T) {
 	}
 }
 
-// TestQuitWithUnsavedNoteAsksThreeWays 验证随手记没保存就退出时给出三个选择。
-func TestQuitWithUnsavedNoteAsksThreeWays(t *testing.T) {
+// quitPromptLabels 返回选择框里所有选项的文案。
+func quitPromptLabels(a *App) []string {
+	out := make([]string, 0, len(a.pick.items))
+	for _, it := range a.pick.items {
+		out = append(out, it.Label)
+	}
+	return out
+}
+
+// selectAction 把光标移到指定 action 上，再按回车执行。
+func selectAction(t *testing.T, app *App, action string) {
+	t.Helper()
+	if app.pick == nil {
+		t.Fatalf("没有选择框，无法选择 %s", action)
+	}
+	for i, it := range app.pick.items {
+		if it.Action == action {
+			app.pick.cursor = i
+			press(t, app, "enter")
+			return
+		}
+	}
+	t.Fatalf("选择框里没有 %s，实际 %v", action, quitPromptLabels(app))
+}
+
+// assertProtectedPrompt 断言弹出的三选一必须包含“回去（取消）”“保存”“丢弃”三类选项，
+// 且默认停在取消上——误触回车不能丢数据。
+func assertProtectedPrompt(t *testing.T, app *App, what string) {
+	t.Helper()
+	if app.pick == nil {
+		t.Fatalf("%s：应弹出确认框", what)
+	}
+	if len(app.pick.items) != 3 {
+		t.Fatalf("%s：应有 3 个选项，实际 %v", what, quitPromptLabels(app))
+	}
+	joined := strings.Join(quitPromptLabels(app), " | ")
+	// 三类的关键词：继续/回去/取消、保存、丢弃/不保存。
+	for _, group := range [][]string{
+		{"继续", "回去", "取消"},
+		{"保存"},
+		{"丢弃", "不保存"},
+	} {
+		hit := false
+		for _, w := range group {
+			if strings.Contains(joined, w) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			t.Errorf("%s：选项里应包含 %v 之一，实际 %v", what, group, quitPromptLabels(app))
+		}
+	}
+	if app.pick.cursor != 0 || app.pick.items[0].Action != "cancel" {
+		t.Errorf("%s：默认应选中取消，实际 cursor=%d action=%s",
+			what, app.pick.cursor, app.pick.items[0].Action)
+	}
+	if !app.pick.small {
+		t.Errorf("%s：三选一应禁用 y/n 快捷键", what)
+	}
+}
+
+// TestUnsavedNoteProtectedOnEsc 验证按 esc 不会静默丢掉随手记（用户报的问题）。
+//
+// 早期只有 q 有保护，esc 直接把内容扔掉——手的习惯偏偏就是按 esc。
+func TestUnsavedNoteProtectedOnEsc(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
 	app, s, _ := newTestApp(t, at)
 
 	app.openNote()
 	app.insertEditorText("写到一半的随手记")
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
-	// 编辑中按 q：不应直接退出，而应弹三选一。
-	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if app.quitting {
-		t.Fatal("有未保存内容时按 q 不应直接退出")
+	if !app.editor.active {
+		t.Fatal("有未保存内容时按 esc 不应直接关闭编辑器")
 	}
-	if app.pick == nil {
-		t.Fatal("应弹出退出确认")
-	}
-	if len(app.pick.items) != 3 {
-		t.Fatalf("应有 3 个选项，实际 %d 个", len(app.pick.items))
-	}
-	labels := []string{
-		app.pick.items[0].Label,
-		app.pick.items[1].Label,
-		app.pick.items[2].Label,
-	}
-	joined := strings.Join(labels, " | ")
-	for _, want := range []string{"取消", "保存", "丢弃"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("选项里应包含“%s”，实际 %v", want, labels)
-		}
-	}
-	// 默认选中“取消”，误触回车不会丢数据。
-	if app.pick.cursor != 0 || app.pick.items[0].Action != "cancel" {
-		t.Errorf("默认应选中取消，实际 cursor=%d action=%s", app.pick.cursor, app.pick.items[0].Action)
-	}
-	// y/n 在这个三选一里必须失效，否则会误触到首项或末项。
+	assertProtectedPrompt(t, app, "esc")
+
+	// y/n 在三选一里必须失效，否则误按就把内容丢了。
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	if app.pick == nil {
-		t.Fatal("三选一里按 n 不应直接执行末项（会把内容丢掉）")
-	}
-	if app.editor.active != true {
-		t.Fatal("按 n 后仍应停留在编辑状态")
+		t.Fatal("三选一里按 n 不应直接执行（会把内容丢掉）")
 	}
 
-	// 选“取消退出”：回到编辑状态，内容还在。
-	app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // cursor=0 → cancel
-	if app.pick != nil {
-		t.Fatal("取消后应关闭选择框")
-	}
-	if !app.editor.active {
-		t.Fatal("取消后应回到编辑状态")
+	// 选“继续编辑”：回到编辑状态，内容还在。
+	selectAction(t, app, "cancel")
+	if app.pick != nil || !app.editor.active {
+		t.Fatal("继续编辑后应回到编辑状态")
 	}
 	if got := string(app.editor.value); got != "写到一半的随手记" {
-		t.Errorf("取消后内容应保留，实际 %q", got)
+		t.Errorf("继续编辑后内容应保留，实际 %q", got)
 	}
 	if app.quitting {
-		t.Fatal("取消后不应退出")
+		t.Error("继续编辑不应退出程序")
 	}
 
-	// 选“保存并退出”：写盘并退出。
-	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	app.pick.cursor = 1
-	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// 选“保存并关闭”：写盘、关闭编辑器，但**不退出程序**。
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	selectAction(t, app, "close_save")
+	if app.editor.active {
+		t.Error("保存并关闭后编辑器应关闭")
+	}
+	if app.quitting {
+		t.Error("保存并关闭不应退出程序")
+	}
+	saved, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Note != "写到一半的随手记" {
+		t.Errorf("保存并关闭应写盘，实际 %q", saved.Note)
+	}
+}
+
+// TestUnsavedNoteDiscardOnEsc 验证选“不保存，关闭”确实不写盘且不退出。
+func TestUnsavedNoteDiscardOnEsc(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+
+	app.openNote()
+	app.insertEditorText("原来的内容")
+	app.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+
+	app.openNote()
+	app.editor.value = []rune("改成了新内容")
+	app.editor.cursor = len(app.editor.value)
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	selectAction(t, app, "close_discard")
+
+	if app.editor.active {
+		t.Error("不保存关闭后编辑器应关闭")
+	}
+	if app.quitting {
+		t.Error("不保存关闭不应退出程序")
+	}
+	saved, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Note != "原来的内容" {
+		t.Errorf("不保存关闭不应写盘，期望 %q，实际 %q", "原来的内容", saved.Note)
+	}
+}
+
+// TestEscClosesEditorWhenUnchanged 验证没改动时 esc 照旧直接关闭，不多问。
+func TestEscClosesEditorWhenUnchanged(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.openNote()
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.pick != nil {
+		t.Error("没改动时 esc 不应弹确认框")
+	}
+	if app.editor.active {
+		t.Error("没改动时 esc 应直接关闭编辑器")
+	}
+	if app.quitting {
+		t.Error("esc 关编辑器不应退出程序")
+	}
+}
+
+// TestUnsavedNoteProtectedOnQuit 验证退出流程（菜单）同样受保护。
+func TestUnsavedNoteProtectedOnQuit(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+
+	app.openNote()
+	app.insertEditorText("写到一半的随手记")
+	// 从菜单触发退出：中间栏最后一项是退出。
+	app.focus = FocusMenu
+	app.cursors.menu = len(menuItems) - 1
+	app.activateMenuItem(app.cursors.menu)
+
+	assertProtectedPrompt(t, app, "菜单退出")
+	selectAction(t, app, "quit_save")
 	if !app.quitting {
-		t.Fatal("选“保存并退出”后应退出")
+		t.Fatal("保存并退出后应退出")
 	}
 	saved, err := s.Day("2026-10-03")
 	if err != nil {
@@ -141,12 +254,11 @@ func TestQuitDiscardingUnsavedNote(t *testing.T) {
 	app.openNote()
 	app.editor.value = []rune("改成了新内容")
 	app.editor.cursor = len(app.editor.value)
-	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if app.pick == nil {
-		t.Fatal("应弹出退出确认")
-	}
-	app.pick.cursor = 2
-	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app.focus = FocusMenu
+	app.cursors.menu = len(menuItems) - 1
+	app.activateMenuItem(app.cursors.menu)
+
+	selectAction(t, app, "quit_discard")
 	if !app.quitting {
 		t.Fatal("选“直接退出”后应退出")
 	}

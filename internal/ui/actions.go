@@ -237,25 +237,34 @@ func (a *App) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// 随手记（多行输入）里按 q / ctrl+c 想退出时，先问清“保存还是丢弃”，
-	// 不要让写到一半的内容悄悄丢掉（见用户反馈）。
+	// “关闭编辑器”的按键（esc / q / ctrl+c）在**内容改过且没保存**时
+	// 一律先问一句，不要静默丢弃写到一半的东西。
 	//
-	// 只在多行输入里这么做：单行输入框用于标题/设置项，里面的 q
-	// 是**要输入的字符**，吞掉它就没法打 q 了。
-	if a.editor.multiline && (msg.String() == "q" || msg.Type == tea.KeyCtrlC) {
-		if a.editor.Dirty() {
-			a.askQuit()
+	// 早期只有 q 有保护，按 esc 就直接扔掉——这正是用户报的问题：
+	// 手的习惯是按 esc，结果随手记白写了。
+	//
+	// 只对多行输入生效：单行输入框（标题、设置项）里的 q 是要输入的
+	// 字符，吞掉它就没法打 q；而那类输入本来就短，esc 直接取消是预期行为。
+	if a.editor.multiline {
+		closing := msg.String() == "q" || msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc
+		if closing && a.editor.Dirty() {
+			a.askCloseEditor()
 			return a, nil
 		}
-		// 没改过就照旧退出，不必多问一次。
-		a.quitting = true
-		return a, tea.Quit
+		if closing {
+			// 没改过就按原样处理：esc 取消，q / ctrl+c 退出程序。
+			if msg.Type == tea.KeyEsc {
+				a.closeEditor()
+				return a, nil
+			}
+			a.quitting = true
+			return a, tea.Quit
+		}
 	}
 
 	switch msg.Type {
 	case tea.KeyEsc:
-		a.editor.active = false
-		a.editor.onCommit = nil
+		a.closeEditor()
 		return a, nil
 	case tea.KeyEnter:
 		// 多行模式下 Enter 是换行，提交要用 Ctrl+S / Ctrl+D。
@@ -330,17 +339,34 @@ func (a *App) handleEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// closeEditor 关闭输入框，不改动任何数据（丢弃缓冲）。
+func (a *App) closeEditor() {
+	a.editor.active = false
+	a.editor.onCommit = nil
+	a.editor.multiline = false
+	a.editor.original = ""
+}
+
 // commitEditor 提交当前输入框内容。
 func (a *App) commitEditor() (tea.Model, tea.Cmd) {
 	value := a.editor.text()
 	commit := a.editor.onCommit
-	a.editor.active = false
-	a.editor.onCommit = nil
-	a.editor.multiline = false
+	a.closeEditor()
 	if commit != nil {
 		return commit(value)
 	}
 	return a, nil
+}
+
+// commitEditorValue 把内容交给保存逻辑，但不经过返回值（用于“保存并退出/关闭”）。
+func (a *App) commitEditorValue() {
+	value := a.editor.text()
+	commit := a.editor.onCommit
+	a.closeEditor()
+	if commit != nil {
+		// 保存逻辑只会设置提示或写盘，不会替换模型，忽略返回值即可。
+		_, _ = commit(value)
+	}
 }
 
 // insertEditorText 把外部文本（终端粘贴）整段插入输入框。
