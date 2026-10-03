@@ -26,6 +26,10 @@ type Config struct {
 	// DefaultFocus / DefaultBreak 是番茄钟的默认时长（分钟）。
 	DefaultFocus int `json:"default_focus_minutes"`
 	DefaultBreak int `json:"default_break_minutes"`
+	// PomodoroCycles 是番茄钟的段数（专注 + 休息为一轮），见需求 16。
+	PomodoroCycles int `json:"pomodoro_cycles,omitempty"`
+	// Quotes 是用户自定义的随机字条；为空时使用内置字条（见需求 9）。
+	Quotes []string `json:"quotes,omitempty"`
 	// Timezone 为空时使用系统本地时区。
 	Timezone string `json:"timezone,omitempty"`
 	// Nickname 会出现在看板问候语中。
@@ -64,6 +68,22 @@ func (c *Config) FocusDuration() time.Duration {
 // BreakDuration 返回默认休息时长。
 func (c *Config) BreakDuration() time.Duration {
 	return minutes(c.DefaultBreak, 5)
+}
+
+// DefaultPomodoroCycles 是番茄钟的默认段数。
+const DefaultPomodoroCycles = 4
+
+// EffectivePomodoroCycles 返回生效的番茄钟段数。
+func (c *Config) EffectivePomodoroCycles() int {
+	if c.PomodoroCycles <= 0 {
+		return DefaultPomodoroCycles
+	}
+	return c.PomodoroCycles
+}
+
+// QuotesText 把自定义字条拼成多行文本，供设置页编辑。
+func (c *Config) QuotesText() string {
+	return strings.Join(c.Quotes, "\n")
 }
 
 func minutes(v, fallback int) time.Duration {

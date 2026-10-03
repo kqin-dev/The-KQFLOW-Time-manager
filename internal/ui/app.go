@@ -69,7 +69,14 @@ type App struct {
 		goals    int
 		menu     int
 	}
-	scroll struct{ fixed, floating, goals int }
+	// taskActive 为真时，j/k 在选中条目的子任务里移动；taskCursor 是子任务下标。
+	taskActive bool
+	taskCursor int
+	// collapsed 记录被用户折叠的条目 ID，折叠后不再展开显示子任务。
+	collapsed map[string]bool
+	// subSelection 记录在“子任务模式”下用户是否想勾选子任务本身。
+	subSelection bool
+	scroll       struct{ fixed, floating, goals int }
 
 	editor editorState
 
@@ -78,9 +85,6 @@ type App struct {
 
 	// pendingPlan 保存已经选好、等待选择归属 TODO 的计时方案。
 	pendingPlan *model.Plan
-
-	// settingsEdit 记录设置页正在进行的多步编辑。
-	settingsEdit *settingsEdit
 
 	// paths 是配置文件与数据目录的定位信息。
 	paths *config.Paths
@@ -97,6 +101,11 @@ type App struct {
 	quoteAt   time.Time
 	animPhase float64
 	frame     int
+
+	// helpScroll 是帮助页的滚动偏移。
+	helpScroll int
+	// settingsCursor 是设置页当前选中的项。
+	settingsCursor int
 
 	toast     string
 	toastKind toastKind
@@ -135,13 +144,14 @@ func NewApp(opts Options) (*App, error) {
 		clk = clock.New()
 	}
 	a := &App{
-		store: opts.Store,
-		cfg:   opts.Config,
-		clock: clk,
-		st:    st,
-		paths: opts.Paths,
-		view:  ViewDashboard,
-		focus: FocusMenu,
+		store:     opts.Store,
+		cfg:       opts.Config,
+		clock:     clk,
+		st:        st,
+		paths:     opts.Paths,
+		view:      ViewDashboard,
+		focus:     FocusMenu,
+		collapsed: map[string]bool{},
 	}
 	a.quoteIdx = rand.Intn(len(Quotes))
 	a.quoteAt = clk.Now()
@@ -294,6 +304,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	// 庆祝动画播放时，任意按键优先用来中断动画，避免误触到看板上的操作（见需求 10）。
+	if a.celebrate != nil && key != "ctrl+c" {
+		a.celebrate = nil
+		return a, nil
+	}
+
 	// 模态框优先处理按键。
 	if a.pick != nil {
 		return a.handlePickKey(key)
@@ -333,33 +349,24 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleCarryKey(key)
 	}
 	if a.view == ViewHelp {
-		switch key {
-		case "esc", "q", "?":
-			a.view = ViewDashboard
-		case "ctrl+c":
-			a.quitting = true
-			return a, tea.Quit
-		}
-		return a, nil
+		return a.handleHelpKey(key)
 	}
 
 	switch key {
-	case "ctrl+c", "Q":
+	case "ctrl+c":
 		a.quitting = true
 		return a, tea.Quit
-	case "q", "esc":
-		a.quitting = true
-		return a, tea.Quit
+	case "q", "Q":
+		// 退出前先确认，避免误触 q 直接丢失查看状态（见需求 8）。
+		a.askQuit()
 	case "?":
 		a.view = ViewHelp
+		a.helpScroll = 0
+	// 栏位切换只保留 TAB，把 h/l 与左右方向键让给栏内操作（见问题 3）。
 	case "tab":
-		a.focus = (a.focus + 1) % 4
+		a.switchFocus(1)
 	case "shift+tab":
-		a.focus = (a.focus + 3) % 4
-	case "h", "left":
-		a.focus = (a.focus + 3) % 4
-	case "l", "right":
-		a.focus = (a.focus + 1) % 4
+		a.switchFocus(-1)
 	case "j", "down":
 		a.moveCursor(1)
 	case "k", "up":
@@ -369,6 +376,10 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		a.jumpCursor(false)
 	case " ":
+		// 子任务模式下空格勾选子任务，否则勾选整条 TODO。
+		if a.taskActive {
+			return a.toggleSelectedTask()
+		}
 		return a.toggleCurrent()
 	case "a":
 		a.startAdd()
@@ -392,9 +403,31 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.focus, a.cursors.menu = FocusGoals, 0
 		return a.activateMenuItem(2)
 	case "enter":
+		// 计时进行中时，enter 用于结束并归档计时。
+		if a.timer != nil {
+			a.stopTimer(a.timer.finished)
+			return a, saveCmd(a.saveDay)
+		}
 		if a.focus == FocusMenu {
 			return a.activateMenuItem(a.cursors.menu)
 		}
+		if a.focus == FocusGoals {
+			return a.handleGoalAction("toggle")
+		}
+		// TODO 栏：enter 进入子任务选择，已进入时用于勾选子任务。
+		if a.taskActive {
+			return a.toggleSelectedTask()
+		}
+		a.enterSubTasks()
+	case "esc":
+		// 处于子任务模式时先退回父条目，而不是弹退出确认。
+		if a.taskActive {
+			a.taskActive = false
+			return a, nil
+		}
+		a.askQuit()
+	case "L":
+		// 大写 L 用于勾选父条目，避免和子任务勾选混淆。
 		return a.toggleCurrent()
 	}
 	return a, nil
@@ -409,7 +442,7 @@ func (a *App) currentLen() int {
 	case FocusFloating:
 		return len(a.data.Floating)
 	case FocusGoals:
-		return len(a.goals)
+		return len(a.goalList())
 	default:
 		return len(menuItems)
 	}
@@ -442,6 +475,15 @@ func (a *App) setCursor(v int) {
 }
 
 func (a *App) moveCursor(delta int) {
+	// 处于子任务模式时，j/k 先在子任务里移动。
+	if a.taskActive {
+		if t := a.currentTodo(); t != nil && len(t.Tasks) > 0 {
+			n := len(t.Tasks)
+			a.taskCursor = (a.taskCursor + delta + n) % n
+			return
+		}
+		a.taskActive = false
+	}
 	n := a.currentLen()
 	if n == 0 {
 		return
@@ -454,6 +496,45 @@ func (a *App) moveCursor(delta int) {
 		cur = 0
 	}
 	a.setCursor(cur)
+}
+
+// switchFocus 切换栏位，并重置子任务选择状态。
+func (a *App) switchFocus(delta int) {
+	a.focus = Focus((int(a.focus) + delta + 4) % 4)
+	a.taskActive = false
+	a.taskCursor = 0
+}
+
+// enterSubTasks 进入子任务选择模式。
+func (a *App) enterSubTasks() {
+	t := a.currentTodo()
+	if t == nil || len(t.Tasks) == 0 {
+		a.setToast("该项还没有子任务，按 t 添加", toastWarn)
+		return
+	}
+	a.taskActive = true
+	a.taskCursor = clamp(a.taskCursor, 0, len(t.Tasks)-1)
+}
+
+// toggleSelectedTask 勾选当前选中的子任务，并回写父条目状态。
+func (a *App) toggleSelectedTask() (tea.Model, tea.Cmd) {
+	t := a.currentTodo()
+	if t == nil || a.taskCursor >= len(t.Tasks) {
+		return a, nil
+	}
+	now := a.clock.Now()
+	task := &t.Tasks[a.taskCursor]
+	if task.Done() {
+		task.Status = model.StatusTodo
+		task.DoneAt = nil
+	} else {
+		at := now
+		task.Status = model.StatusDone
+		task.DoneAt = &at
+	}
+	t.SyncFromTasks(now)
+	a.afterTodoToggle()
+	return a, saveCmd(a.saveDay)
 }
 
 func (a *App) jumpCursor(top bool) {
@@ -472,7 +553,7 @@ func (a *App) clampCursors() {
 	if a.cursors.menu >= len(menuItems) {
 		a.cursors.menu = 0
 	}
-	a.cursors.goals = clamp(a.cursors.goals, 0, max(0, len(a.goals)-1))
+	a.cursors.goals = clamp(a.cursors.goals, 0, max(0, len(a.goalList())-1))
 	a.cursors.fixed = clamp(a.cursors.fixed, 0, max(0, len(a.data.Fixed)-1))
 	a.cursors.floating = clamp(a.cursors.floating, 0, max(0, len(a.data.Floating)-1))
 }
@@ -503,16 +584,128 @@ func (a *App) toggleCurrent() (tea.Model, tea.Cmd) {
 			a.afterTodoToggle()
 		}
 	case FocusGoals:
-		if len(a.goals) > 0 {
-			g := &a.goals[a.cursors.goals]
-			g.Toggle(now, a.day)
-			a.persistGoals()
-			if g.Done {
-				a.archiveGoal(*g)
-			}
-		}
+		return a.handleGoalAction("toggle")
 	}
 	return a, saveCmd(a.saveDay)
+}
+
+// handleGoalAction 统一处理 GOAL 栏的完成与取消（见需求 10）。
+func (a *App) handleGoalAction(action string) (tea.Model, tea.Cmd) {
+	if action != "toggle" {
+		return a, nil
+	}
+	return a.toggleGoal(a.clock.Now())
+}
+
+// toggleGoal 在 goals.json 与当日归档之间移动目标（见需求 10）。
+//
+// 完成的 GOAL 会从与日期无关的 goals.json 移到当天的归档里；
+// 取消完成则把它从当天归档取回 goals.json，因此不会出现“取消或删除后仍留在归档”
+// 的状态残留。
+func (a *App) toggleGoal(now time.Time) (tea.Model, tea.Cmd) {
+	entry, ok := a.selectedGoalEntry()
+	if !ok {
+		return a, nil
+	}
+	if entry.Archived {
+		// 取消完成：从当日归档取回 goals.json。
+		restored := *entry.Goal
+		restored.Done = false
+		restored.DoneAt = nil
+		restored.Status = model.StatusTodo
+		restored.ArchivedDay = ""
+		for i := range restored.Tasks {
+			restored.Tasks[i].Status = model.StatusTodo
+			restored.Tasks[i].DoneAt = nil
+		}
+		a.removeArchivedGoal(restored.ID)
+		a.goals = append(a.goals, restored)
+		a.setToast(fmt.Sprintf("已取消完成，「%s」回到进行中的目标", restored.Title), toastInfo)
+	} else {
+		// 完成：移入当日归档。
+		done := *entry.Goal
+		done.Toggle(now, a.day)
+		a.removeActiveGoal(done.ID)
+		a.archiveGoal(done)
+		a.setToast(fmt.Sprintf("「%s」已完成并归档到 %s", done.Title, a.day), toastInfo)
+	}
+	a.persistGoals()
+	a.clampCursors()
+	return a, saveCmd(a.saveDay)
+}
+
+// goalEntry 是右栏的一个目标条目，用索引回指真实存储位置。
+//
+// 不能用指向切片元素的指针：往切片里 append 会让旧指针失效，
+// 之后对它的修改就写不回真正的数据了。
+type goalEntry struct {
+	Goal *model.Goal
+	// Archived 为真表示它存在当日归档里，否则在 goals.json 里。
+	Archived bool
+	// Index 是在对应切片中的下标。
+	Index int
+}
+
+// goalEntries 返回右栏要展示的目标：goals.json 中未归档的目标 + 当日已归档的目标。
+func (a *App) goalEntries() []goalEntry {
+	out := make([]goalEntry, 0, len(a.goals)+len(a.data.Archive.Goals))
+	for i := range a.goals {
+		out = append(out, goalEntry{Goal: &a.goals[i], Index: i})
+	}
+	for i := range a.data.Archive.Goals {
+		out = append(out, goalEntry{Goal: &a.data.Archive.Goals[i], Archived: true, Index: i})
+	}
+	return out
+}
+
+// goalList 返回右栏展示的目标指针，仅用于渲染。
+func (a *App) goalList() []*model.Goal {
+	entries := a.goalEntries()
+	out := make([]*model.Goal, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Goal)
+	}
+	return out
+}
+
+// selectedGoalEntry 返回当前选中的目标条目。
+func (a *App) selectedGoalEntry() (goalEntry, bool) {
+	entries := a.goalEntries()
+	if a.cursors.goals < 0 || a.cursors.goals >= len(entries) {
+		return goalEntry{}, false
+	}
+	return entries[a.cursors.goals], true
+}
+
+// selectedGoal 返回当前选中的目标指针。
+func (a *App) selectedGoal() *model.Goal {
+	e, ok := a.selectedGoalEntry()
+	if !ok {
+		return nil
+	}
+	return e.Goal
+}
+
+// removeActiveGoal 从 goals.json 中移除指定目标。
+func (a *App) removeActiveGoal(id string) {
+	filtered := a.goals[:0]
+	for _, g := range a.goals {
+		if g.ID != id {
+			filtered = append(filtered, g)
+		}
+	}
+	a.goals = filtered
+}
+
+// removeArchivedGoal 从当日归档中移除指定目标。
+func (a *App) removeArchivedGoal(id string) {
+	filtered := a.data.Archive.Goals[:0]
+	for _, g := range a.data.Archive.Goals {
+		if g.ID != id {
+			filtered = append(filtered, g)
+		}
+	}
+	a.data.Archive.Goals = filtered
 }
 
 func (a *App) afterTodoToggle() {
@@ -686,12 +879,7 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 	case action == "del_goal":
 		return a.deleteCurrent()
 	case action == "timer_pomodoro":
-		plan := model.Plan{Kind: model.TimerPomodoro, Cycle: 1}
-		plan.Segments = []model.Segment{
-			{Name: "专注", Kind: "focus", Dur: a.cfg.FocusDuration()},
-			{Name: "休息", Kind: "break", Dur: a.cfg.BreakDuration()},
-		}
-		a.chooseTimerTodo(plan)
+		a.chooseTimerTodo(a.pomodoroPlan())
 		return a, nil
 	case action == "timer_countdown":
 		plan := model.Plan{Kind: model.TimerCountDown}
@@ -716,12 +904,7 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		return a, nil
 	case action == "start_focus":
 		// 从菜单直接开始的番茄钟。
-		plan := model.Plan{Kind: model.TimerPomodoro, Cycle: 1}
-		plan.Segments = []model.Segment{
-			{Name: "专注", Kind: "focus", Dur: a.cfg.FocusDuration()},
-			{Name: "休息", Kind: "break", Dur: a.cfg.BreakDuration()},
-		}
-		a.beginTimer(plan, "")
+		a.beginTimer(a.pomodoroPlan(), "")
 		return a, nil
 	case strings.HasPrefix(action, "todo:"):
 		todoID := strings.TrimPrefix(action, "todo:")
@@ -739,6 +922,24 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 func (a *App) setToast(msg string, kind toastKind) {
 	a.toast = msg
 	a.toastKind = kind
+}
+
+// askQuit 弹出退出确认，避免误触 q 直接退出（见需求 8）。
+//
+// 默认选中“取消”，这样误触后顺手回车也不会退出。
+func (a *App) askQuit() {
+	quitLabel := "退出 Kairos"
+	if a.timer != nil {
+		quitLabel = "结束计时并退出"
+	}
+	a.pick = &pickState{
+		title: "确定要退出 Kairos 吗？",
+		items: []pickItem{
+			{Label: "取消，继续使用", Action: "cancel"},
+			{Label: quitLabel, Action: "quit"},
+		},
+		cursor: 0,
+	}
 }
 
 // ---------- 菜单 ----------

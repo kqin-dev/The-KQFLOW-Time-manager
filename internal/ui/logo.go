@@ -17,10 +17,35 @@ var LogoLines = []string{
 	`██   ██ ██   ██ ██ ██   ██  ██████  ███████ `,
 }
 
-// LogoCompactLines 是窄终端下使用的紧凑版本。
+// LogoCompactLines 是窄终端下使用的紧凑版本，宽度 36。
 var LogoCompactLines = []string{
 	`█▄▀ ▄▀▄ █ █▀▄ █▀▄ ▄▀▀`,
 	`█ █ █▀█ █ █▀▄ █▄▀ ▄██`,
+}
+
+// LogoMiniLines 是中间栏很窄时的最小版本，宽度 22。
+var LogoMiniLines = []string{
+	`█▄▀ █▀▄ █ █▀▄ █▀▄`,
+	`█ █ █▀▄ █ █▄▀ ▀▄█`,
+}
+
+// pickLogo 依据可用宽度选择能完整放下的 Logo。
+//
+// 关键点：Logo 行一旦超过可用宽度就会被折行，整幅字会被拆得看不出形状，
+// 所以宁可换用更小的版本，也不能让它折行。
+func pickLogo(avail int) []string {
+	for _, candidate := range [][]string{LogoLines, LogoCompactLines, LogoMiniLines} {
+		w := 0
+		for _, line := range candidate {
+			if n := lipgloss.Width(line); n > w {
+				w = n
+			}
+		}
+		if w <= avail {
+			return candidate
+		}
+	}
+	return nil
 }
 
 // LogoWidth 返回完整 Logo 的显示宽度。
@@ -36,11 +61,12 @@ func LogoWidth() int {
 
 // GradientLogo 用给定的两个端点颜色，把 Logo 渲染成横向渐变。
 //
-// phase 让渐变随时间移动，形成流动的动效；total 是动画周期。
-func GradientLogo(from, to lipgloss.Color, phase float64, compact bool) string {
-	lines := LogoLines
-	if compact {
-		lines = LogoCompactLines
+// phase 让渐变随时间移动，形成流动的动效；avail 是可用宽度，
+// 太窄时自动换用更小的字形，放不下则返回空字符串。
+func GradientLogo(from, to lipgloss.Color, phase float64, avail int) string {
+	lines := pickLogo(avail)
+	if len(lines) == 0 {
+		return ""
 	}
 	width := 1
 	for _, line := range lines {

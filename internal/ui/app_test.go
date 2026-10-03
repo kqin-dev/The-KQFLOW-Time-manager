@@ -144,7 +144,7 @@ func TestAddAndToggleTodo(t *testing.T) {
 	}
 }
 
-// TestGoalToggleArchives 验证 GOAL 勾选后归档到当日（见需求 10）。
+// TestGoalToggleArchives 验证 GOAL 完成后移入当日归档，取消完成则移回（见需求 10）。
 func TestGoalToggleArchives(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
 	app, s, _ := newTestApp(t, at)
@@ -158,32 +158,156 @@ func TestGoalToggleArchives(t *testing.T) {
 	if len(app.goals) != 1 {
 		t.Fatalf("应有 1 个 GOAL，实际 %d", len(app.goals))
 	}
-	goal := app.goals[0]
-	if goal.Tag == "" {
+	if app.goals[0].Tag == "" {
 		t.Error("GOAL 应带标签，供继承时防混淆")
 	}
+	goalID := app.goals[0].ID
 
-	// 焦点此时在 GOAL 栏，直接勾选。
+	// 焦点此时在 GOAL 栏，勾选后应从 goals.json 移入当日归档。
 	press(t, app, "space")
-	if !app.goals[0].Done {
-		t.Fatal("GOAL 应被勾选为完成")
-	}
-	if app.goals[0].ArchivedDay != "2026-10-03" {
-		t.Errorf("归档日应为 2026-10-03，实际 %q", app.goals[0].ArchivedDay)
+	if len(app.goals) != 0 {
+		t.Errorf("完成后 goals.json 不应再有该目标，实际 %d 项", len(app.goals))
 	}
 	if len(app.data.Archive.Goals) != 1 {
 		t.Fatalf("当日归档应含 1 个 GOAL，实际 %d", len(app.data.Archive.Goals))
 	}
-	if !strings.Contains(app.View(), "今日已归档") {
-		t.Error("看板右栏应展示今日已归档的 GOAL")
+	archived := app.data.Archive.Goals[0]
+	if archived.ID != goalID {
+		t.Errorf("归档的应是同一个目标，实际 %q", archived.ID)
 	}
+	if !archived.Done || archived.ArchivedDay != "2026-10-03" {
+		t.Errorf("归档目标应标记完成与归档日: done=%v day=%q", archived.Done, archived.ArchivedDay)
+	}
+	// 右栏仍应能看到它（归档与进行中合并展示）。
+	if !strings.Contains(app.View(), "读完三本书") {
+		t.Error("看板右栏应同时展示已归档的 GOAL")
+	}
+
+	// 落盘校验：goals.json 里已没有它，当日数据里有。
+	goals, err := s.Goals()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(goals) != 0 {
+		t.Errorf("goals.json 应为空，实际 %+v", goals)
+	}
+	savedDay, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(savedDay.Archive.Goals) != 1 {
+		t.Errorf("当日归档应落盘 1 项，实际 %d", len(savedDay.Archive.Goals))
+	}
+
+	// 取消完成：应回到 goals.json，归档里不再有它。
+	press(t, app, "space")
+	if len(app.data.Archive.Goals) != 0 {
+		t.Errorf("取消完成后归档应清空，实际 %d 项", len(app.data.Archive.Goals))
+	}
+	if len(app.goals) != 1 {
+		t.Fatalf("取消完成后 goals.json 应有 1 项，实际 %d", len(app.goals))
+	}
+	back := app.goals[0]
+	if back.ID != goalID || back.Done || back.ArchivedDay != "" {
+		t.Errorf("取回的目标状态不正确: %+v", back)
+	}
+	goals, err = s.Goals()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(goals) != 1 || goals[0].Done {
+		t.Errorf("取回后 goals.json 应有 1 个未完成目标，实际 %+v", goals)
+	}
+}
+
+// TestGoalDeleteFromArchive 验证删除归档中的 GOAL 会同时从当日数据里移除。
+func TestGoalDeleteFromArchive(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+
+	press(t, app, "A")
+	for _, r := range "临时目标" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	press(t, app, "space") // 完成并归档
+
+	if len(app.data.Archive.Goals) != 1 {
+		t.Fatalf("归档应有 1 项，实际 %d", len(app.data.Archive.Goals))
+	}
+
+	// 选中归档中的目标并删除。
+	app.focus = FocusGoals
+	app.cursors.goals = 0
+	press(t, app, "d")
+	press(t, app, "enter") // 确认删除
+
+	if len(app.data.Archive.Goals) != 0 {
+		t.Errorf("删除后归档应为空，实际 %d", len(app.data.Archive.Goals))
+	}
+	if len(app.goals) != 0 {
+		t.Errorf("删除后不应把它塞回 goals.json，实际 %d", len(app.goals))
+	}
+	savedDay, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(savedDay.Archive.Goals) != 0 {
+		t.Errorf("删除应落盘，实际归档 %d 项", len(savedDay.Archive.Goals))
+	}
+}
+
+// TestGoalEditPersists 验证重命名 GOAL 会写回真正存储它的地方。
+//
+// 归档中的目标存在当日数据里，未归档的存在 goals.json 里，两者都不能改到副本上。
+func TestGoalEditPersists(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+
+	press(t, app, "A")
+	for _, r := range "原名" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+
+	// 重命名未归档的目标。
+	press(t, app, "e")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "改名后" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
 
 	goals, err := s.Goals()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(goals) != 1 || !goals[0].Done {
-		t.Errorf("GOAL 落盘不正确: %+v", goals)
+	if len(goals) != 1 || goals[0].Title != "改名后" {
+		t.Fatalf("重命名未写回 goals.json: %+v", goals)
+	}
+	if goals[0].Tag != model.TagOf("改名后") {
+		t.Errorf("标签应随标题更新，实际 %q", goals[0].Tag)
+	}
+
+	// 归档后再重命名，应写回当日数据。
+	app.focus = FocusGoals
+	app.cursors.goals = 0
+	press(t, app, "space")
+	press(t, app, "e")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "归档后改名" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+
+	savedDay, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(savedDay.Archive.Goals) != 1 || savedDay.Archive.Goals[0].Title != "归档后改名" {
+		t.Fatalf("重命名未写回当日归档: %+v", savedDay.Archive.Goals)
 	}
 }
 
@@ -841,17 +965,478 @@ func allowCarrySkip(t *testing.T, app *App) {
 	}
 }
 
-// TestQuitKeys 验证退出快捷键。
-func TestQuitKeys(t *testing.T) {
+// TestAddGoesToFocusedColumn 验证 a 添加到当前焦点所在的栏（见问题 1）。
+//
+// 固定栏和临时栏此前共用同一条添加逻辑，导致临时栏实际上加不进去东西。
+func TestAddGoesToFocusedColumn(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	for _, key := range []string{"q", "Q"} {
+	app, _, _ := newTestApp(t, at)
+
+	// 焦点在固定栏。
+	app.focus = FocusFixed
+	press(t, app, "a")
+	for _, r := range "固定的事" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if len(app.data.Fixed) != 1 {
+		t.Fatalf("固定栏应有 1 项，实际 %d", len(app.data.Fixed))
+	}
+	if len(app.data.Floating) != 0 {
+		t.Errorf("焦点在固定栏时不应写入临时栏，实际 %d 项", len(app.data.Floating))
+	}
+	if app.data.Fixed[0].Kind != model.KindFixed {
+		t.Errorf("应创建固定类型，实际 %q", app.data.Fixed[0].Kind)
+	}
+
+	// 焦点在临时栏。
+	app.focus = FocusFloating
+	press(t, app, "a")
+	for _, r := range "临时的事" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if len(app.data.Floating) != 1 {
+		t.Fatalf("临时栏应有 1 项，实际 %d", len(app.data.Floating))
+	}
+	if app.data.Floating[0].Kind != model.KindFloating {
+		t.Errorf("应创建临时类型，实际 %q", app.data.Floating[0].Kind)
+	}
+}
+
+// TestTabIsTheOnlyColumnSwitch 验证栏位只能通过 TAB 切换（见问题 3）。
+//
+// h/l 与左右方向键不再切换栏位，这样栏内才有空间给子任务等操作。
+func TestTabIsTheOnlyColumnSwitch(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	start := app.focus
+
+	for _, key := range []string{"h", "l"} {
+		app.focus = start
+		press(t, app, key)
+		if app.focus != start {
+			t.Errorf("按 %q 不应切换栏位，实际从 %v 变成 %v", key, start, app.focus)
+		}
+	}
+	for _, k := range []tea.KeyType{tea.KeyLeft, tea.KeyRight} {
+		app.focus = start
+		app.Update(tea.KeyMsg{Type: k})
+		if app.focus != start {
+			t.Errorf("左右方向键不应切换栏位，实际变成 %v", app.focus)
+		}
+	}
+
+	// TAB 仍然可以循环切换。
+	app.focus = start
+	seen := map[Focus]bool{}
+	for i := 0; i < 4; i++ {
+		press(t, app, "tab")
+		seen[app.focus] = true
+	}
+	if len(seen) != 4 {
+		t.Errorf("TAB 应能轮到全部 4 个栏位，实际只到过 %d 个", len(seen))
+	}
+	if app.focus != start {
+		t.Errorf("切换 4 次应回到起点，实际 %v", app.focus)
+	}
+}
+
+// TestTaskCanBeSelectedAndToggled 验证子任务可以被选中和勾选（见问题 3）。
+func TestTaskCanBeSelectedAndToggled(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+
+	// 造一条带两个子任务的临时 TODO。
+	item := model.NewTodo("写论文", model.KindFloating, app.day, at)
+	item.Tasks = []model.Task{model.NewTask("列提纲"), model.NewTask("写引言")}
+	app.data.Floating = append(app.data.Floating, item)
+	app.focus = FocusFloating
+	app.cursors.floating = 0
+
+	// enter 进入子任务模式。
+	press(t, app, "enter")
+	if !app.taskActive {
+		t.Fatal("按 enter 应进入子任务模式")
+	}
+	if app.taskCursor != 0 {
+		t.Fatalf("初始应选中第 1 个子任务，实际 %d", app.taskCursor)
+	}
+
+	// j 在子任务之间移动，而不是移动父条目。
+	press(t, app, "j")
+	if app.taskCursor != 1 {
+		t.Errorf("按 j 应移到第 2 个子任务，实际 %d", app.taskCursor)
+	}
+	if app.cursors.floating != 0 {
+		t.Errorf("子任务模式下不应移动父条目光标，实际 %d", app.cursors.floating)
+	}
+
+	// 空格勾选子任务。
+	press(t, app, " ")
+	if !item.Tasks[1].Done() {
+		t.Error("空格应勾选选中的子任务")
+	}
+	if item.Done {
+		t.Error("只完成一个子任务时父条目不应算完成")
+	}
+	if item.Tasks[1].DoneAt == nil {
+		t.Error("勾选子任务应记录完成时间")
+	}
+
+	// 页面上应有选中高亮（子任务行也能被选中）。
+	if !strings.Contains(app.View(), "写引言") {
+		t.Error("看板应展示子任务")
+	}
+
+	// 落盘校验。
+	saved, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Floating) != 1 || len(saved.Floating[0].Tasks) != 2 {
+		t.Fatalf("子任务应落盘，实际 %+v", saved.Floating)
+	}
+	if !saved.Floating[0].Tasks[1].Done() {
+		t.Error("子任务的完成状态应已落盘")
+	}
+
+	// esc 退回父条目。
+	press(t, app, "esc")
+	if app.taskActive {
+		t.Error("按 esc 应退出子任务模式")
+	}
+	if app.pick != nil {
+		t.Error("从子任务模式按 esc 不应弹出退出确认")
+	}
+}
+
+// TestAllTasksDoneCompletesParent 验证子任务全部完成时父条目也完成。
+func TestAllTasksDoneCompletesParent(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+
+	item := model.NewTodo("两小步", model.KindFloating, app.day, at)
+	item.Tasks = []model.Task{model.NewTask("第一步"), model.NewTask("第二步")}
+	app.data.Floating = append(app.data.Floating, item)
+	app.focus = FocusFloating
+	app.cursors.floating = 0
+
+	press(t, app, "enter")
+	press(t, app, " ")
+	press(t, app, "j")
+	press(t, app, " ")
+	if !item.Done {
+		t.Fatal("子任务全部完成时父条目应标记为完成")
+	}
+	if item.DoneAt == nil {
+		t.Error("父条目完成时应记录时间")
+	}
+
+	// 取消第二个子任务，父条目应回到未完成。
+	// 注意：全部待办已完成会触发庆祝动画，而动画会优先吞掉按键（见需求 10），
+	// 所以这里先手动结束动画，以便验证子任务回退逻辑本身。
+	app.celebrate = nil
+	press(t, app, " ")
+	if item.Tasks[1].Done() {
+		t.Fatal("再按一次空格应取消该子任务")
+	}
+	if item.Done {
+		t.Error("取消子任务后父条目应回到未完成")
+	}
+	if item.DoneAt != nil {
+		t.Error("父条目回到未完成时应清掉完成时间")
+	}
+	if item.Status != model.StatusDoing {
+		t.Errorf("仍有子任务完成时父条目应为 doing，实际 %q", item.Status)
+	}
+}
+
+// TestPomodoroCyclesConfigurable 验证番茄钟段数可配置（见问题 4）。
+func TestPomodoroCyclesConfigurable(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+
+	// 默认 4 段：4 个专注 + 3 个休息。
+	app, _, cfg := newTestApp(t, at)
+	plan := app.pomodoroPlan()
+	if plan.Cycle != 4 {
+		t.Errorf("默认应为 4 段，实际 %d", plan.Cycle)
+	}
+	focus, rest := 0, 0
+	for _, s := range plan.Segments {
+		switch s.Kind {
+		case "focus":
+			focus++
+		case "break":
+			rest++
+		}
+	}
+	if focus != 4 || rest != 3 {
+		t.Errorf("4 段番茄钟应有 4 专注 + 3 休息，实际 %d/%d", focus, rest)
+	}
+	// 最后一段应是专注，避免计时结束后又跳进休息。
+	if last := plan.Segments[len(plan.Segments)-1].Kind; last != "focus" {
+		t.Errorf("最后一段应为专注，实际 %q", last)
+	}
+
+	// 改成 2 段。
+	cfg.PomodoroCycles = 2
+	plan = app.pomodoroPlan()
+	if plan.Cycle != 2 {
+		t.Errorf("应为 2 段，实际 %d", plan.Cycle)
+	}
+	if len(plan.Segments) != 3 {
+		t.Errorf("2 段番茄钟应有 3 个时段，实际 %d", len(plan.Segments))
+	}
+
+	// 1 段时只有专注，没有休息。
+	cfg.PomodoroCycles = 1
+	plan = app.pomodoroPlan()
+	if len(plan.Segments) != 1 || plan.Segments[0].Kind != "focus" {
+		t.Errorf("1 段番茄钟应只有专注，实际 %+v", plan.Segments)
+	}
+
+	// 段数应通过设置页写入配置。
+	cfg.PomodoroCycles = 0
+	app.view = ViewSettings
+	app.settingsCursor = settingIndex(t, "番茄钟段数（专注 + 休息为一轮）")
+	press(t, app, "enter")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "3" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if cfg.EffectivePomodoroCycles() != 3 {
+		t.Errorf("设置页应写入 3 段，实际 %d", cfg.EffectivePomodoroCycles())
+	}
+	// 非法输入不应写入。
+	press(t, app, "enter")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "99" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if cfg.EffectivePomodoroCycles() != 3 {
+		t.Errorf("非法段数不应写入，实际 %d", cfg.EffectivePomodoroCycles())
+	}
+}
+
+// settingIndex 按标签找到设置项下标。
+func settingIndex(t *testing.T, label string) int {
+	t.Helper()
+	for i, item := range settingItems {
+		if item.Label == label {
+			return i
+		}
+	}
+	t.Fatalf("没有找到设置项 %q", label)
+	return 0
+}
+
+// TestSettingsNavigation 验证设置页可以用 j/k 与方向键选择（见问题 5）。
+func TestSettingsNavigation(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.view = ViewSettings
+	app.settingsCursor = 0
+
+	press(t, app, "j")
+	if app.settingsCursor != 1 {
+		t.Errorf("按 j 应下移一项，实际 %d", app.settingsCursor)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if app.settingsCursor != 2 {
+		t.Errorf("方向键下应下移一项，实际 %d", app.settingsCursor)
+	}
+	press(t, app, "k")
+	if app.settingsCursor != 1 {
+		t.Errorf("按 k 应上移一项，实际 %d", app.settingsCursor)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if app.settingsCursor != 0 {
+		t.Errorf("方向键上应上移一项，实际 %d", app.settingsCursor)
+	}
+	// 从首项再上移应绕到末项。
+	press(t, app, "k")
+	if app.settingsCursor != len(settingItems)-1 {
+		t.Errorf("越过首项应绕到末项，实际 %d", app.settingsCursor)
+	}
+	// G / g 跳转。
+	press(t, app, "g")
+	if app.settingsCursor != 0 {
+		t.Errorf("按 g 应回到首项，实际 %d", app.settingsCursor)
+	}
+	press(t, app, "G")
+	if app.settingsCursor != len(settingItems)-1 {
+		t.Errorf("按 G 应到末项，实际 %d", app.settingsCursor)
+	}
+}
+
+// TestCustomQuotes 验证用户可以自定义字条（见问题 9）。
+func TestCustomQuotes(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, cfg := newTestApp(t, at)
+
+	// 默认使用内置字条。
+	if len(app.customQuotes()) != len(Quotes) {
+		t.Fatalf("默认应使用内置字条，实际 %d 条", len(app.customQuotes()))
+	}
+
+	// 通过设置页写入两条自定义字条。
+	app.view = ViewSettings
+	app.settingsCursor = settingIndex(t, "自定义字条（每行一条）")
+	press(t, app, "enter")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "第一条自定义\n第二条自定义" {
+		if r == '\n' {
+			continue // 输入框只接受单行，换行在下面用配置直接验证
+		}
+		app.editor.insert(r)
+	}
+	press(t, app, "enter")
+
+	if len(cfg.Quotes) != 1 || cfg.Quotes[0] != "第一条自定义第二条自定义" {
+		t.Fatalf("应写入 1 条字条，实际 %#v", cfg.Quotes)
+	}
+	// 看板应展示自定义字条（可能因宽度不足而折行，所以先去掉空白再比对）。
+	app.view = ViewDashboard
+	flat := strings.Join(strings.Fields(app.View()), "")
+	if !strings.Contains(flat, "第一条自定义第二条自定义") {
+		t.Errorf("看板应展示自定义字条，实际输出:\n%s", app.View())
+	}
+	if strings.Contains(flat, Quotes[0]) {
+		t.Error("设置了自定义字条后不应再显示内置字条")
+	}
+
+	// 多行解析：直接验证解析函数。
+	lines := parseQuoteLines("  第一条  \n\n第二条\n   \n第三条")
+	if len(lines) != 3 || lines[0] != "第一条" || lines[2] != "第三条" {
+		t.Errorf("多行解析不正确: %#v", lines)
+	}
+
+	// 清空后回到内置字条。
+	cfg.Quotes = nil
+	if len(app.customQuotes()) != len(Quotes) {
+		t.Error("清空自定义字条后应回到内置字条")
+	}
+	// 轮换不能越界。
+	for i := 0; i < 30; i++ {
+		app.NextQuote()
+		if got := app.CurrentQuote(); got == "" {
+			t.Fatal("轮换后字条不应为空")
+		}
+	}
+}
+
+// TestTodoAddTargets 验证两种 TODO 的添加目标互不干扰（见问题 1）。
+func TestTodoAddTargets(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+
+	// 焦点在中间菜单时，a 默认加到临时栏。
+	app.focus = FocusMenu
+	press(t, app, "a")
+	for _, r := range "随手记" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if len(app.data.Floating) != 1 {
+		t.Errorf("焦点在菜单时 a 应加到临时栏，实际临时 %d 项", len(app.data.Floating))
+	}
+
+	// 从 GOAL 栏按 a 也应加到临时栏，而不是 GOAL。
+	app.focus = FocusGoals
+	press(t, app, "a")
+	for _, r := range "另一件" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if len(app.data.Floating) != 2 {
+		t.Errorf("应加到临时栏，实际 %d 项", len(app.data.Floating))
+	}
+	if len(app.goals) != 0 {
+		t.Errorf("按 a 不应创建 GOAL，实际 %d 个", len(app.goals))
+	}
+}
+
+// TestQuitRequiresConfirmation 验证按 q 先弹确认而不是直接退出（见需求 8）。
+func TestQuitRequiresConfirmation(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	for _, key := range []string{"q", "Q", "esc"} {
 		app, _, _ := newTestApp(t, at)
 		_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-		if cmd == nil {
-			t.Errorf("按 %q 应触发退出命令", key)
+		if cmd != nil {
+			t.Errorf("按 %q 不应直接退出", key)
 		}
-		if !app.quitting {
-			t.Errorf("按 %q 应标记为正在退出", key)
+		if app.quitting {
+			t.Errorf("按 %q 不应立刻标记为退出", key)
 		}
+		if app.pick == nil {
+			t.Fatalf("按 %q 应弹出退出确认", key)
+		}
+		if app.pick.cursor != 0 {
+			t.Errorf("退出确认默认应选中“取消”，实际下标 %d", app.pick.cursor)
+		}
+		// 直接回车 = 取消，不应退出。
+		press(t, app, "enter")
+		if app.quitting {
+			t.Errorf("确认框里直接回车应取消退出")
+		}
+		if app.pick != nil {
+			t.Errorf("取消后确认框应关闭")
+		}
+	}
+}
+
+// TestQuitConfirmedExits 验证确认后才真正退出。
+func TestQuitConfirmedExits(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+
+	press(t, app, "q")
+	if app.pick == nil {
+		t.Fatal("应弹出退出确认")
+	}
+	// 选到“退出”并确认。
+	press(t, app, "j")
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !app.quitting {
+		t.Error("确认后应标记为退出")
+	}
+	if cmd == nil {
+		t.Error("确认后应返回退出命令")
+	}
+}
+
+// TestCelebrateInterruptsOnAnyKey 验证庆祝动画期间任意按键先中断动画（见需求 10）。
+func TestCelebrateInterruptsOnAnyKey(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+
+	// 造一个已完成全部待办的场景，触发庆祝。
+	app.data.Floating = []*model.Todo{model.NewTodo("唯一的事", model.KindFloating, app.day, at)}
+	app.cursors.floating = 0
+	app.focus = FocusFloating
+	press(t, app, "space")
+	if app.celebrate == nil {
+		t.Fatal("全部完成应触发庆祝")
+	}
+	before := len(app.data.Floating)
+
+	// 动画期间的按键只应中断动画，不应作用到看板上。
+	press(t, app, "d")
+	if app.celebrate != nil {
+		t.Error("按键应中断庆祝动画")
+	}
+	if len(app.data.Floating) != before {
+		t.Error("中断动画的按键不应触发删除等操作")
+	}
+	// 动画已结束，再按 d 才应该真的走删除确认。
+	press(t, app, "d")
+	if app.pick == nil {
+		t.Error("动画结束后的按键应正常生效")
 	}
 }

@@ -9,10 +9,10 @@ import (
 	"github.com/kqin-dev/The-Kairos-Time-manager/internal/model"
 )
 
-// assertNoOverflow 检查渲染结果没有超出终端宽度。
+// assertNoOverflow 检查渲染结果没有超出终端宽高。
 //
-// 浮层与整页都曾用固定宽度，窄终端下会撑破后面的面板边框。
-// 这里对每一行做显示宽度断言，作为防止回归的守门人。
+// 浮层与整页都曾用固定尺寸，终端偏小时会撑破面板边框或顶出可视区域，
+// 逼得用户必须全屏才能用。这里对每一行做显示宽度断言，并检查总行数。
 // 终端小于 minWidth×minHeight 时看板会主动显示“窗口太小”，那是预期行为，跳过。
 func assertNoOverflow(t *testing.T, name, out string, width, height int) {
 	t.Helper()
@@ -22,7 +22,11 @@ func assertNoOverflow(t *testing.T, name, out string, width, height int) {
 	if strings.Contains(out, "终端窗口太小") {
 		return
 	}
-	for i, line := range strings.Split(out, "\n") {
+	lines := strings.Split(out, "\n")
+	if len(lines) > height {
+		t.Errorf("%s 行数 %d 超过终端高度 %d", name, len(lines), height)
+	}
+	for i, line := range lines {
 		if w := lipgloss.Width(line); w > width {
 			t.Errorf("%s 第 %d 行宽度 %d 超过终端 %d: %q", name, i, w, width, line)
 		}
@@ -87,9 +91,104 @@ func TestNoViewOverflowsTerminal(t *testing.T) {
 			assertNoOverflow(t, "继承确认页", app.View(), w, h)
 			app.view = ViewDashboard
 
+			// 浮层：计时菜单（第二级菜单，含方向键选择）。
+			app.startTimer()
+			assertNoOverflow(t, "计时菜单", app.View(), w, h)
+			app.pick = nil
+
+			// 浮层：退出确认。
+			app.askQuit()
+			assertNoOverflow(t, "退出确认", app.View(), w, h)
+			app.pick = nil
+
 			// 浮层：庆祝特效。
 			app.celebrate = &celebrateState{started: time.Now()}
 			assertNoOverflow(t, "庆祝特效", app.View(), w, h)
+		}
+	}
+}
+
+// TestHelpPageFitsWithoutFullscreen 验证帮助页不需要全屏也能完整显示（见问题 2）。
+func TestHelpPageFitsWithoutFullscreen(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
+	// 常见终端尺寸，包含偏小的笔记本窗口。
+	for _, size := range [][2]int{{100, 40}, {100, 30}, {120, 35}, {80, 24}, {90, 28}, {140, 45}} {
+		app, _, _ := newTestApp(t, at)
+		app.width, app.height = size[0], size[1]
+		out := app.renderHelp()
+		lines := strings.Split(out, "\n")
+		if len(lines) > size[1] {
+			t.Errorf("%dx%d：帮助页行数 %d 超出终端", size[0], size[1], len(lines))
+		}
+		for i, l := range lines {
+			if w := lipgloss.Width(l); w > size[0] {
+				t.Errorf("%dx%d：帮助页第 %d 行宽 %d 超出终端", size[0], size[1], i, w)
+			}
+		}
+		if !strings.Contains(out, "帮助") {
+			t.Errorf("%dx%d：帮助页应包含标题", size[0], size[1])
+		}
+	}
+}
+
+// TestHelpPageScrolls 验证帮助页内容超出时可以用 j/k 滚动查看。
+func TestHelpPageScrolls(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	// 故意用很矮的终端，逼出滚动。
+	app.width, app.height = 100, minHeight
+	app.view = ViewHelp
+	app.helpScroll = 0
+	first := app.View()
+
+	press(t, app, "j", "j", "j")
+	if app.helpScroll == 0 {
+		t.Fatal("按 j 应向下滚动帮助内容")
+	}
+	if app.View() == first {
+		t.Error("滚动后内容应有变化")
+	}
+	// 滚回顶部。
+	press(t, app, "g")
+	if app.helpScroll != 0 {
+		t.Errorf("按 g 应回到顶部，实际 %d", app.helpScroll)
+	}
+	if app.View() != first {
+		t.Error("回到顶部后内容应与初始一致")
+	}
+}
+
+// TestSecondLevelMenuCentered 验证二级菜单居中而不是贴左边缘（见问题 6）。
+func TestSecondLevelMenuCentered(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
+	for _, w := range []int{80, 100, 120, 160} {
+		app, _, _ := newTestApp(t, at)
+		app.width, app.height = w, 30
+		app.startTimer()
+		out := app.View()
+		// 找到弹窗上边框所在行，算出左右留白。
+		var left, right int = -1, -1
+		for _, line := range strings.Split(out, "\n") {
+			if idx := strings.Index(line, "╔"); idx >= 0 {
+				left = lipgloss.Width(line[:idx])
+				if end := strings.Index(line, "╗"); end >= 0 {
+					right = lipgloss.Width(line[:end])
+				}
+				break
+			}
+		}
+		if left < 0 {
+			t.Fatalf("宽度 %d：没找到弹窗边框", w)
+		}
+		if left < 1 {
+			t.Errorf("宽度 %d：弹窗左侧没有留白，贴到了边缘", w)
+		}
+		if w-right-1 < 1 {
+			t.Errorf("宽度 %d：弹窗右侧没有留白（右边剩 %d 列）", w, w-right-1)
+		}
+		// 左右留白应当接近，才算居中。
+		if diff := (w - right - 1) - left; diff > 4 || diff < -4 {
+			t.Errorf("宽度 %d：弹窗未居中，左留白 %d 右留白 %d", w, left, w-right-1)
 		}
 	}
 }

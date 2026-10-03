@@ -37,14 +37,27 @@ const quoteEvery = 12 * time.Second
 
 // NextQuote 轮换到下一条字条。
 func (a *App) NextQuote() {
-	if len(Quotes) == 0 {
+	list := a.customQuotes()
+	if len(list) == 0 {
 		return
 	}
-	next := rand.Intn(len(Quotes))
+	next := rand.Intn(len(list))
 	if next == a.quoteIdx {
-		next = (next + 1) % len(Quotes)
+		next = (next + 1) % len(list)
 	}
 	a.quoteIdx = next
+}
+
+// CurrentQuote 返回当前要展示的字条。
+func (a *App) CurrentQuote() string {
+	list := a.customQuotes()
+	if len(list) == 0 {
+		return ""
+	}
+	if a.quoteIdx < 0 || a.quoteIdx >= len(list) {
+		a.quoteIdx = 0
+	}
+	return list[a.quoteIdx]
 }
 
 // ---------- 选择框 ----------

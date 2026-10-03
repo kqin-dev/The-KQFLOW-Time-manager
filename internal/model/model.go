@@ -127,7 +127,13 @@ func (t *Todo) Toggle(now time.Time) {
 }
 
 // SyncFromTasks 在子任务被逐条勾选后，回写父条目的完成状态。
+//
+// 只要还有子任务没完成，父条目就一定不是完成状态；反过来子任务全部完成时，
+// 父条目也算完成。这样“取消一个子任务”能正确地把父条目从已完成拉回来。
 func (t *Todo) SyncFromTasks(now time.Time) {
+	if len(t.Tasks) == 0 {
+		return
+	}
 	all, any := true, false
 	for _, task := range t.Tasks {
 		if task.Done() {
@@ -137,21 +143,18 @@ func (t *Todo) SyncFromTasks(now time.Time) {
 		}
 	}
 	switch {
-	case len(t.Tasks) > 0 && all:
+	case all:
 		if !t.Done {
 			at := now
 			t.DoneAt = &at
 		}
 		t.Done, t.Status = true, StatusDone
-	case t.Done:
-		// 存在未完成子项时，父条目回到未完成。
-		t.Done, t.DoneAt, t.Status = false, nil, StatusTodo
+	case any:
+		// 部分完成：父条目必须回到未完成。
+		t.Done, t.DoneAt, t.Status = false, nil, StatusDoing
 	default:
-		if any {
-			t.Status = StatusDoing
-		} else {
-			t.Status = StatusTodo
-		}
+		// 子任务全被取消，父条目回到未开始。
+		t.Done, t.DoneAt, t.Status = false, nil, StatusTodo
 	}
 }
 

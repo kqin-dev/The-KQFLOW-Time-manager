@@ -16,17 +16,20 @@ import (
 // IsCompact 报告当前终端是否够窄，需要收紧浮层内边距。
 func (a *App) IsCompact() bool { return a.width < compactWidth }
 
+// minMargin 是浮层两侧最少保留的空白列数，让二级菜单居中而不是贴着终端边缘。
+const minMargin = 2
+
 // overlayInner 返回浮层内容区实际可用的字符数。
 //
 // 看板按“整个终端宽度”排版面板，而浮层是套在自己的边框里再叠上去的，
-// 所以浮层内容必须再扣掉自身边框与内边距，否则会横向超出看板宽度。
-// 这里再留 1 列余量，避免正好贴着终端右边缘。
+// 所以浮层内容必须再扣掉自身边框与两侧留白，否则会横向超出看板宽度、
+// 或者铺满整屏显得贴边。
 func (a *App) overlayInner() int {
 	frame := a.st.modalStyle(a.IsCompact()).GetHorizontalFrameSize()
 	if f := a.st.pageStyle(a.IsCompact()).GetHorizontalFrameSize(); f > frame {
 		frame = f
 	}
-	avail := a.width - frame - 1
+	avail := a.width - frame - minMargin*2
 	if avail < 8 {
 		avail = 8
 	}
@@ -89,12 +92,15 @@ func overlay(base, modal string, width, height int) string {
 		baseLines[y] = spliceCells(baseLines[y], ml, startX)
 	}
 
-	// 兜底：无论浮层怎么算，合成结果都不能超过终端宽度，
-	// 否则会撑破看板边框，把界面撕成两半。
+	// 兜底：无论浮层怎么算，合成结果都不能超过终端尺寸，
+	// 否则会撑破看板边框或顶掉整屏，把界面撕坏、内容跑出可视区域。
 	for i, l := range baseLines {
 		if w := lipgloss.Width(l); w > width {
 			baseLines[i] = truncateCells(l, width)
 		}
+	}
+	if len(baseLines) > height {
+		baseLines = baseLines[:height]
 	}
 	return strings.Join(baseLines, "\n")
 }
@@ -221,10 +227,13 @@ func (a *App) renderEditor() string {
 	return a.modalBox(inner, lines)
 }
 
-// pageWidth 返回整页浮层可用的内容宽度：不超过终端，也不比内容更宽。
-func (a *App) pageWidth(lines []string, prefer int) int {
+// pageWidth 返回整页浮层的内容宽度：以纯文本行的最大宽度为准。
+//
+// 不能拿已上色的字符串去量：ANSI 转义序列会让宽度计算偏大，
+// 结果面板被撑到终端宽度、说明文字被迫折成两行。
+func (a *App) pageWidth(plainLines []string, prefer int) int {
 	natural := 0
-	for _, l := range lines {
+	for _, l := range plainLines {
 		if w := lipgloss.Width(l); w > natural {
 			natural = w
 		}
@@ -242,42 +251,125 @@ func (a *App) pageWidth(lines []string, prefer int) int {
 	return natural
 }
 
-// renderPage 渲染整页浮层，超宽的行会被截断，保证不会撑破面板。
-func (a *App) renderPage(lines []string, prefer int) string {
-	inner := a.pageWidth(lines, prefer)
-	fitted := make([]string, 0, len(lines))
-	for _, l := range lines {
-		fitted = append(fitted, truncate(l, inner))
+// renderPage 渲染整页浮层。
+//
+// 帮助、设置、历史是“整页”而不是浮层：直接把面板居中铺在空白背景上，
+// 不再叠在看板之上。早期用 overlay 拼接时，看板的面板边框会从浮层两侧露出来，
+// 看起来像界面被撕开，也让人误以为必须全屏才能看清。
+//
+// sized 与 plain 一一对应：sized[i] 是上色后的行，plain[i] 是同一行的纯文本，
+// 宽度只按 plain 计算。
+func (a *App) renderPage(sized, plain []string, prefer int) string {
+	inner := a.pageWidth(plain, prefer)
+	fitted := make([]string, 0, len(sized))
+	for _, l := range sized {
+		fitted = append(fitted, truncateCells(l, inner))
 	}
-	body := a.st.pageStyle(a.IsCompact()).Width(inner).Render(strings.Join(fitted, "\n"))
-	return overlay(a.renderDashboard(), body, a.width, a.height)
+	panel := a.st.pageStyle(a.IsCompact()).Width(inner).Render(strings.Join(fitted, "\n"))
+	return centerBlock(panel, a.width, a.height)
+}
+
+// centerBlock 把一段渲染好的内容居中放在 width×height 的空白画布上。
+func centerBlock(block string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return block
+	}
+	lines := strings.Split(block, "\n")
+	blockW := 0
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > blockW {
+			blockW = w
+		}
+	}
+	if blockW > width {
+		blockW = width
+	}
+	left := (width - blockW) / 2
+	if left < 0 {
+		left = 0
+	}
+	top := (height - len(lines)) / 2
+	if top < 0 {
+		top = 0
+	}
+
+	out := make([]string, 0, height)
+	for i := 0; i < top && len(out) < height; i++ {
+		out = append(out, strings.Repeat(" ", width))
+	}
+	for _, l := range lines {
+		if len(out) >= height {
+			break
+		}
+		l = truncateCells(l, blockW)
+		line := strings.Repeat(" ", left) + l
+		if w := lipgloss.Width(line); w < width {
+			line += strings.Repeat(" ", width-w)
+		}
+		out = append(out, line)
+	}
+	for len(out) < height {
+		out = append(out, strings.Repeat(" ", width))
+	}
+	return strings.Join(out, "\n")
 }
 
 // ---------- 设置页 ----------
 
 func (a *App) renderSettings() string {
-	rows := [][2]string{
-		{"日界线（新的一天从几点开始）", a.cfg.DayCutoff},
-		{"默认专注时长", fmt.Sprintf("%d 分钟", a.cfg.DefaultFocus)},
-		{"默认休息时长", fmt.Sprintf("%d 分钟", a.cfg.DefaultBreak)},
-		{"昵称", orDash(a.cfg.Nickname)},
-		{"数据目录", a.store.Root()},
-		{"配置文件", a.pathsForSave().ConfigFile},
-		{"时区", orDash(a.cfg.Timezone)},
+	inner := a.overlayInner()
+	if inner > 90 {
+		inner = 90
+	}
+	// 标签列宽度：给值留出至少 12 列。
+	labelW := inner - 16
+	if labelW > 38 {
+		labelW = 38
+	}
+	if labelW < 10 {
+		labelW = 10
 	}
 
-	var lines []string
-	lines = append(lines, a.st.Title.Render("设置 / Settings"))
-	lines = append(lines, a.st.Muted.Render("熬夜用户可以把日界线设为 04:00，凌晨 2 点仍算前一天。"))
-	lines = append(lines, "")
-	for _, r := range rows {
-		lines = append(lines, a.st.Text.Render("  "+r[0]+"  ")+a.st.Accent.Render(r[1]))
+	var styled, plain []string
+	add := func(s, p string) {
+		styled = append(styled, s)
+		plain = append(plain, p)
 	}
-	lines = append(lines, "")
-	lines = append(lines, a.st.Muted.Render("  c 改日界线 · f 改专注时长 · b 改休息时长 · n 改昵称"))
-	lines = append(lines, a.st.Muted.Render("  esc / q 返回看板"))
+	add(a.st.Title.Render("设置 / Settings"), "设置 / Settings")
+	sub := "熬夜用户可以把日界线设为 04:00，凌晨 2 点仍算前一天。"
+	add(a.st.Muted.Render(sub), sub)
+	add("", "")
 
-	return a.renderPage(lines, 90)
+	for i, item := range settingItems {
+		value := item.Value(a)
+		marker := "  "
+		if i == a.settingsCursor {
+			marker = "▸ "
+		}
+		// 长值（例如数据目录、配置文件路径）一律单独一行并缩进显示，
+		// 内联会被迫在词中间折行，读起来像是两条不同内容。
+		inline := lipgloss.Width(marker)+labelW+2+lipgloss.Width(value) <= inner
+		longValue := lipgloss.Width(value) > 40
+		if !inline || longValue {
+			label := truncate(item.Label, max(4, inner-2))
+			text := truncate(marker+label, inner)
+			addSettingRow(&styled, &plain, a, i, item, text, inner)
+			if value != "" {
+				sub := truncate("    "+value, inner)
+				add(a.st.Muted.Render(sub), sub)
+			}
+			continue
+		}
+		label := pad(truncate(item.Label, labelW), labelW)
+		text := truncate(marker+label+"  "+value, inner)
+		addSettingRow(&styled, &plain, a, i, item, text, inner)
+	}
+
+	hint := "  j/k 或 ↑/↓ 选择 · enter/e 编辑 · esc 返回看板"
+	add("", "")
+	add(a.st.Muted.Render(hint), hint)
+
+	return a.renderPage(styled, plain, 90)
 }
 
 func orDash(s string) string {
@@ -356,18 +448,24 @@ func (a *App) collectHistory(limit int) ([]historyStat, error) {
 
 func (a *App) renderHistory() string {
 	stats, err := a.collectHistory(14)
-	var lines []string
-	lines = append(lines, a.st.Title.Render("历史 / History"))
+	var styled, plain []string
+	add := func(s, p string) {
+		styled = append(styled, s)
+		plain = append(plain, p)
+	}
+	add(a.st.Title.Render("历史 / History"), "历史 / History")
 	if err != nil {
-		lines = append(lines, a.st.Error.Render("读取历史失败："+err.Error()))
+		msg := "读取历史失败：" + err.Error()
+		add(a.st.Error.Render(msg), msg)
 	}
 	if len(stats) == 0 {
-		lines = append(lines, a.st.Muted.Render("还没有历史数据，完成一些 TODO 或专注一段时间后再来看。"))
+		msg := "还没有历史数据，完成一些 TODO 或专注一段时间后再来看。"
+		add(a.st.Muted.Render(msg), msg)
 	}
-	lines = append(lines, "")
+	add("", "")
 
 	// 先按终端宽度决定各列宽度，窄终端下自动收窄“最投入的条目”。
-	inner := a.width - a.st.PanelFocused.GetHorizontalFrameSize() - 4
+	inner := a.overlayInner() - 4
 	if inner > 104 {
 		inner = 104
 	}
@@ -383,7 +481,7 @@ func (a *App) renderHistory() string {
 	}
 
 	header := fmt.Sprintf("  %-12s %-8s %-10s %-6s %s", "日期", "TODO", "专注", "GOAL", "最投入的条目")
-	lines = append(lines, a.st.PanelTitle.Render(truncate(header, inner)))
+	add(a.st.PanelTitle.Render(header), header)
 
 	var totalFocus time.Duration
 	var totalDone int
@@ -401,67 +499,206 @@ func (a *App) renderHistory() string {
 		}
 		row := fmt.Sprintf("  %-12s %-8s %-10s %-6d %s",
 			st.Day, ratio, clock.HumanDuration(st.Focus), st.Goals, top)
-		lines = append(lines, a.st.Text.Render(truncate(row, inner)))
+		row = truncate(row, inner)
+		add(a.st.Text.Render(row), row)
 	}
 
-	lines = append(lines, "")
-	lines = append(lines, a.st.OK.Render(truncate(
-		fmt.Sprintf("  合计：完成 %d 项 TODO，专注 %s", totalDone, clock.HumanDuration(totalFocus)), inner)))
-	lines = append(lines, "")
-	lines = append(lines, a.st.Muted.Render("  esc / q 返回看板"))
+	total := fmt.Sprintf("  合计：完成 %d 项 TODO，专注 %s", totalDone, clock.HumanDuration(totalFocus))
+	add("", "")
+	add(a.st.OK.Render(total), total)
+	add("", "")
+	add(a.st.Muted.Render("  esc / q 返回看板"), "  esc / q 返回看板")
 
-	return a.renderPage(lines, 110)
+	return a.renderPage(styled, plain, 110)
 }
 
 // ---------- 帮助页 ----------
 
-func (a *App) renderHelp() string {
-	groups := []struct {
-		title string
-		keys  [][2]string
-	}{
-		{"导航", [][2]string{
-			{"tab / shift+tab", "在中间、左固定、左临时、右 GOAL 之间切换"},
-			{"h / l", "左右切换栏"},
-			{"j / k", "上下移动"},
-			{"g / G", "跳到首项 / 末项"},
-			{"1 / 2 / 3", "直接进入中间菜单 / 固定 TODO / 临时 TODO / GOAL"},
-		}},
-		{"编辑", [][2]string{
-			{"space / enter", "勾选完成（GOAL 勾选后自动归档到本日）"},
-			{"a", "添加 TODO（焦点在固定栏则添加固定 TODO）"},
-			{"A", "添加 GOAL"},
-			{"e", "重命名选中条目"},
-			{"t", "为选中条目添加子任务"},
-			{"d", "删除选中条目（会先确认）"},
-			{"r", "从昨日继承（固定 / 未完成 / 两者）"},
-		}},
-		{"计时", [][2]string{
-			{"enter（中间栏）", "打开计时菜单：番茄钟 / 倒计时 / 正计时 / 自定义"},
-			{"space", "计时中暂停或继续"},
-			{"enter", "计时中结束并归档到所属 TODO"},
-			{"esc", "计时中中断，已用时长仍会记录"},
-		}},
-		{"其它", [][2]string{
-			{"?", "打开 / 关闭本帮助"},
-			{"q / esc", "返回看板，或退出"},
-			{"ctrl+c", "随时退出（进行中的计时会先记录再退出）"},
-		}},
-	}
+// helpRow 是一行帮助内容；Key 为空表示标题或说明行。
+type helpRow struct {
+	Key  string
+	Desc string
+}
 
-	var lines []string
-	lines = append(lines, a.st.Title.Render("帮助 / Help"))
-	lines = append(lines, "")
-	for _, g := range groups {
-		lines = append(lines, a.st.Accent.Bold(true).Render("  "+g.title))
-		for _, kv := range g.keys {
-			lines = append(lines, "  "+a.st.HintKey.Render(pad(kv[0], 22))+a.st.Text.Render(kv[1]))
+// helpRows 返回扁平的帮助条目。窄终端下会跳过说明性文字，只留按键。
+func helpRows(compact bool) []helpRow {
+	rows := []helpRow{
+		{Key: "导航"},
+		{Key: "tab / shift+tab", Desc: "循环切换栏位（中间 / 固定 / 临时 / GOAL）"},
+		{Key: "j / k ↑ / ↓", Desc: "在当前栏内上下移动"},
+		{Key: "g / G", Desc: "跳到首项 / 末项"},
+		{Key: "enter", Desc: "进入选中条目的子任务；再按 enter 勾选子任务"},
+		{Key: "esc", Desc: "从子任务退回父条目"},
+		{Key: "1 / 2 / 3", Desc: "直接跳到固定 TODO / 临时 TODO / GOAL"},
+		{Key: "编辑"},
+		{Key: "space", Desc: "勾选选中项；在子任务模式下勾选子任务"},
+		{Key: "a", Desc: "添加 TODO（固定栏加固定项，临时栏加临时项）"},
+		{Key: "A", Desc: "添加 GOAL"},
+		{Key: "e", Desc: "重命名选中条目"},
+		{Key: "t", Desc: "为选中条目添加子任务"},
+		{Key: "d", Desc: "删除选中条目（会先确认）"},
+		{Key: "r", Desc: "从昨日继承（固定 / 未完成 / 两者）"},
+		{Key: "计时"},
+		{Key: "enter", Desc: "在中间栏打开计时菜单"},
+		{Key: "space", Desc: "计时中暂停或继续"},
+		{Key: "enter", Desc: "计时中结束并归档到所属 TODO"},
+		{Key: "esc", Desc: "计时中中断，已用时长仍会记录"},
+		{Key: "设置"},
+		{Key: "j / k", Desc: "在设置项之间移动"},
+		{Key: "enter / e", Desc: "编辑选中的设置项"},
+		{Key: "其它"},
+		{Key: "?", Desc: "打开 / 关闭本帮助"},
+		{Key: "j / k", Desc: "帮助页内容滚动"},
+		{Key: "q", Desc: "退出（会先确认）"},
+		{Key: "ctrl+c", Desc: "立即退出"},
+	}
+	if compact {
+		// 窄终端只保留按键，避免说明把版面挤爆。
+		out := rows[:0:0]
+		for _, r := range rows {
+			if r.Desc == "" {
+				out = append(out, r)
+				continue
+			}
+			out = append(out, helpRow{Key: r.Key, Desc: shortDesc(r.Desc)})
 		}
-		lines = append(lines, "")
+		return out
 	}
-	lines = append(lines, a.st.Muted.Render("  esc / q / ? 返回看板"))
+	return rows
+}
 
-	return a.renderPage(lines, 92)
+// shortDesc 截短说明文字，供窄终端使用。
+func shortDesc(s string) string {
+	if i := strings.IndexAny(s, "（("); i > 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// buildHelpLines 依据可用宽度排版帮助内容；空间不足时自动折行而不是被截断。
+//
+// 返回两套行：styled 用于显示，plain 用于测量宽度。两者一一对应。
+func (a *App) buildHelpLines(inner int, compact bool) (styled, plain []string) {
+	rows := helpRows(compact)
+	// 先算按键列宽度。
+	keyW := 0
+	for _, r := range rows {
+		if w := lipgloss.Width(r.Key); w > keyW {
+			keyW = w
+		}
+	}
+	if keyW > 20 {
+		keyW = 20
+	}
+	// 说明列至少要留 12 列，否则改为“按键独占一行”。
+	descW := inner - keyW - 4
+	wrapDesc := descW < 12
+
+	add := func(s, p string) {
+		styled = append(styled, s)
+		plain = append(plain, p)
+	}
+
+	add(a.st.Title.Render("帮助 / Help"), "帮助 / Help")
+	add("", "")
+	for _, r := range rows {
+		if r.Desc == "" {
+			if len(styled) > 2 {
+				add("", "")
+			}
+			add(a.st.Accent.Bold(true).Render("  "+r.Key), "  "+r.Key)
+			continue
+		}
+		keyText := pad(r.Key, keyW)
+		if wrapDesc {
+			add("  "+a.st.HintKey.Render(keyText), "  "+keyText)
+			for _, wl := range wrapBalanced(r.Desc, inner-4) {
+				add("  "+strings.Repeat(" ", keyW)+a.st.Text.Render(wl), "  "+strings.Repeat(" ", keyW)+wl)
+			}
+			continue
+		}
+		if lipgloss.Width(r.Desc) <= descW {
+			add("  "+a.st.HintKey.Render(keyText)+"  "+a.st.Text.Render(r.Desc),
+				"  "+keyText+"  "+r.Desc)
+			continue
+		}
+		for i, dl := range wrapBalanced(r.Desc, descW) {
+			if i == 0 {
+				add("  "+a.st.HintKey.Render(keyText)+"  "+a.st.Text.Render(dl), "  "+keyText+"  "+dl)
+			} else {
+				add("  "+strings.Repeat(" ", keyW)+"  "+a.st.Text.Render(dl), "  "+strings.Repeat(" ", keyW)+"  "+dl)
+			}
+		}
+	}
+	add("", "")
+	add(a.st.Muted.Render("  esc / q / ? 返回看板 · j/k 滚动"), "  esc / q / ? 返回看板 · j/k 滚动")
+	return styled, plain
+}
+
+// addSettingRow 追加一行设置项，按是否选中与是否可编辑选择合适的样式。
+func addSettingRow(styled, plain *[]string, a *App, i int, item settingItem, text string, inner int) {
+	switch {
+	case i == a.settingsCursor:
+		*styled = append(*styled, a.st.ModalCursor.Render(pad(text, inner)))
+	case item.Edit != nil:
+		*styled = append(*styled, a.st.Text.Render(text))
+	default:
+		*styled = append(*styled, a.st.Muted.Render(text))
+	}
+	*plain = append(*plain, text)
+}
+
+// renderHelp 渲染帮助页。内容放不下时按可用高度滚动，而不是要求用户全屏。
+func (a *App) renderHelp() string {
+	compact := a.IsCompact()
+	inner := a.overlayInner()
+	if inner > 92 {
+		inner = 92
+	}
+	styled, plain := a.buildHelpLines(inner, compact)
+
+	// 可用高度：终端高度减去面板边框（上下各一行）。
+	// renderPage 会给内容套一层边框，所以这里只需扣掉边框本身，
+	// 多扣会让帮助/设置页出现大片空白，少扣则底部越界。
+	frameV := a.st.pageStyle(compact).GetVerticalFrameSize()
+	avail := a.height - frameV
+	if avail < 3 {
+		avail = 3
+	}
+	if len(styled) > avail {
+		// 内容超出时按 a.helpScroll 滚动。
+		maxScroll := len(styled) - avail
+		if a.helpScroll > maxScroll {
+			a.helpScroll = maxScroll
+		}
+		if a.helpScroll < 0 {
+			a.helpScroll = 0
+		}
+		styled = styled[a.helpScroll : a.helpScroll+avail]
+		plain = plain[a.helpScroll : a.helpScroll+avail]
+	}
+	return a.renderPage(styled, plain, 92)
+}
+
+// handleHelpKey 处理帮助页按键（支持滚动）。
+func (a *App) handleHelpKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "q", "?":
+		a.view = ViewDashboard
+		a.helpScroll = 0
+	case "j", "down":
+		a.helpScroll++
+	case "k", "up":
+		if a.helpScroll > 0 {
+			a.helpScroll--
+		}
+	case "g", "home":
+		a.helpScroll = 0
+	case "ctrl+c":
+		a.quitting = true
+		return a, tea.Quit
+	}
+	return a, nil
 }
 
 // ---------- 继承确认页 ----------

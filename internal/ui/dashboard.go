@@ -28,13 +28,13 @@ func (a *App) View() string {
 
 	switch a.view {
 	case ViewHistory:
-		return a.renderHistory()
+		return clipBlock(a.renderHistory(), a.width, a.height)
 	case ViewSettings:
-		return a.renderSettings()
+		return clipBlock(a.renderSettings(), a.width, a.height)
 	case ViewHelp:
-		return a.renderHelp()
+		return clipBlock(a.renderHelp(), a.width, a.height)
 	case ViewCarry:
-		return a.renderCarry()
+		return clipBlock(a.renderCarry(), a.width, a.height)
 	default:
 		base := a.renderDashboard()
 		// 计时结束时响一声，提醒正在别处工作的用户。
@@ -43,13 +43,13 @@ func (a *App) View() string {
 		}
 		// 模态浮层叠在看板之上，保留背景上下文。
 		if a.custom != nil {
-			return a.renderCustomEditor()
+			return clipBlock(a.renderCustomEditor(), a.width, a.height)
 		}
 		if a.pick != nil {
-			return overlay(base, a.renderPick(), a.width, a.height)
+			return clipBlock(overlay(base, a.renderPick(), a.width, a.height), a.width, a.height)
 		}
 		if a.editor.active {
-			return overlay(base, a.renderEditor(), a.width, a.height)
+			return clipBlock(overlay(base, a.renderEditor(), a.width, a.height), a.width, a.height)
 		}
 		return base
 	}
@@ -83,13 +83,32 @@ func (a *App) renderDashboard() string {
 	if a.width < 90 {
 		leftWidth, rightWidth = 24, 22
 	}
+	// 中间栏至少要能完整放下完整版 Logo（44 列），否则字会被截断并折行。
+	// 中间栏内容宽 = centerWidth - 4（边框 2 + 内边距 2）。
+	const minCenterWidth = 48
 	centerWidth := a.width - leftWidth - rightWidth
-	if centerWidth < 24 {
-		// 窄屏时收窄两侧，保证中间栏可用。
-		shrink := 24 - centerWidth
-		leftWidth -= shrink / 2
-		rightWidth -= shrink - shrink/2
+	if centerWidth < minCenterWidth {
+		shrink := minCenterWidth - centerWidth
+		// 优先从较宽的一侧收，收不动就两侧平摊。
+		takeLeft := shrink / 2
+		takeRight := shrink - takeLeft
+		if leftWidth-takeLeft < 18 {
+			takeLeft = leftWidth - 18
+			takeRight = shrink - takeLeft
+		}
+		if rightWidth-takeRight < 16 {
+			takeRight = rightWidth - 16
+			takeLeft = shrink - takeRight
+		}
+		leftWidth -= takeLeft
+		rightWidth -= takeRight
 		centerWidth = a.width - leftWidth - rightWidth
+	}
+	// 仍然不够就只能缩中间栏，但此时更小的 Logo 会被自动选中。
+	if centerWidth < 20 {
+		centerWidth = 20
+		leftWidth = max(18, a.width-centerWidth-rightWidth)
+		rightWidth = max(0, a.width-leftWidth-centerWidth)
 	}
 
 	left := a.renderLeftPanel(leftWidth, bodyHeight)
@@ -108,7 +127,8 @@ func (a *App) renderDashboard() string {
 		overlay := a.celebrateFrame(t, a.width, bodyHeight)
 		out = lipgloss.JoinVertical(lipgloss.Left, header, overlay, footer)
 	}
-	return out
+	// 最后一道防线：整个看板必须正好装进终端。
+	return clipBlock(out, a.width, a.height)
 }
 
 // renderHeader 显示问候语、日期与今日专注时长（见需求 18）。
@@ -176,9 +196,11 @@ func (a *App) renderHeader() string {
 
 // renderLeftPanel 渲染 TODAY TODO 的上下两栏（见需求 13）。
 func (a *App) renderLeftPanel(width, height int) string {
-	half := (height - 3) / 2
-	if half < 3 {
-		half = 3
+	_, innerH := a.panelInner(width, height)
+	// 两栏平分内容区，给底部的完成度留一行。
+	half := (innerH - 1) / 2
+	if half < 2 {
+		half = 2
 	}
 
 	done, total := a.data.Counts()
@@ -224,20 +246,26 @@ func (a *App) renderTodoList(items []*model.Todo, which Focus, title string, wid
 		item := items[i]
 		selected := a.focus == which && i == cursor
 		lines = append(lines, a.renderTodoRow(item, selected, inner))
-		// 展开选中项的子任务（见需求 8）。
-		if selected {
+		// 展开选中项的子任务，并支持在子任务里移动（见需求 8）。
+		if selected && !a.collapsed[item.ID] {
 			for ti, task := range item.Tasks {
 				if len(lines) >= listHeight {
 					break
 				}
+				taskSelected := a.taskActive && ti == a.taskCursor
 				mark := MarkTodo
 				style := a.st.Muted
 				if task.Done() {
 					mark, style = MarkDone, a.st.DoneTag
 				}
-				label := fmt.Sprintf("   %s %s", mark, task.Title)
+				branch := "   ├"
 				if ti == len(item.Tasks)-1 {
-					label = fmt.Sprintf("   └ %s %s", mark, task.Title)
+					branch = "   └"
+				}
+				label := fmt.Sprintf("%s %s %s", branch, mark, task.Title)
+				if taskSelected {
+					lines = append(lines, a.st.RowCursor.Render(pad(truncate(label, inner), inner)))
+					continue
 				}
 				lines = append(lines, style.Render(truncate(label, inner)))
 			}
@@ -293,11 +321,12 @@ func (a *App) renderGoalPanel(width, height int) string {
 			active++
 		}
 	}
-	title := fmt.Sprintf("GOAL (%d 进行中)", active)
+	title := fmt.Sprintf("GOAL (%d 进行中 · %d 今日完成)", active, len(a.data.Archive.Goals))
 
+	list := a.goalList()
 	var lines []string
 	lines = append(lines, a.st.PanelTitle.Render(truncate(title, inner)))
-	if len(a.goals) == 0 {
+	if len(list) == 0 {
 		lines = append(lines, a.renderEmpty("按 A 添加目标", inner))
 	}
 
@@ -306,10 +335,10 @@ func (a *App) renderGoalPanel(width, height int) string {
 		listHeight = 1
 	}
 	cursor := a.cursors.goals
-	offset := scrollOffset(cursor, len(a.goals), listHeight)
+	offset := scrollOffset(cursor, len(list), listHeight)
 
-	for i := offset; i < len(a.goals) && len(lines) < listHeight; i++ {
-		g := a.goals[i]
+	for i := offset; i < len(list) && len(lines) < listHeight; i++ {
+		g := list[i]
 		selected := a.focus == FocusGoals && i == cursor
 
 		mark := MarkTodo
@@ -320,6 +349,10 @@ func (a *App) renderGoalPanel(width, height int) string {
 		done, total := g.Progress()
 		if total > 0 {
 			label += fmt.Sprintf(" (%d/%d)", done, total)
+		}
+		// 标记出归档到当天的目标，它们已经不在 goals.json 里。
+		if g.ArchivedDay != "" {
+			label += " ⌂"
 		}
 		label = truncate(label, inner)
 
@@ -338,38 +371,33 @@ func (a *App) renderGoalPanel(width, height int) string {
 			// 展示标签与归档日，标签用于继承时避免同名混淆（见需求 15）。
 			meta := "   " + g.Tag
 			if g.ArchivedDay != "" {
-				meta += " · 归档于 " + g.ArchivedDay
+				meta += " · 已归档到 " + g.ArchivedDay
 			}
 			if len(lines) < listHeight {
 				lines = append(lines, a.st.Muted.Render(truncate(meta, inner)))
 			}
-			for _, task := range g.Tasks {
-				if len(lines) >= listHeight {
-					break
+			if !a.collapsed[g.ID] {
+				for ti, task := range g.Tasks {
+					if len(lines) >= listHeight {
+						break
+					}
+					tmark := MarkTodo
+					tstyle := a.st.Muted
+					if task.Done() {
+						tmark, tstyle = MarkDone, a.st.DoneTag
+					}
+					branch := "   ├"
+					if ti == len(g.Tasks)-1 {
+						branch = "   └"
+					}
+					label := fmt.Sprintf("%s %s %s", branch, tmark, task.Title)
+					if a.taskActive && ti == a.taskCursor {
+						lines = append(lines, a.st.RowCursor.Render(pad(truncate(label, inner), inner)))
+						continue
+					}
+					lines = append(lines, tstyle.Render(truncate(label, inner)))
 				}
-				tmark := MarkTodo
-				tstyle := a.st.Muted
-				if task.Done() {
-					tmark, tstyle = MarkDone, a.st.DoneTag
-				}
-				lines = append(lines, tstyle.Render(truncate("   └ "+tmark+" "+task.Title, inner)))
 			}
-		}
-	}
-
-	// 本日已归档的目标（见需求 10）。
-	if len(a.data.Archive.Goals) > 0 {
-		if len(lines) < listHeight {
-			lines = append(lines, "")
-		}
-		if len(lines) < listHeight {
-			lines = append(lines, a.st.PanelTitle.Render("今日已归档"))
-		}
-		for _, g := range a.data.Archive.Goals {
-			if len(lines) >= listHeight {
-				break
-			}
-			lines = append(lines, a.st.DoneTag.Render(truncate("✔ "+g.Title, inner)))
 		}
 	}
 	return a.panel(a.focus == FocusGoals, width, height, strings.Join(lines, "\n"))
@@ -377,47 +405,72 @@ func (a *App) renderGoalPanel(width, height int) string {
 
 // renderCenterPanel 渲染中间栏：Logo、状态、选项、字条。
 func (a *App) renderCenterPanel(width, height int) string {
+	return a.panel(false, width, height, a.centerContent(width, height))
+}
+
+// centerContent 生成中间栏的内容行。
+//
+// 行数绝不会超过面板能装下的行数，而且结尾的字条永远保留：
+// 之前是“先拼内容再补空行、最后放字条”，终端一矮字条就被裁掉，
+// 而它恰好是需求 5 明确要求常驻的元素。
+func (a *App) centerContent(width, height int) string {
 	inner := width - 4
 	if inner < 10 {
 		inner = 10
 	}
+	// 面板内部可用行数：扣掉上下边框。
+	bodyRows := height - a.st.Panel.GetVerticalFrameSize()
+	if bodyRows < 1 {
+		bodyRows = 1
+	}
 
-	// Logo：窄栏时用紧凑版本。
-	compact := inner < LogoWidth()
-	logo := GradientLogo(a.st.Theme.Primary, a.st.Theme.Secondary, a.animPhase, compact)
-	logoLines := strings.Split(logo, "\n")
+	// Logo：按可用宽度自动选字形，绝不让它折行。
+	logo := GradientLogo(a.st.Theme.Primary, a.st.Theme.Secondary, a.animPhase, inner)
+	var logoLines []string
+	if logo != "" {
+		logoLines = strings.Split(logo, "\n")
+	}
 
-	var lines []string
-	// 垂直留白，让 Logo 大致居中在中间栏上部。
-	for len(lines) < 1 {
-		lines = append(lines, "")
+	quote := "「" + a.CurrentQuote() + "」"
+	quoteLines := wrapBalanced(quote, inner)
+	// 字条是必须保留的尾部块。
+	if len(quoteLines) > bodyRows {
+		quoteLines = quoteLines[:bodyRows]
+	}
+	budget := bodyRows - len(quoteLines)
+
+	// 先组织可选内容（Logo、状态、菜单、计时摘要），空行只作为分隔。
+	var body []string
+	maxTop := 2
+	if budget < len(logoLines)+10 {
+		maxTop = 0
+	}
+	for i := 0; i < maxTop; i++ {
+		body = append(body, "")
 	}
 	for _, l := range logoLines {
-		lines = append(lines, center(l, inner, lipgloss.Width(l)))
+		body = append(body, center(fitText(l, inner), inner, lipgloss.Width(fitText(l, inner))))
 	}
-	lines = append(lines, "")
+	body = append(body, "")
 
-	// 状态行：今日完成度与专注统计。
 	done, total := a.data.Counts()
 	status := fmt.Sprintf("今日待办 %d/%d", done, total)
 	if total > 0 && done == total {
-		status += " · 已全部完成 🎉"
+		status += " · 已全部完成"
 	}
-	lines = append(lines, a.st.Muted.Render(center(status, inner, lipgloss.Width(status))))
-	lines = append(lines, "")
+	body = append(body, fit(a.st.Muted, center(status, inner, lipgloss.Width(status)), inner))
+	body = append(body, "")
 
-	// 选项列表。
 	for i, item := range menuItems {
-		label := truncate("  "+item.Label, inner)
+		label := "  " + item.Label
 		if a.focus == FocusMenu && i == a.cursors.menu {
-			lines = append(lines, a.st.MenuCursor.Render(pad(label, inner)))
+			body = append(body, pad(fit(a.st.MenuCursor, label, inner), inner))
 		} else {
-			lines = append(lines, a.st.Menu.Render(label))
+			body = append(body, fit(a.st.Menu, label, inner))
 		}
 	}
-	lines = append(lines, "")
+	body = append(body, "")
 
-	// 计时状态摘要。
 	if a.timer != nil {
 		now := a.clock.Now()
 		_, seg, _ := a.timer.segment(now)
@@ -429,33 +482,56 @@ func (a *App) renderCenterPanel(width, height int) string {
 			state = "已完成"
 		}
 		info := fmt.Sprintf("%s · %s · %s", state, clock.ClockString(a.timer.elapsed(now)), seg.Name)
-		lines = append(lines, a.st.Accent.Render(center(info, inner, lipgloss.Width(info))))
+		body = append(body, fit(a.st.Accent, center(info, inner, lipgloss.Width(info)), inner))
 	} else {
 		info := "按 enter 开始专注"
-		lines = append(lines, a.st.Muted.Render(center(info, inner, lipgloss.Width(info))))
+		body = append(body, fit(a.st.Muted, center(info, inner, lipgloss.Width(info)), inner))
 	}
 
-	// 随机字条固定在底部（见需求 5）。
-	// 先用空行填充剩余空间，但至少保留一行，避免和上面的内容贴在一起。
-	quote := "「" + Quotes[a.quoteIdx%len(Quotes)] + "」"
-	quoteLines := wrapBalanced(quote, inner)
-	// 面板内部可用行数：扣掉上下边框。
-	bodyRows := height - a.st.Panel.GetVerticalFrameSize()
-	if bodyRows < 1 {
-		bodyRows = 1
+	// 超高时先丢空行（只丢多余的分隔，不丢有内容的行），再丢末尾内容行。
+	body = trimBlankLines(body, budget)
+
+	// 剩余空间全部用来把字条推到底部，不多不少正好铺满面板。
+	pad := bodyRows - len(body) - len(quoteLines)
+	if pad < 0 {
+		pad = 0
 	}
-	spacer := bodyRows - len(lines) - len(quoteLines)
-	if spacer < 1 {
-		spacer = 1
-	}
-	for i := 0; i < spacer; i++ {
+	lines := make([]string, 0, bodyRows)
+	lines = append(lines, body...)
+	for i := 0; i < pad; i++ {
 		lines = append(lines, "")
 	}
 	for _, ql := range quoteLines {
-		lines = append(lines, a.st.Muted.Render(center(ql, inner, lipgloss.Width(ql))))
+		lines = append(lines, fit(a.st.Muted, center(ql, inner, lipgloss.Width(ql)), inner))
 	}
+	return strings.Join(lines, "\n")
+}
 
-	return a.panel(false, width, height, strings.Join(lines, "\n"))
+// fitText 按显示宽度截断纯文本。
+func fitText(s string, width int) string { return truncate(s, width) }
+
+// trimBlankLines 把行数压到最多 n 行：先去掉空行，再从末尾截断。
+func trimBlankLines(lines []string, n int) []string {
+	if n < 0 {
+		n = 0
+	}
+	if len(lines) <= n {
+		return lines
+	}
+	kept := make([]string, 0, n)
+	for i, l := range lines {
+		if l == "" && i != len(lines)-1 {
+			continue
+		}
+		kept = append(kept, l)
+		if len(kept) == n {
+			break
+		}
+	}
+	if len(kept) > n {
+		kept = kept[:n]
+	}
+	return kept
 }
 
 // renderFooter 渲染底部时段看条（见需求 20）。
@@ -621,21 +697,117 @@ func (a *App) renderHints() string {
 
 // ---------- 布局辅助 ----------
 
-// panel 给内容套上面板边框，聚焦时高亮。
+// clipLines 把多行文本截断到最多 n 行。
+//
+// lipgloss 的 Height 只保证“至少这么高”，内容更多时面板会被撑高，
+// 于是一个小窗口也能渲染出超过终端高度的界面，把画面顶出可视区域。
+func clipLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n")
+}
+
+// clipBlock 把渲染结果裁剪到指定宽高，作为整个界面的最后一道防线。
+func clipBlock(s string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, l := range lines {
+		if lipgloss.Width(l) > width {
+			lines[i] = truncateCells(l, width)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// panel 给内容套上面板边框，聚焦时高亮，并保证外层尺寸正好是 width×height。
+//
+// lipgloss 的 Width 语义在不同版本里并不直观（它既影响内容区又影响外框），
+// 这里改为渲染后实测一次外框宽度，必要时再校正一次，确保三个栏位的边界对齐。
 func (a *App) panel(focused bool, width, height int, content string) string {
 	style := a.st.Panel
 	if focused {
 		style = a.st.PanelFocused
 	}
-	innerW := width - style.GetHorizontalFrameSize()
 	innerH := height - style.GetVerticalFrameSize()
-	if innerW < 1 {
-		innerW = 1
-	}
 	if innerH < 1 {
 		innerH = 1
 	}
-	return style.Width(innerW).Height(innerH).Render(content)
+	content = padOrClipLines(content, innerH)
+
+	// 内容区目标宽度：总数减去边框与内边距，再留给 Width 自行处理。
+	contentW := width - style.GetHorizontalFrameSize()
+	if contentW < 1 {
+		contentW = 1
+	}
+	out := style.Width(contentW).Render(content)
+
+	// 实测外框宽度，偏差时按差值校正一次。
+	const maxFix = 4
+	for i := 0; i < maxFix; i++ {
+		got := lipgloss.Width(out)
+		if got == width {
+			break
+		}
+		delta := width - got
+		next := contentW + delta
+		if next < 1 {
+			next = 1
+		}
+		if next == contentW {
+			break
+		}
+		contentW = next
+		out = style.Width(contentW).Render(content)
+	}
+	return out
+}
+
+// padOrClipLines 把内容调整为正好 n 行：多了从末尾截断，少了用空行补齐。
+func padOrClipLines(s string, n int) string {
+	if n < 1 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	for len(lines) < n {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// fit 把纯文本截断到指定显示宽度，再交给样式渲染。
+//
+// 必须先截断纯文本再上色：上色后带有 ANSI 序列，再按显示宽度裁会破坏转义，
+// 而留着超宽的行会被 lipgloss 折行，把面板撑高。
+func fit(style lipgloss.Style, text string, width int) string {
+	return style.Render(truncate(text, width))
+}
+
+// panelInner 返回面板内容区可用的宽高。
+func (a *App) panelInner(width, height int) (int, int) {
+	frameH := a.st.Panel.GetHorizontalFrameSize()
+	frameV := a.st.Panel.GetVerticalFrameSize()
+	w := width - frameH
+	h := height - frameV
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return w, h
 }
 
 // scrollOffset 计算列表滚动偏移，保证光标可见。
