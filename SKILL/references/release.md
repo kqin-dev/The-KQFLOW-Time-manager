@@ -101,8 +101,13 @@ Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
 
 - **允许自选安装路径**，默认 `{autopf}\Kairos`；选了桌面 / 下载 / 文档 / 临时 /
   盘符根 / 系统关键目录会提醒，用户反悔可以留在目录页重选。
-- **默认勾选加入 PATH**（`addtopath`，`ChangesEnvironment=yes` 负责广播变更）；
-  取消勾选会提醒一次。注意 Pascal Script **没有**程序化勾选任务的 API。
+- **默认勾选加入 PATH**（`addtopath`）。真正写入的是 `[Code]` 里的
+  `AddDirToUserPath`（由 `CurStepChanged` 在 `ssPostInstall` 调用），
+  卸载时 `RemoveDirFromUserPath`（`usUninstall`）负责摘掉；
+  `ChangesEnvironment=yes` 只负责安装后广播变更。
+  **改任务名或删任务时，务必确认这两处代码仍引用 `addtopath`**——
+  任务本身只是个勾选框，不绑动作就等于没实现（这个坑真实发生过，
+  而且是发布后被用户发现的）。
 - **升级不碰数据**：`kairos-data` 不在 `[Files]` 里，所以 Inno 永远不会覆盖或删除它。
   卸载的 `[UninstallDelete]` 只列了程序自己放进去的文件，**不要**加
   `filesandordirs` 删整个 `{app}`。

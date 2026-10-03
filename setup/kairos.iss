@@ -108,8 +108,10 @@ english.UpgradeMoveDataFailed=Could not copy the old data (source: %1). The app 
 english.RunningPrompt={#AppName} is running. Please close it before continuing.
 
 [Tasks]
-; addtopath 依赖 [Setup] 的 ChangesEnvironment=yes：
-; Inno 会在安装/卸载后广播环境变量变更，新开的终端立刻能用 kair。
+; addtopath 必须真的去改 PATH。这个任务本身只是“用户要不要”的开关，
+; 真正的写入/移除在 [Code] 的 ModifyPath 里完成。
+; 曾经只写了任务和提醒、忘了绑定动作，结果用户勾了也没生效——
+; 改这段时务必确认 [Code] 里仍然引用 'addtopath'。
 Name: "addtopath"; Description: "{cm:AddToPath}"; GroupDescription: "{cm:AddToPath}"; Flags: checkedonce
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
@@ -298,6 +300,111 @@ begin
     MsgBox(FmtMessage(CustomMessage('UpgradeMoveDataFailed'), [OldData]), mbError, MB_OK);
 end;
 
+{ ---------- 3b. PATH：真正把安装目录写进去 / 摘出来 ----------
+
+  用户级 PATH 存在 HKCU\Environment 的 Path 值里（类型通常是 REG_EXPAND_SZ）。
+  这里自己做增删，而不是用声明式的 olddata 占位：
+    - 需要“先判断是否已存在”才能保证重复安装不会累加出多条；
+    - 卸载要精确摘掉自己那一条，不能动别人的路径。
+  这两件事声明式写法都不好表达。
+
+  写的是用户级，所以普通用户安装也能生效，且不影响系统级设置。 }
+
+const
+  EnvSubKey = 'Environment';
+
+{ 读取用户级 PATH（读不到就当空串）。 }
+function ReadUserPath(): string;
+begin
+  if not RegQueryStringValue(HKCU, EnvSubKey, 'Path', Result) then
+    Result := '';
+end;
+
+{ PATH 里是否已经有这一条（忽略大小写与结尾反斜杠）。 }
+function PathHasDir(const Path, Dir: string): Boolean;
+var
+  Rest, Part: string;
+  P: Integer;
+begin
+  Result := False;
+  Rest := Path;
+  while Rest <> '' do
+  begin
+    P := Pos(';', Rest);
+    if P > 0 then
+    begin
+      Part := Copy(Rest, 1, P - 1);
+      Delete(Rest, 1, P);
+    end
+    else
+    begin
+      Part := Rest;
+      Rest := '';
+    end;
+    if (Part <> '') and (LowerPath(Part) = LowerPath(Dir)) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+{ 把 Dir 追加到用户级 PATH。已经是其中一条就原样不动。 }
+procedure AddDirToUserPath(const Dir: string);
+var
+  Cur: string;
+begin
+  Cur := ReadUserPath();
+  if PathHasDir(Cur, Dir) then
+    Exit;
+
+  if (Cur <> '') and (Cur[Length(Cur)] <> ';') then
+    Cur := Cur + ';';
+  RegWriteExpandStringValue(HKCU, EnvSubKey, 'Path', Cur + Dir);
+end;
+
+{ 把 Dir 从用户级 PATH 里摘掉，其余条目顺序不变。 }
+procedure RemoveDirFromUserPath(const Dir: string);
+var
+  Rest, Part, NewPath: string;
+  P: Integer;
+  Removed: Boolean;
+begin
+  Rest := ReadUserPath();
+  if Rest = '' then
+    Exit;
+
+  Removed := False;
+  NewPath := '';
+  while Rest <> '' do
+  begin
+    P := Pos(';', Rest);
+    if P > 0 then
+    begin
+      Part := Copy(Rest, 1, P - 1);
+      Delete(Rest, 1, P);
+    end
+    else
+    begin
+      Part := Rest;
+      Rest := '';
+    end;
+
+    if (Part <> '') and (LowerPath(Part) = LowerPath(Dir)) then
+      Removed := True
+    else if Part <> '' then
+    begin
+      if NewPath <> '' then
+        NewPath := NewPath + ';';
+      NewPath := NewPath + Part;
+    end;
+  end;
+
+  { 只有在确实摘掉了东西时才回写，避免无意义地改动用户环境。 }
+  if Removed then
+    RegWriteExpandStringValue(HKCU, EnvSubKey, 'Path', NewPath);
+end;
+
 { ---------- 4. 卸载：询问是否保留数据 ---------- }
 
 { 数据是用户最珍贵的东西，所以默认按“保留”处理。
@@ -329,6 +436,14 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: string;
 begin
+  { 卸载时把安装目录从用户 PATH 里摘掉
+    （装在 PATH 里的那条路径指向即将不存在的 exe）。 }
+  if CurUninstallStep = usUninstall then
+  begin
+    RemoveDirFromUserPath(AppDirPath());
+    Exit;
+  end;
+
   if CurUninstallStep <> usPostUninstall then
     Exit;
 
@@ -347,4 +462,23 @@ begin
     DelTree(DataDir, True, True, True);
     RemoveDir(AppDirPath());
   end;
+end;
+
+{ ---------- 5. 安装收尾：把 addtopath 真正落地 ----------
+
+  Setup 段里的 ChangesEnvironment=yes 只负责“安装后广播环境变量已变更”，
+  它自己不会写任何值。真正写入用户 PATH 的是这里。
+
+  这就是之前那次事故的所在：任务、提示、ChangesEnvironment 都写了，
+  唯独漏了这一步，于是用户勾了“加入 PATH”却什么都没发生。
+
+  注意：Pascal 注释里既不要出现单独的右花括号，
+  也不要以方括号开头写段名（预处理器会当成段标记）。 }
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+
+  if WizardIsTaskSelected('addtopath') then
+    AddDirToUserPath(AppDirPath());
 end;

@@ -84,12 +84,32 @@
   根本走不到后面出错的常量——真装到 `C:\Program Files\...` 才会崩。
   至少覆盖一个「默认风格」路径。
 - **Inno Setup 里 `Exit(value)` 不可用**：用 `Result := value; Exit;`。
+- **`[Tasks]` 里的一条任务本身不做任何事，它只是个勾选框。**
+  必须另外把它绑到实际动作：`[Icons]` / `[Run]` 等段用 `Tasks: <name>` 参数，
+  或在 `[Code]` 里用 `WizardIsTaskSelected('<name>')` 判断。
+  **曾经出过的事故**：`addtopath` 的任务、文案、提示、`ChangesEnvironment=yes`
+  全都写了，唯独漏了写入动作——用户勾了「加入 PATH」却什么都没发生，
+  而且是发布后才被用户发现。
+  改安装脚本后请逐个核对：**每一条任务都要能指出它在哪一行被执行**。
+- **`ChangesEnvironment=yes` 不等于「会写环境变量」**：它只负责安装后广播
+  「环境变量已变更」，让新开的进程读到新值；写值要自己动手
+  （本项目在 `[Code]` 里读写 `HKCU\Environment` 的 `Path`）。
+- **`[Registry]` 段不支持 `Tasks` 参数**（只有 `[Icons]` / `[Run]` 等支持）。
+  要按任务条件写注册表，得在 `[Code]` 里判断，或用 `Check` 函数。
+- **`[Code]` 的 Pascal 注释里有两类字符会破坏解析**：
+  单独的右花括号会提前结束注释；以方括号开头的行（例如写段名开头）会被
+  预处理器当成段标记，报 "Invalid section tag" 且行号指在别处。
+  花括号常量（例如 olddata 那种占位写法）写在注释里同样会被解析。
 - **Pascal Script 没有 `WizardSelectTask`**：只能读（`WizardSelectedTasks`），不能程序化勾选任务。
 - **函数必须先声明后使用**：辅助函数放到调用者前面。
 - **`git push` 在受限沙箱下会失败**（凭据助手需要创建进程管道）。需要推送时
   用一次性放宽权限执行。用户已授权推送本仓库。
 - **不要用 `Start-Process` 跑 `kair.exe` 做验证**：TUI 没有真控制台会挂住并留下僵死进程。
   验证安装包用 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`。
+- **沙箱会拦住安装器的注册表/进程操作，导致 PATH 类改动无法在本机验证**：
+  `HKCU\Environment` 在受限模式下不可写，安装器会以退出码 4 失败（连日志都不产生）；
+  放宽权限后能写注册表，但安装器子进程又会遇到工作区不可写的问题。
+  **这类改动必须交给用户在真实环境验证**，并在交付说明里如实讲清楚。
 - **写完 commit message 用 `[System.IO.File]::WriteAllText` + UTF8Encoding($false)**，
   别用 `Set-Content -Encoding utf8`（会加 BOM）。
 
