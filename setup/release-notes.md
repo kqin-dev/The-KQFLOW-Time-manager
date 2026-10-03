@@ -1,4 +1,13 @@
-**KQFLOW 2.0.0** —— 这是 KQFLOW 的第一个发布。本项目此前叫 Kairos，本次更名并重置版本号。
+![KQFLOW 看板](https://raw.githubusercontent.com/kqin-dev/The-KQFLOW-Time-manager/main/docs/cover.png)
+
+# KQFLOW 2.0.1
+
+这是 KQFLOW 的第一个发布。本项目此前叫 Kairos，本次更名并重置版本号。
+
+> 2.0.1 修掉一个偶发问题：Windows 上原子写盘的最后一步（改名覆盖）可能因为
+> 杀毒实时防护、索引服务或同步盘的**瞬时占用**而失败，界面上会冒出一行
+> 「保存失败」。现在改为退避重试，不再因此报错。数据从未损坏——改名失败不会
+> 影响原文件。
 
 ## 为什么改名
 
