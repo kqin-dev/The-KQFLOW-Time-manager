@@ -121,6 +121,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#RepoRoot}\kqf.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+; README 里用相对路径引用截图，所以图片要跟着一起装，否则安装目录里的
+; README 会显示成坏图链接。
+Source: "{#RepoRoot}\docs\cover.png"; DestDir: "{app}\docs"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
@@ -136,6 +139,9 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait po
 Type: files; Name: "{app}\{#AppExeName}"
 Type: files; Name: "{app}\README.md"
 Type: files; Name: "{app}\LICENSE"
+Type: files; Name: "{app}\docs\cover.png"
+; docs 目录是我们建的、且只放了这一张图，卸载时收掉空目录。
+Type: dirifempty; Name: "{app}\docs"
 
 [Code]
 { 常量与工具函数。
