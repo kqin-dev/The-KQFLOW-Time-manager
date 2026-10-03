@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -13,13 +14,11 @@ import (
 //
 // 浮层与整页都曾用固定尺寸，终端偏小时会撑破面板边框或顶出可视区域，
 // 逼得用户必须全屏才能用。这里对每一行做显示宽度断言，并检查总行数。
-// 终端小于 minWidth×minHeight 时看板会主动显示“窗口太小”，那是预期行为，跳过。
+// 终端小于 minWidth×minHeight 时看板会主动显示“窗口太小”，那同样是必须
+// 装进终端的输出，因此不再跳过。
 func assertNoOverflow(t *testing.T, name, out string, width, height int) {
 	t.Helper()
-	if width < minWidth || height < minHeight {
-		return
-	}
-	if strings.Contains(out, "终端窗口太小") {
+	if width <= 0 || height <= 0 {
 		return
 	}
 	lines := strings.Split(out, "\n")
@@ -30,6 +29,23 @@ func assertNoOverflow(t *testing.T, name, out string, width, height int) {
 		if w := lipgloss.Width(line); w > width {
 			t.Errorf("%s 第 %d 行宽度 %d 超过终端 %d: %q", name, i, w, width, line)
 		}
+	}
+}
+
+// TestVerySmallTerminalFits 验证极小终端下的提示文本本身也不溢出。
+//
+// 之前这段提示固定输出 5 行、每行 30 多列，在 10×3 的窗口里会糊掉整屏。
+func TestVerySmallTerminalFits(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
+	sizes := [][2]int{{1, 1}, {2, 1}, {5, 2}, {10, 3}, {20, 5}, {40, 10}, {59, 15}, {59, 40}, {100, 15}}
+	for _, s := range sizes {
+		app, _, _ := newTestApp(t, at)
+		app.width, app.height = s[0], s[1]
+		out := app.View()
+		if out == "" {
+			t.Errorf("%dx%d：渲染为空", s[0], s[1])
+		}
+		assertNoOverflow(t, fmt.Sprintf("小终端 %dx%d", s[0], s[1]), out, s[0], s[1])
 	}
 }
 

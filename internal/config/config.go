@@ -28,6 +28,8 @@ type Config struct {
 	DefaultBreak int `json:"default_break_minutes"`
 	// PomodoroCycles 是番茄钟的段数（专注 + 休息为一轮），见需求 16。
 	PomodoroCycles int `json:"pomodoro_cycles,omitempty"`
+	// CountdownMin 是倒计时的时长（分钟）；为 0 时跟随专注时长。
+	CountdownMin int `json:"countdown_minutes,omitempty"`
 	// Quotes 是用户自定义的随机字条；为空时使用内置字条（见需求 9）。
 	Quotes []string `json:"quotes,omitempty"`
 	// Timezone 为空时使用系统本地时区。
@@ -79,6 +81,30 @@ func (c *Config) EffectivePomodoroCycles() int {
 		return DefaultPomodoroCycles
 	}
 	return c.PomodoroCycles
+}
+
+// FocusMinutes 返回生效的专注时长（分钟）。
+func (c *Config) FocusMinutes() int {
+	if c.DefaultFocus <= 0 {
+		return 25
+	}
+	return c.DefaultFocus
+}
+
+// BreakMinutes 返回生效的休息时长（分钟）。
+func (c *Config) BreakMinutes() int {
+	if c.DefaultBreak <= 0 {
+		return 5
+	}
+	return c.DefaultBreak
+}
+
+// CountdownMinutes 返回生效的倒计时时长（分钟）；未单独设置时跟随专注时长。
+func (c *Config) CountdownMinutes() int {
+	if c.CountdownMin <= 0 {
+		return c.FocusMinutes()
+	}
+	return c.CountdownMin
 }
 
 // QuotesText 把自定义字条拼成多行文本，供设置页编辑。

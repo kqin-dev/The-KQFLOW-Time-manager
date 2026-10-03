@@ -242,6 +242,11 @@ func (a *App) pageWidth(plainLines []string, prefer int) int {
 		natural = prefer
 	}
 	avail := a.overlayInner()
+	// 永远不要在终端里左右顶到边：留出空白既好看，也能避免某些终端
+	// 在最后一列自动换行而多出一行。
+	if avail > a.width-4 {
+		avail = a.width - 4
+	}
 	if natural > avail {
 		natural = avail
 	}
@@ -636,6 +641,8 @@ func (a *App) buildHelpLines(inner int, compact bool) (styled, plain []string) {
 }
 
 // addSettingRow 追加一行设置项，按是否选中与是否可编辑选择合适的样式。
+//
+// 选中项除底色外还加一个指针字符，低色彩终端下也能看出光标在哪。
 func addSettingRow(styled, plain *[]string, a *App, i int, item settingItem, text string, inner int) {
 	switch {
 	case i == a.settingsCursor:

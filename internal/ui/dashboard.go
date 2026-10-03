@@ -55,14 +55,36 @@ func (a *App) View() string {
 	}
 }
 
+// viewTooSmall 在终端过小时给出提示。
+//
+// 这段输出同样必须装进终端：早期它固定输出 5 行、每行 30 多列，
+// 在一个 10×3 的窗口里会溢出并糊掉整屏（用户看到的“渲染异常”）。
 func (a *App) viewTooSmall() string {
-	return lipgloss.JoinVertical(lipgloss.Center,
-		"",
-		a.st.Warn.Render("终端窗口太小"),
-		a.st.Muted.Render(fmt.Sprintf("当前 %d×%d，Kairos 至少需要 %d×%d", a.width, a.height, minWidth, minHeight)),
-		"",
-		a.st.Muted.Render("放大窗口，或按 ctrl+c 退出"),
-	)
+	if a.width <= 0 || a.height <= 0 {
+		return "Kairos"
+	}
+	full := fmt.Sprintf("当前 %d×%d，至少需要 %d×%d", a.width, a.height, minWidth, minHeight)
+	candidates := []string{
+		a.st.Warn.Render(truncateCells("窗口太小", a.width)),
+		a.st.Muted.Render(truncateCells(full, a.width)),
+		a.st.Muted.Render(truncateCells("ctrl+c 退出", a.width)),
+	}
+	// 只保留真正有内容、且放得下的行。
+	var lines []string
+	for _, l := range candidates {
+		if len(lines) >= a.height {
+			break
+		}
+		if lipgloss.Width(l) == 0 {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	if len(lines) == 0 {
+		// 窄到连一个宽字符都放不下时，退回 ASCII，保证一定有内容。
+		return truncateCells("Kairos", a.width)
+	}
+	return clipBlock(strings.Join(lines, "\n"), a.width, a.height)
 }
 
 // renderDashboard 组装主看板：左 TODO、中选项、右 GOAL、下进度条（见需求 5）。
@@ -195,61 +217,80 @@ func (a *App) renderHeader() string {
 }
 
 // renderLeftPanel 渲染 TODAY TODO 的上下两栏（见需求 13）。
+//
+// 固定与临时各自是一个带边框的子面板，这样 TAB 切换时能一眼看出焦点在哪一半。
+// 早期两栏共用一个边框，切过去只有字色变化，看起来像没反应。
 func (a *App) renderLeftPanel(width, height int) string {
-	_, innerH := a.panelInner(width, height)
-	// 两栏平分内容区，给底部的完成度留一行。
-	half := (innerH - 1) / 2
-	if half < 2 {
-		half = 2
+	// 底部留一行显示总体完成度。
+	stack := height - 1
+	if stack < 6 {
+		stack = 6
 	}
+	topH := stack / 2
+	bottomH := stack - topH
 
 	done, total := a.data.Counts()
-	titleFixed := fmt.Sprintf("TODAY · 固定 (%d)", len(a.data.Fixed))
-	titleFloating := fmt.Sprintf("TODAY · 临时 (%d)", len(a.data.Floating))
-	progress := fmt.Sprintf("完成 %d/%d", done, total)
-
-	fixed := a.renderTodoList(a.data.Fixed, FocusFixed, titleFixed, width, half)
-	floating := a.renderTodoList(a.data.Floating, FocusFloating, titleFloating, width, half)
-	summary := a.st.Muted.Render(progress)
+	summary := a.st.Muted.Render(truncate(fmt.Sprintf("完成 %d/%d", done, total), width-2))
 	if total > 0 && done == total {
-		summary = a.st.OK.Bold(true).Render("✔ 全部完成 " + progress)
+		summary = a.st.OK.Bold(true).Render(truncate("✔ 全部完成 "+fmt.Sprintf("%d/%d", done, total), width-2))
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, fixed, floating, summary)
-	return a.panel(a.focus == FocusFixed || a.focus == FocusFloating, width, height, content)
+	fixedTitle := fmt.Sprintf("TODAY · 固定 (%d)", len(a.data.Fixed))
+	floatTitle := fmt.Sprintf("TODAY · 临时 (%d)", len(a.data.Floating))
+
+	fixed := a.renderTodoPanel(a.data.Fixed, FocusFixed, fixedTitle, width, topH)
+	floating := a.renderTodoPanel(a.data.Floating, FocusFloating, floatTitle, width, bottomH)
+
+	return lipgloss.JoinVertical(lipgloss.Left, fixed, floating, summary)
 }
 
-// renderTodoList 渲染一栏待办。
-func (a *App) renderTodoList(items []*model.Todo, which Focus, title string, width, height int) string {
-	inner := width - 4
-	if inner < 8 {
-		inner = 8
+// renderTodoPanel 渲染一个带边框的待办子面板（固定或临时）。
+func (a *App) renderTodoPanel(items []*model.Todo, which Focus, title string, width, height int) string {
+	focused := a.focus == which
+	innerW, innerH := a.panelInner(width, height)
+	if innerW < 8 {
+		innerW = 8
 	}
-	var lines []string
-	lines = append(lines, a.st.PanelTitle.Render(truncate(title, inner)))
-	if len(items) == 0 {
-		lines = append(lines, a.renderEmpty("按 a 添加", inner))
+	if innerH < 1 {
+		innerH = 1
 	}
 
 	cursor := a.cursors.fixed
 	if which == FocusFloating {
 		cursor = a.cursors.floating
 	}
-	// 列表区域减去标题行。
-	listHeight := height - 1
-	if listHeight < 1 {
-		listHeight = 1
-	}
-	offset := scrollOffset(cursor, len(items), listHeight)
 
-	for i := offset; i < len(items) && len(lines) < listHeight; i++ {
+	var lines []string
+	// 焦点标记用字符而不是只靠边框颜色：低色彩终端会把两种边框色渲染成同一个，
+	// 那样 TAB 切过去就完全看不出变化。
+	marker := "  "
+	if focused {
+		marker = "▌ "
+	}
+	titleText := truncate(title, max(2, innerW-2))
+	if focused {
+		lines = append(lines, a.st.Title.Render(marker+titleText))
+	} else {
+		lines = append(lines, a.st.PanelTitle.Render(marker+titleText))
+	}
+
+	listRows := innerH - 1
+	if listRows < 1 {
+		listRows = 1
+	}
+	if len(items) == 0 {
+		lines = append(lines, a.renderEmpty("按 a 添加", innerW))
+	}
+	offset := scrollOffset(cursor, len(items), listRows)
+
+	for i := offset; i < len(items) && len(lines) < innerH; i++ {
 		item := items[i]
-		selected := a.focus == which && i == cursor
-		lines = append(lines, a.renderTodoRow(item, selected, inner))
+		selected := focused && i == cursor
+		lines = append(lines, a.renderTodoRow(item, selected, innerW))
 		// 展开选中项的子任务，并支持在子任务里移动（见需求 8）。
 		if selected && !a.collapsed[item.ID] {
 			for ti, task := range item.Tasks {
-				if len(lines) >= listHeight {
+				if len(lines) >= innerH {
 					break
 				}
 				taskSelected := a.taskActive && ti == a.taskCursor
@@ -264,14 +305,14 @@ func (a *App) renderTodoList(items []*model.Todo, which Focus, title string, wid
 				}
 				label := fmt.Sprintf("%s %s %s", branch, mark, task.Title)
 				if taskSelected {
-					lines = append(lines, a.st.RowCursor.Render(pad(truncate(label, inner), inner)))
+					lines = append(lines, a.st.RowCursor.Render(pad(truncate(label, innerW), innerW)))
 					continue
 				}
-				lines = append(lines, style.Render(truncate(label, inner)))
+				lines = append(lines, style.Render(truncate(label, innerW)))
 			}
 		}
 	}
-	return strings.Join(lines, "\n")
+	return a.panel(focused, width, height, strings.Join(lines, "\n"))
 }
 
 // renderTodoRow 渲染单条待办。

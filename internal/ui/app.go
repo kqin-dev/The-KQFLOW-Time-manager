@@ -883,7 +883,10 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		return a, nil
 	case action == "timer_countdown":
 		plan := model.Plan{Kind: model.TimerCountDown}
-		plan.Segments = []model.Segment{{Name: "倒计时", Kind: "focus", Dur: a.cfg.FocusDuration()}}
+		plan.Segments = []model.Segment{{
+			Name: "倒计时", Kind: "focus",
+			Dur: time.Duration(a.cfg.CountdownMinutes()) * time.Minute,
+		}}
 		a.chooseTimerTodo(plan)
 		return a, nil
 	case action == "timer_countup":

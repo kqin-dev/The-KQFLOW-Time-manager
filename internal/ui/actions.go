@@ -348,15 +348,18 @@ func (a *App) beginTimer(plan model.Plan, todoID string) {
 // pomodoroPlan 依据配置的段数构造番茄钟方案（见需求 16）。
 //
 // 每一轮是“专注 + 休息”，最后一段之后不再安排休息，避免计时结束后又跳进休息段。
+// 专注与休息时长都取自设置页，用户可以自己调。
 func (a *App) pomodoroPlan() model.Plan {
 	cycles := a.cfg.EffectivePomodoroCycles()
+	focus := time.Duration(a.cfg.FocusMinutes()) * time.Minute
+	rest := time.Duration(a.cfg.BreakMinutes()) * time.Minute
 	plan := model.Plan{Kind: model.TimerPomodoro, Cycle: cycles}
 	for i := 0; i < cycles; i++ {
 		plan.Segments = append(plan.Segments,
-			model.Segment{Name: fmt.Sprintf("专注 %d/%d", i+1, cycles), Kind: "focus", Dur: a.cfg.FocusDuration()})
+			model.Segment{Name: fmt.Sprintf("专注 %d/%d", i+1, cycles), Kind: "focus", Dur: focus})
 		if i < cycles-1 {
 			plan.Segments = append(plan.Segments,
-				model.Segment{Name: fmt.Sprintf("休息 %d/%d", i+1, cycles-1), Kind: "break", Dur: a.cfg.BreakDuration()})
+				model.Segment{Name: fmt.Sprintf("休息 %d/%d", i+1, cycles-1), Kind: "break", Dur: rest})
 		}
 	}
 	return plan
@@ -374,26 +377,32 @@ type settingItem struct {
 }
 
 // settingItems 是设置页的条目顺序，也是 j/k 导航的依据。
+// 计时相关的四项排在最前，方便用户先调好再开始专注（见问题 3）。
 var settingItems = []settingItem{
 	{
-		Label: "日界线（新的一天从几点开始）",
-		Value: func(a *App) string { return a.cfg.DayCutoff },
-		Edit:  (*App).editCutoff,
-	},
-	{
-		Label: "默认专注时长（分钟）",
-		Value: func(a *App) string { return strconv.Itoa(a.cfg.DefaultFocus) },
+		Label: "专注时长（分钟）",
+		Value: func(a *App) string { return strconv.Itoa(a.cfg.FocusMinutes()) },
 		Edit:  (*App).editFocusMinutes,
 	},
 	{
-		Label: "默认休息时长（分钟）",
-		Value: func(a *App) string { return strconv.Itoa(a.cfg.DefaultBreak) },
+		Label: "休息时长（分钟）",
+		Value: func(a *App) string { return strconv.Itoa(a.cfg.BreakMinutes()) },
 		Edit:  (*App).editBreakMinutes,
 	},
 	{
 		Label: "番茄钟段数（专注 + 休息为一轮）",
 		Value: func(a *App) string { return strconv.Itoa(a.cfg.EffectivePomodoroCycles()) },
 		Edit:  (*App).editPomodoroCycles,
+	},
+	{
+		Label: "倒计时时长（分钟）",
+		Value: func(a *App) string { return strconv.Itoa(a.cfg.CountdownMinutes()) },
+		Edit:  (*App).editCountdownMinutes,
+	},
+	{
+		Label: "日界线（新的一天从几点开始）",
+		Value: func(a *App) string { return a.cfg.DayCutoff },
+		Edit:  (*App).editCutoff,
 	},
 	{
 		Label: "昵称（显示在问候语里）",
@@ -469,9 +478,9 @@ func (a *App) editCutoff() {
 	}
 }
 
-// editFocusMinutes 编辑默认专注时长。
+// editFocusMinutes 编辑专注时长，它同时决定番茄钟与倒计时的默认真实时长。
 func (a *App) editFocusMinutes() {
-	a.editor.set("默认专注时长（分钟）", strconv.Itoa(a.cfg.DefaultFocus))
+	a.editor.set("专注时长（分钟，1-600）", strconv.Itoa(a.cfg.FocusMinutes()))
 	a.editor.onCommit = func(value string) (tea.Model, tea.Cmd) {
 		mins, err := parseMinutes(value)
 		if err != nil {
@@ -480,23 +489,39 @@ func (a *App) editFocusMinutes() {
 		}
 		a.cfg.DefaultFocus = int(mins.Minutes())
 		a.saveConfig()
-		a.setToast(fmt.Sprintf("默认专注时长已设为 %d 分钟", a.cfg.DefaultFocus), toastInfo)
+		a.setToast(fmt.Sprintf("专注时长已设为 %d 分钟", a.cfg.FocusMinutes()), toastInfo)
 		return a, nil
 	}
 }
 
-// editBreakMinutes 编辑默认休息时长。
+// editBreakMinutes 编辑休息时长。
 func (a *App) editBreakMinutes() {
-	a.editor.set("默认休息时长（分钟）", strconv.Itoa(a.cfg.DefaultBreak))
+	a.editor.set("休息时长（分钟，1-120）", strconv.Itoa(a.cfg.BreakMinutes()))
+	a.editor.onCommit = func(value string) (tea.Model, tea.Cmd) {
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 1 || n > 120 {
+			a.setToast("请输入 1-120 之间的分钟数", toastErr)
+			return a, nil
+		}
+		a.cfg.DefaultBreak = n
+		a.saveConfig()
+		a.setToast(fmt.Sprintf("休息时长已设为 %d 分钟", n), toastInfo)
+		return a, nil
+	}
+}
+
+// editCountdownMinutes 编辑倒计时时长。
+func (a *App) editCountdownMinutes() {
+	a.editor.set("倒计时时长（分钟，1-600）", strconv.Itoa(a.cfg.CountdownMinutes()))
 	a.editor.onCommit = func(value string) (tea.Model, tea.Cmd) {
 		mins, err := parseMinutes(value)
 		if err != nil {
 			a.setToast(err.Error(), toastErr)
 			return a, nil
 		}
-		a.cfg.DefaultBreak = int(mins.Minutes())
+		a.cfg.CountdownMin = int(mins.Minutes())
 		a.saveConfig()
-		a.setToast(fmt.Sprintf("默认休息时长已设为 %d 分钟", a.cfg.DefaultBreak), toastInfo)
+		a.setToast(fmt.Sprintf("倒计时时长已设为 %d 分钟", a.cfg.CountdownMinutes()), toastInfo)
 		return a, nil
 	}
 }

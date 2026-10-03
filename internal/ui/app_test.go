@@ -1362,6 +1362,122 @@ func TestTodoAddTargets(t *testing.T) {
 	}
 }
 
+// TestTimerDurationsConfigurable 验证专注时长、休息时长、倒计时时长都由用户设置
+// 决定，而不是写死的常量（见问题 3）。
+func TestTimerDurationsConfigurable(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, cfg := newTestApp(t, at)
+
+	// 改成一组非默认值。
+	cfg.DefaultFocus = 50
+	cfg.DefaultBreak = 10
+	cfg.PomodoroCycles = 2
+	cfg.CountdownMin = 90
+
+	plan := app.pomodoroPlan()
+	if plan.Cycle != 2 {
+		t.Fatalf("段数应为 2，实际 %d", plan.Cycle)
+	}
+	// 2 段 = 专注 + 休息 + 专注。
+	if len(plan.Segments) != 3 {
+		t.Fatalf("2 段应有 3 个时段，实际 %d", len(plan.Segments))
+	}
+	if plan.Segments[0].Dur != 50*time.Minute {
+		t.Errorf("专注时长应取自设置（50m），实际 %v", plan.Segments[0].Dur)
+	}
+	if plan.Segments[1].Dur != 10*time.Minute {
+		t.Errorf("休息时长应取自设置（10m），实际 %v", plan.Segments[1].Dur)
+	}
+	if plan.Segments[2].Dur != 50*time.Minute {
+		t.Errorf("最后一段专注应也是 50m，实际 %v", plan.Segments[2].Dur)
+	}
+	if plan.Segments[2].Kind != "focus" {
+		t.Errorf("最后一段应为专注，实际 %q", plan.Segments[2].Kind)
+	}
+
+	// 自定义时段的初始方案也跟随设置。
+	custom := app.defaultCustomPlan()
+	if custom.Segments[0].Dur != 50*time.Minute || custom.Segments[1].Dur != 10*time.Minute {
+		t.Errorf("自定义时段默认方案应跟随设置，实际 %v/%v",
+			custom.Segments[0].Dur, custom.Segments[1].Dur)
+	}
+
+	// 倒计时走单独的设置项。
+	if got := cfg.CountdownMinutes(); got != 90 {
+		t.Errorf("倒计时时长应为 90，实际 %d", got)
+	}
+	cfg.CountdownMin = 0
+	if got := cfg.CountdownMinutes(); got != 50 {
+		t.Errorf("未单独设置倒计时时应跟随专注时长，实际 %d", got)
+	}
+
+	// 通过设置页写入专注与休息时长。
+	app.view = ViewSettings
+	app.settingsCursor = settingIndex(t, "专注时长（分钟）")
+	press(t, app, "enter")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "35" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if cfg.FocusMinutes() != 35 {
+		t.Errorf("设置页应写入专注时长 35，实际 %d", cfg.FocusMinutes())
+	}
+
+	app.settingsCursor = settingIndex(t, "休息时长（分钟）")
+	press(t, app, "enter")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "7" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if cfg.BreakMinutes() != 7 {
+		t.Errorf("设置页应写入休息时长 7，实际 %d", cfg.BreakMinutes())
+	}
+	// 非法值不写入。
+	press(t, app, "enter")
+	app.editor.value = nil
+	app.editor.cursor = 0
+	for _, r := range "999" {
+		press(t, app, string(r))
+	}
+	press(t, app, "enter")
+	if cfg.BreakMinutes() != 7 {
+		t.Errorf("非法休息时长不应写入，实际 %d", cfg.BreakMinutes())
+	}
+}
+
+// TestLeftPanelsRenderSeparately 验证固定与临时各自成框架，TAB 焦点可见（见问题 2）。
+func TestLeftPanelsRenderSeparately(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.data.Fixed = []*model.Todo{model.NewTodo("固定项", model.KindFixed, app.day, at)}
+	app.data.Floating = []*model.Todo{model.NewTodo("临时项", model.KindFloating, app.day, at)}
+
+	render := func(focus Focus) string {
+		app.focus = focus
+		return app.renderLeftPanel(34, 30)
+	}
+
+	fixedView := render(FocusFixed)
+	floatView := render(FocusFloating)
+
+	// 两栏各自有边框：应该出现两组顶边。
+	if n := strings.Count(fixedView, "╭"); n < 2 {
+		t.Errorf("固定+临时应各有一个边框（至少两个顶边），实际 %d 个", n)
+	}
+	// 焦点不同时高亮不同，渲染结果应当不同。
+	if fixedView == floatView {
+		t.Error("切换焦点后左栏应有视觉差异")
+	}
+	// 两栏标题都在。
+	if !strings.Contains(fixedView, "固定") || !strings.Contains(fixedView, "临时") {
+		t.Error("左栏应同时显示固定与临时两栏标题")
+	}
+}
+
 // TestQuitRequiresConfirmation 验证按 q 先弹确认而不是直接退出（见需求 8）。
 func TestQuitRequiresConfirmation(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)

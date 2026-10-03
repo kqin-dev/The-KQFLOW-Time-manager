@@ -30,13 +30,13 @@ type customState struct {
 	cursor int
 }
 
-// defaultCustomPlan 依据配置生成一份合理的初始方案。
+// defaultCustomPlan 依据设置页里的专注/休息时长生成一份初始方案。
 func (a *App) defaultCustomPlan() model.Plan {
 	return model.Plan{
 		Kind: model.TimerCustom,
 		Segments: []model.Segment{
-			{Name: "深度工作", Kind: "focus", Dur: a.cfg.FocusDuration()},
-			{Name: "休息", Kind: "break", Dur: a.cfg.BreakDuration()},
+			{Name: "深度工作", Kind: "focus", Dur: time.Duration(a.cfg.FocusMinutes()) * time.Minute},
+			{Name: "休息", Kind: "break", Dur: time.Duration(a.cfg.BreakMinutes()) * time.Minute},
 		},
 	}
 }
