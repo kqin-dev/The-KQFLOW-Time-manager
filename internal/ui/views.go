@@ -172,6 +172,12 @@ func (a *App) renderPick() string {
 	if w := lipgloss.Width(a.pick.title); w > inner {
 		inner = w
 	}
+	// 底部提示也要放得下，否则会被截断成 “enter 确…”。
+	if w := lipgloss.Width("j/k 选择 · enter 确定 · esc 取消"); w > inner {
+		inner = w
+	}
+	// 再留出条目左侧的两个缩进列。
+	inner += 2
 	inner = a.modalInner(inner)
 
 	var lines []string
@@ -185,7 +191,7 @@ func (a *App) renderPick() string {
 		}
 	}
 	lines = append(lines, "")
-	lines = append(lines, a.modalLine(a.st.Muted, "j/k 选择 · enter 确认 · esc 取消", inner))
+	lines = append(lines, a.modalLine(a.st.Muted, "j/k 选择 · enter 确定 · esc 取消", inner))
 	return a.modalBox(inner, lines)
 }
 
