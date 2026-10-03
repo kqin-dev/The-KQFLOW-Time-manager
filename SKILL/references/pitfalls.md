@@ -61,6 +61,14 @@
   莫名其妙的语法错误（报错行号还在别处）。
 - **`.iss` 里不能在注释中写花括号常量**（例如 `{usertemp}`）：预处理器照样会去解析它，
   报 "Unknown constant"。而且 Inno Setup **没有 `{usertemp}` 这个常量**。
+- **`ExpandConstant` 的常量名拼错是「运行期」错误，编译器不报**：
+  写 `{userprofile}`（正确是 `{userpf}`）时编译通过，只有执行到那一行才抛
+  "Unknown constant"，静默安装直接以退出码 1 失败，日志里只有一句内部错误。
+  改任何 `ExpandConstant` 之后，**必须实际安装到会走到那行代码的路径**去验证。
+- **验证安装包不能只挑 `%TEMP%` 下的路径**：安装到 `%TEMP%` 时，
+  「位置是否合理」的判断会在更靠前的 `{%TEMP}` 分支提前返回，
+  根本走不到后面出错的常量——真装到 `C:\Program Files\...` 才会崩。
+  至少覆盖一个「默认风格」路径。
 - **Inno Setup 里 `Exit(value)` 不可用**：用 `Result := value; Exit;`。
 - **Pascal Script 没有 `WizardSelectTask`**：只能读（`WizardSelectedTasks`），不能程序化勾选任务。
 - **函数必须先声明后使用**：辅助函数放到调用者前面。

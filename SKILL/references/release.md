@@ -56,7 +56,7 @@ pwsh -File setup\build-installer.ps1
 
 ## 5. 验证安装包（不要跳过）
 
-至少验这四件事，全部可以用静默参数完成：
+至少验这五件事，全部可以用静默参数完成：
 
 ```powershell
 $installer = '<root>\dist\Kairos-<版本>-setup.exe'
@@ -68,10 +68,22 @@ $dir = "$env:TEMP\kair-check"
 
 # b) 升级不丢数据
 #    在 $dir\kairos-data 里放一份数据，再装一次，确认文件哈希不变
-# c) 换目录升级会把旧数据带过去（会弹询问；静默下默认“是”）
+# c) 换目录升级会把旧数据带过去（静默下默认“是”）
 # d) 卸载默认保留数据
 & "$dir\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+
+# e) 换一个「默认风格」的安装路径再装一次（最关键、最容易漏）
+& $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=C:\Program Files\Kairos"
 ```
+
+**第 e 件为什么必须做**：曾出过这样的事故——脚本里
+`ExpandConstant('{userprofile}')` 常量名写错（正确是 `{userpf}`）。
+这是**运行期**错误，编译器不报；而「位置是否合理」的判断在 `%TEMP%` 路径下
+会提前返回，所以只测 `%TEMP%` 永远发现不了，用户装到
+`C:\Program Files\Kairos` 才会以退出码 1 失败。**只测一种路径不足以验证安装包。**
+
+改过 `.iss` 之后要重走这个清单，并且**重新上传 Release 附件**——
+用户下载的是附件，不是你本地那份。
 
 **验证完记得卸载测试安装**，否则会在注册表里留下卸载项。
 检查残留：
