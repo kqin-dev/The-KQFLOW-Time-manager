@@ -1488,7 +1488,8 @@ func TestHelpDescriptionsNotClipped(t *testing.T) {
 	for _, size := range [][2]int{{144, 45}, {120, 36}, {100, 30}, {80, 24}} {
 		app, _, _ := newTestApp(t, at)
 		app.width, app.height = size[0], size[1]
-		out := app.renderHelp()
+		app.view = ViewHelp
+		out := app.View()
 		flat := strings.Join(strings.Fields(out), "")
 
 		for _, want := range []string{
@@ -1574,6 +1575,70 @@ func TestPasteIgnoredWhenNoEditor(t *testing.T) {
 	}
 	if len(app.data.All()) != before {
 		t.Error("粘贴内容不应改动数据")
+	}
+}
+
+// TestEditorVisibleOnSettingsPage 验证在设置页编辑时能看到输入框与输入内容。
+//
+// 早期输入框只在看板那一页才渲染，所以在设置页按 enter 之后完全看不到
+// 自己在输入什么，直到回车确认才生效——用户以为没反应。
+func TestEditorVisibleOnSettingsPage(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, cfg := newTestApp(t, at)
+	app.width, app.height = 100, 30
+	app.view = ViewSettings
+	app.settingsCursor = settingIndex(t, "昵称（显示在问候语里）")
+
+	press(t, app, "enter")
+	if !app.editor.active {
+		t.Fatal("按 enter 应打开输入框")
+	}
+	app.insertEditorText("kevin")
+
+	out := app.View()
+	flat := strings.Join(strings.Fields(out), "")
+	// 输入框标题与刚输入的字符都必须出现在屏幕上。
+	if !strings.Contains(flat, "昵称") {
+		t.Errorf("设置页编辑时应显示输入框标题，实际输出:\n%s", out)
+	}
+	if !strings.Contains(flat, "kevin") {
+		t.Errorf("设置页编辑时应能看到刚输入的字符，实际输出:\n%s", out)
+	}
+	// 输入过程中设置尚未写入。
+	if cfg.Nickname != "" {
+		t.Errorf("回车确认前不应写入配置，实际 %q", cfg.Nickname)
+	}
+	// 回车确认后才写入。
+	press(t, app, "enter")
+	if cfg.Nickname != "kevin" {
+		t.Errorf("确认后应写入昵称，实际 %q", cfg.Nickname)
+	}
+}
+
+// TestEditorVisibleWhenAddingTodo 验证添加 TODO 时输入框只占中间栏。
+//
+// 早期输入框被拼到整个看板上，会盖住左右面板的边框，看起来像渲染坏了。
+func TestEditorVisibleWhenAddingTodo(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.width, app.height = 100, 30
+	app.focus = FocusFixed
+	app.startAdd()
+	app.insertEditorText("买牛奶")
+
+	out := app.View()
+	flat := strings.Join(strings.Fields(out), "")
+	if !strings.Contains(flat, "买牛奶") {
+		t.Errorf("输入内容应可见，实际输出:\n%s", out)
+	}
+	// 左右面板的边框必须保留：输入框只占中间栏。
+	for i, l := range strings.Split(out, "\n") {
+		if lw := lipgloss.Width(l); lw != app.width {
+			t.Errorf("第 %d 行宽 %d，应等于终端宽度 %d", i, lw, app.width)
+		}
+	}
+	if strings.Count(out, "╭") < 3 {
+		t.Errorf("应保留三个面板的边框，实际 %d 个", strings.Count(out, "╭"))
 	}
 }
 

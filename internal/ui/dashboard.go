@@ -26,33 +26,78 @@ func (a *App) View() string {
 		return a.viewTooSmall()
 	}
 
+	// 输入框优先级最高：无论当前在哪一页，编辑中都要能看见自己在输入什么。
+	if a.editor.active {
+		return clipBlock(a.renderCenterBox(a.editorContent()), a.width, a.height)
+	}
+	// 自定义时段编辑器与选择框同样占用中间栏。
+	if a.custom != nil {
+		return clipBlock(a.renderCenterBox(a.customContent()), a.width, a.height)
+	}
+	if a.pick != nil {
+		return clipBlock(a.renderCenterBox(a.pickContent()), a.width, a.height)
+	}
+
 	switch a.view {
 	case ViewHistory:
-		return clipBlock(a.renderHistory(), a.width, a.height)
+		return clipBlock(a.renderPageView(a.historyLines()), a.width, a.height)
 	case ViewSettings:
-		return clipBlock(a.renderSettings(), a.width, a.height)
+		return clipBlock(a.renderPageView(a.settingsLines()), a.width, a.height)
 	case ViewHelp:
-		return clipBlock(a.renderHelp(), a.width, a.height)
+		return clipBlock(a.renderPageView(a.helpLines()), a.width, a.height)
 	case ViewCarry:
-		return clipBlock(a.renderCarry(), a.width, a.height)
+		return clipBlock(a.renderCenterBox(a.carryContent()), a.width, a.height)
 	default:
 		base := a.renderDashboard()
 		// 计时结束时响一声，提醒正在别处工作的用户。
 		if a.timer != nil && a.timer.consumeBell() {
 			base = "\a" + base
 		}
-		// 模态浮层叠在看板之上，保留背景上下文。
-		if a.custom != nil {
-			return clipBlock(a.renderCustomEditor(), a.width, a.height)
-		}
-		if a.pick != nil {
-			return clipBlock(overlay(base, a.renderPick(), a.width, a.height), a.width, a.height)
-		}
-		if a.editor.active {
-			return clipBlock(overlay(base, a.renderEditor(), a.width, a.height), a.width, a.height)
-		}
 		return base
 	}
+}
+
+// renderPageView 渲染帮助 / 设置 / 历史这类内容较多的整页。
+//
+// 这类页面需要比中间栏更宽的空间，所以单独给一块居中的面板：
+// 宽度按内容自适应并夹到终端内，整体居中。
+// 不再用“把浮层拼到看板上”的做法——那样会盖住左右面板的边框，把界面画花。
+func (a *App) renderPageView(styled, plain []string) string {
+	style := a.st.pageStyle(a.IsCompact())
+	frame := style.GetHorizontalFrameSize()
+
+	natural := 0
+	for _, l := range plain {
+		if w := lipgloss.Width(l); w > natural {
+			natural = w
+		}
+	}
+	inner := natural
+	if maxW := a.width - frame - 4; inner > maxW {
+		inner = maxW
+	}
+	if inner < 8 {
+		inner = 8
+	}
+
+	// 内容高于终端时按 a.helpScroll 滚动（帮助页内容最长，共用同一个偏移）。
+	if avail := a.height - style.GetVerticalFrameSize(); avail > 0 && len(styled) > avail {
+		maxScroll := len(styled) - avail
+		if a.helpScroll > maxScroll {
+			a.helpScroll = maxScroll
+		}
+		if a.helpScroll < 0 {
+			a.helpScroll = 0
+		}
+		styled = styled[a.helpScroll : a.helpScroll+avail]
+	}
+
+	fitted := make([]string, 0, len(styled))
+	for _, l := range styled {
+		fitted = append(fitted, truncateCells(l, inner))
+	}
+	panel := style.Width(inner).Render(strings.Join(fitted, "\n"))
+	return centerBlock(panel, a.width, a.height)
 }
 
 // viewTooSmall 在终端过小时给出提示。
@@ -87,51 +132,58 @@ func (a *App) viewTooSmall() string {
 	return clipBlock(strings.Join(lines, "\n"), a.width, a.height)
 }
 
+// columnLayout 计算三栏宽度与看板主体高度。
+//
+// 看板和中间栏内容（二级菜单、整页面板）共用这一份计算，
+// 保证弹窗永远落在中间栏里，不会盖住左右两侧的边框。
+func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
+	header := a.renderHeader()
+	footer := a.renderFooter()
+	bodyH = a.height - lipgloss.Height(header) - lipgloss.Height(footer)
+	if bodyH < 6 {
+		bodyH = 6
+	}
+
+	leftW, rightW = 34, 30
+	if a.width < 110 {
+		leftW, rightW = 28, 24
+	}
+	if a.width < 90 {
+		leftW, rightW = 24, 22
+	}
+	// 中间栏至少要能完整放下完整版 Logo（44 列），否则字会被截断并折行。
+	// 中间栏内容宽 = centerW - 4（边框 2 + 内边距 2）。
+	const minCenterWidth = 48
+	centerW = a.width - leftW - rightW
+	if centerW < minCenterWidth {
+		shrink := minCenterWidth - centerW
+		takeLeft := shrink / 2
+		takeRight := shrink - takeLeft
+		if leftW-takeLeft < 18 {
+			takeLeft = leftW - 18
+			takeRight = shrink - takeLeft
+		}
+		if rightW-takeRight < 16 {
+			takeRight = rightW - 16
+			takeLeft = shrink - takeRight
+		}
+		leftW -= takeLeft
+		rightW -= takeRight
+		centerW = a.width - leftW - rightW
+	}
+	if centerW < 20 {
+		centerW = 20
+		leftW = max(18, a.width-centerW-rightW)
+		rightW = max(0, a.width-leftW-centerW)
+	}
+	return leftW, centerW, rightW, bodyH
+}
+
 // renderDashboard 组装主看板：左 TODO、中选项、右 GOAL、下进度条（见需求 5）。
 func (a *App) renderDashboard() string {
 	header := a.renderHeader()
 	footer := a.renderFooter()
-
-	bodyHeight := a.height - lipgloss.Height(header) - lipgloss.Height(footer)
-	if bodyHeight < 6 {
-		bodyHeight = 6
-	}
-
-	leftWidth := 34
-	rightWidth := 30
-	if a.width < 110 {
-		leftWidth, rightWidth = 28, 24
-	}
-	if a.width < 90 {
-		leftWidth, rightWidth = 24, 22
-	}
-	// 中间栏至少要能完整放下完整版 Logo（44 列），否则字会被截断并折行。
-	// 中间栏内容宽 = centerWidth - 4（边框 2 + 内边距 2）。
-	const minCenterWidth = 48
-	centerWidth := a.width - leftWidth - rightWidth
-	if centerWidth < minCenterWidth {
-		shrink := minCenterWidth - centerWidth
-		// 优先从较宽的一侧收，收不动就两侧平摊。
-		takeLeft := shrink / 2
-		takeRight := shrink - takeLeft
-		if leftWidth-takeLeft < 18 {
-			takeLeft = leftWidth - 18
-			takeRight = shrink - takeLeft
-		}
-		if rightWidth-takeRight < 16 {
-			takeRight = rightWidth - 16
-			takeLeft = shrink - takeRight
-		}
-		leftWidth -= takeLeft
-		rightWidth -= takeRight
-		centerWidth = a.width - leftWidth - rightWidth
-	}
-	// 仍然不够就只能缩中间栏，但此时更小的 Logo 会被自动选中。
-	if centerWidth < 20 {
-		centerWidth = 20
-		leftWidth = max(18, a.width-centerWidth-rightWidth)
-		rightWidth = max(0, a.width-leftWidth-centerWidth)
-	}
+	leftWidth, centerWidth, rightWidth, bodyHeight := a.columnLayout()
 
 	left := a.renderLeftPanel(leftWidth, bodyHeight)
 	right := a.renderGoalPanel(rightWidth, bodyHeight)
@@ -146,11 +198,94 @@ func (a *App) renderDashboard() string {
 		if t > 1 {
 			t = 1
 		}
-		overlay := a.celebrateFrame(t, a.width, bodyHeight)
-		out = lipgloss.JoinVertical(lipgloss.Left, header, overlay, footer)
+		overlay := a.celebrateFrame(t, centerWidth, bodyHeight)
+		center = a.renderCenterPanel(centerWidth, bodyHeight)
+		center = overlayBox(center, overlay, centerWidth, bodyHeight)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
+		out = lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 	}
 	// 最后一道防线：整个看板必须正好装进终端。
 	return clipBlock(out, a.width, a.height)
+}
+
+// renderCenterBox 把一段内容放进中间栏，两侧保留原来的 TODO 与 GOAL 面板。
+//
+// 二级菜单、输入框、帮助/设置/历史都走这条路：只占用中间栏，
+// 既不会盖住左右面板的边框（那会把界面画花），渲染量也小得多。
+func (a *App) renderCenterBox(content string) string {
+	header := a.renderHeader()
+	footer := a.renderFooter()
+	leftWidth, centerWidth, rightWidth, bodyHeight := a.columnLayout()
+
+	left := a.renderLeftPanel(leftWidth, bodyHeight)
+	right := a.renderGoalPanel(rightWidth, bodyHeight)
+	center := a.panel(false, centerWidth, bodyHeight, content)
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
+	return clipBlock(lipgloss.JoinVertical(lipgloss.Left, header, body, footer), a.width, a.height)
+}
+
+// centerBlock 把一段渲染好的内容居中放在 width×height 的空白画布上。
+func centerBlock(block string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return block
+	}
+	lines := strings.Split(block, "\n")
+	blockW := 0
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > blockW {
+			blockW = w
+		}
+	}
+	if blockW > width {
+		blockW = width
+	}
+	left := (width - blockW) / 2
+	if left < 0 {
+		left = 0
+	}
+	top := (height - len(lines)) / 2
+	if top < 0 {
+		top = 0
+	}
+
+	out := make([]string, 0, height)
+	for i := 0; i < top && len(out) < height; i++ {
+		out = append(out, strings.Repeat(" ", width))
+	}
+	for _, l := range lines {
+		if len(out) >= height {
+			break
+		}
+		l = truncateCells(l, blockW)
+		line := strings.Repeat(" ", left) + l
+		if w := lipgloss.Width(line); w < width {
+			line += strings.Repeat(" ", width-w)
+		}
+		out = append(out, line)
+	}
+	for len(out) < height {
+		out = append(out, strings.Repeat(" ", width))
+	}
+	return strings.Join(out, "\n")
+}
+
+// overlayBox 在已经渲染好的面板文本上叠加另一段内容（用于庆祝特效）。
+func overlayBox(base, top string, width, height int) string {
+	baseLines := strings.Split(clipBlock(base, width, height), "\n")
+	topLines := strings.Split(top, "\n")
+	offset := (len(baseLines) - len(topLines)) / 2
+	if offset < 0 {
+		offset = 0
+	}
+	for i, l := range topLines {
+		y := offset + i
+		if y < 0 || y >= len(baseLines) {
+			continue
+		}
+		baseLines[y] = truncateCells(l, width)
+	}
+	return strings.Join(baseLines, "\n")
 }
 
 // renderHeader 显示问候语、日期与今日专注时长（见需求 18）。

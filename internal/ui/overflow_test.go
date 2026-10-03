@@ -131,7 +131,8 @@ func TestHelpPageFitsWithoutFullscreen(t *testing.T) {
 	for _, size := range [][2]int{{100, 40}, {100, 30}, {120, 35}, {80, 24}, {90, 28}, {140, 45}} {
 		app, _, _ := newTestApp(t, at)
 		app.width, app.height = size[0], size[1]
-		out := app.renderHelp()
+		app.view = ViewHelp
+		out := app.View()
 		lines := strings.Split(out, "\n")
 		if len(lines) > size[1] {
 			t.Errorf("%dx%d：帮助页行数 %d 超出终端", size[0], size[1], len(lines))
@@ -174,37 +175,52 @@ func TestHelpPageScrolls(t *testing.T) {
 	}
 }
 
-// TestSecondLevelMenuCentered 验证二级菜单居中而不是贴左边缘（见问题 6）。
-func TestSecondLevelMenuCentered(t *testing.T) {
+// TestSecondLevelMenuInCenterColumn 验证二级菜单只占用中间栏（见用户反馈）。
+//
+// 之前弹窗是拼接在整个看板上的，会盖住左右面板的边框，把界面画花。
+// 现在它只落在中间栏里：左右两侧的 TODO / GOAL 面板必须完整可见。
+func TestSecondLevelMenuInCenterColumn(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 30, 0, 0, time.Local)
 	for _, w := range []int{80, 100, 120, 160} {
 		app, _, _ := newTestApp(t, at)
 		app.width, app.height = w, 30
+		app.data.Fixed = []*model.Todo{model.NewTodo("固定项", model.KindFixed, app.day, at)}
+		app.data.Floating = []*model.Todo{model.NewTodo("临时项", model.KindFloating, app.day, at)}
 		app.startTimer()
 		out := app.View()
-		// 找到弹窗上边框所在行，算出左右留白。
-		var left, right int = -1, -1
-		for _, line := range strings.Split(out, "\n") {
-			if idx := strings.Index(line, "╔"); idx >= 0 {
-				left = lipgloss.Width(line[:idx])
-				if end := strings.Index(line, "╗"); end >= 0 {
-					right = lipgloss.Width(line[:end])
-				}
-				break
+		lines := strings.Split(out, "\n")
+
+		if !strings.Contains(out, "选择计时方式") {
+			t.Fatalf("宽度 %d：没找到计时菜单", w)
+		}
+		// 左右面板的内容必须依然可见——菜单不该把它们盖掉。
+		// 窄终端下标题会被截短（例如 "TODAY · …"），所以只断言条目内容。
+		flat := strings.Join(strings.Fields(out), "")
+		for _, want := range []string{"固定项", "临时项", "GOAL"} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("宽度 %d：菜单盖住了 %q，左右面板应保持可见", w, want)
 			}
 		}
-		if left < 0 {
-			t.Fatalf("宽度 %d：没找到弹窗边框", w)
+		// 菜单文字必须落在中间栏以内：它左边应当紧邻左侧面板的右边框。
+		// 做法：找到含菜单标题的行，确认该行同时含有左侧面板的 │ 边界。
+		found := false
+		for _, l := range lines {
+			if !strings.Contains(l, "选择计时方式") {
+				continue
+			}
+			found = true
+			if !strings.Contains(l, "│") {
+				t.Errorf("宽度 %d：菜单行看不到面板边界", w)
+			}
 		}
-		if left < 1 {
-			t.Errorf("宽度 %d：弹窗左侧没有留白，贴到了边缘", w)
+		if !found {
+			t.Errorf("宽度 %d：菜单标题不在任何一行上", w)
 		}
-		if w-right-1 < 1 {
-			t.Errorf("宽度 %d：弹窗右侧没有留白（右边剩 %d 列）", w, w-right-1)
-		}
-		// 左右留白应当接近，才算居中。
-		if diff := (w - right - 1) - left; diff > 4 || diff < -4 {
-			t.Errorf("宽度 %d：弹窗未居中，左留白 %d 右留白 %d", w, left, w-right-1)
+		// 宽度必须严格等于终端宽度，否则说明拼接出了问题。
+		for i, l := range lines {
+			if lw := lipgloss.Width(l); lw != w {
+				t.Errorf("宽度 %d：第 %d 行宽 %d，应等于终端宽度", w, i, lw)
+			}
 		}
 	}
 }

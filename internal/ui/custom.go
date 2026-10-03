@@ -218,10 +218,9 @@ func (a *App) commitCustom() (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-// renderCustomEditor 渲染自定义时段编辑器。
-func (a *App) renderCustomEditor() string {
-	// 内容按可用宽度自适应，窄终端下自动收窄名字列。
-	inner := a.modalInner(60)
+// customContent 渲染自定义时段编辑器的内容（只占中间栏）。
+func (a *App) customContent() string {
+	inner := a.contentWidth()
 	nameW := inner - 22
 	if nameW > 16 {
 		nameW = 16
@@ -232,6 +231,7 @@ func (a *App) renderCustomEditor() string {
 
 	var lines []string
 	lines = append(lines, a.modalLine(a.st.Title, "自定义时段", inner))
+	lines = append(lines, "")
 
 	total := a.custom.plan.Total()
 	for i, seg := range a.custom.plan.Segments {
@@ -239,10 +239,9 @@ func (a *App) renderCustomEditor() string {
 		if i == a.custom.cursor {
 			marker = "▸ "
 		}
-		line := fmt.Sprintf("%s%d. %s %s %s",
+		line := truncate(fmt.Sprintf("%s%d. %s %s %s",
 			marker, i+1, pad(truncate(seg.Name, nameW), nameW),
-			segKindLabel(seg.Kind), clock.ClockString(seg.Dur))
-		line = truncate(line, inner)
+			segKindLabel(seg.Kind), clock.ClockString(seg.Dur)), inner)
 		if i == a.custom.cursor {
 			lines = append(lines, a.st.ModalCursor.Render(pad(line, inner)))
 		} else {
@@ -252,20 +251,10 @@ func (a *App) renderCustomEditor() string {
 	lines = append(lines, a.modalLine(a.st.Accent,
 		fmt.Sprintf("合计 %s（%d 段）", clock.ClockString(total), len(a.custom.plan.Segments)), inner))
 	lines = append(lines, "")
-	// 说明与帮助在窄终端下会挤占看板，压到两行。
-	if a.IsCompact() {
-		lines = append(lines, a.modalLine(a.st.Muted, "e 改名 · p 时长 · t 类型 · n 新增 · d 删除", inner))
-		lines = append(lines, a.modalLine(a.st.Muted, "enter 开始 · esc 取消 · r 恢复默认", inner))
-	} else {
-		lines = append(lines, a.modalLine(a.st.Muted, "按顺序依次进行，进度条会按类型着色。", inner))
-		lines = append(lines, "")
-		lines = append(lines, a.modalLine(a.st.Muted, "j/k 选择 · e 改名 · p 改时长 · t 改类型", inner))
-		lines = append(lines, a.modalLine(a.st.Muted, "n 新增一段 · d 删除 · r 恢复默认", inner))
-		lines = append(lines, a.modalLine(a.st.Muted, "enter 开始 · esc 取消", inner))
-	}
-
-	body := a.modalBox(inner, lines)
-	return overlay(a.renderDashboard(), body, a.width, a.height)
+	lines = append(lines, a.modalLine(a.st.Muted, "j/k 选择 · e 改名 · p 时长 · t 类型", inner))
+	lines = append(lines, a.modalLine(a.st.Muted, "n 新增 · d 删除 · r 恢复默认", inner))
+	lines = append(lines, a.modalLine(a.st.Muted, "enter 开始 · esc 取消", inner))
+	return strings.Join(lines, "\n")
 }
 
 // segKindLabel 返回时段类型的中文名。
