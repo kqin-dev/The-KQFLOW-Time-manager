@@ -20,14 +20,27 @@ func (a *App) IsCompact() bool { return a.width < compactWidth }
 // contentWidth 返回中间栏内容区可用的字符数。
 //
 // 二级菜单、输入框、帮助/设置/历史都只占中间栏，所以宽度都以它为准。
+//
+// 上限 maxContentWidth 是刻意加的：超宽终端（比如 200 列）下三栏均分会把中间栏
+// 拉到 130+ 列，一整句中文挤在一行里既难读，也让"恰好接近边界"的长句容易出问题
+// （用户两次报「风险提示显示不全」都发生在他的宽终端上）。所以超过上限就按上限
+// 折行——多出来的列留白，不再一味拉长。
 func (a *App) contentWidth() int {
 	_, centerW, _, _ := a.columnLayout()
 	w := centerW - a.st.Panel.GetHorizontalFrameSize()
 	if w < 8 {
 		w = 8
 	}
+	if w > maxContentWidth {
+		w = maxContentWidth
+	}
 	return w
 }
+
+// maxContentWidth 是中间栏正文内容区的最大列数。
+//
+// 92 是常见终端下一行中文的可读上限附近；再宽就该靠留白而不是拉长行宽。
+const maxContentWidth = 92
 
 // modalLine 渲染一行内容，超宽时截断。
 func (a *App) modalLine(style lipgloss.Style, text string, inner int) string {
@@ -389,12 +402,41 @@ func (a *App) settingsLines() (styled, plain []string) {
 		plain = append(plain, p)
 	}
 	add(a.st.Title.Render("设置 / Settings"), "设置 / Settings")
-	sub := "日界线决定“今天”从几点开始，熬夜可设为 04:00。"
-	add(a.st.Muted.Render(truncate(sub, inner)), sub)
+	// 说明与底部提示都要按内宽折行，不能只 truncate：截断会让用户以为话没说完
+	// （而超宽的行会被终端折行、把面板撑歪）。这条曾经就是超宽的。
+	for _, l := range wrap("日界线决定“今天”从几点开始，熬夜可设为 04:00。", inner) {
+		add(a.st.Muted.Render(l), l)
+	}
 	add("", "")
 
 	for i, item := range settingItems {
-		value := item.Value(a)
+		value := ""
+		if item.Value != nil {
+			value = item.Value(a)
+		}
+		// 多行项：标签一行，内容按行展开（用于地址 + 声明这种必须完整展示的内容）。
+		if item.Lines != nil {
+			text := truncate("▸ "+item.Label, inner)
+			if a.settingsCursor != i {
+				text = truncate("  "+item.Label, inner)
+			}
+			addSettingRow(&styled, &plain, a, i, item, text, inner)
+			for _, l := range item.Lines(a) {
+				if strings.TrimSpace(l) == "" {
+					continue
+				}
+				// 长内容按**内宽本身**折行，不再加缩进。
+				//
+				// 这里刻意避开"缩进 + 按 inner-N 折行"的组合：用户连续两次报
+				// 「风险提示显示不全」，而那个组合一旦缩进宽度与折行宽度不一致，
+				// 超出的部分就会被终端自己折行、看起来就是丢了字。现在折行宽度
+				// 与可用宽度是同一个数，结构上不可能超出；主次靠样式区分。
+				for _, wl := range wrap(l, inner) {
+					add(a.st.Muted.Render(wl), wl)
+				}
+			}
+			continue
+		}
 		marker := "  "
 		if i == a.settingsCursor {
 			marker = "▸ "
@@ -414,9 +456,10 @@ func (a *App) settingsLines() (styled, plain []string) {
 		addSettingRow(&styled, &plain, a, i, item, text, inner)
 	}
 
-	hint := "  j/k 或 ↑/↓ 选择 · enter/e 编辑 · esc 返回看板"
 	add("", "")
-	add(a.st.Muted.Render(truncate(hint, inner)), hint)
+	for _, l := range wrap("  j/k 或 ↑/↓ 选择 · enter/e 编辑 · esc 返回看板", inner) {
+		add(a.st.Muted.Render(l), l)
+	}
 	return styled, plain
 }
 
@@ -608,6 +651,8 @@ func helpRows(compact bool) []helpRow {
 		{Key: "A", Desc: "添加 GOAL"},
 		{Key: "e", Desc: "重命名选中条目"},
 		{Key: "t", Desc: "为选中条目添加子任务"},
+		{Key: "l", Desc: "给选中条目打标签（星星 / 紧急 / 自定义…）"},
+		{Key: "D", Desc: "给选中条目设 DDL（TODO 到分，GOAL 到日）"},
 		{Key: "d", Desc: "删除选中条目（会先确认）"},
 		{Key: "r", Desc: "从昨日继承（固定 / 未完成 / 两者）"},
 		{Key: "N", Desc: "打开随手记（多行编辑器，按日保存）"},
@@ -616,10 +661,11 @@ func helpRows(compact bool) []helpRow {
 		{Key: "ctrl+s", Desc: "保存随手记"},
 		{Key: "esc / q", Desc: "关闭编辑器（有未保存改动会先问）"},
 		{Key: "计时"},
-		{Key: "enter", Desc: "在中间栏打开计时菜单"},
-		{Key: "space", Desc: "计时中暂停或继续"},
-		{Key: "enter", Desc: "计时中结束并归档到所属 TODO"},
-		{Key: "esc", Desc: "计时中中断，已用时长仍会记录"},
+		{Key: "enter", Desc: "在中间栏打开计时菜单（番茄钟 / 倒计时 / 正计时 / 自定义 / 收藏的方案）"},
+		{Key: "自定义时段", Desc: "编辑器里 n 新增 · e 改名 · p 时长 · t 类型 · s 收藏 · enter 开始"},
+		{Key: "收藏的方案", Desc: "直接开始，或载入为模板改；管理菜单里可删除"},
+		{Key: "p", Desc: "计时中打开计时菜单（暂停 / 继续 / 结束）——计时中唯一的计时入口"},
+		{Key: "space / enter", Desc: "计时中仍然是勾选完成 / 进入子任务，不会被计时占用"},
 		{Key: "设置"},
 		{Key: "j / k", Desc: "在设置项之间移动"},
 		{Key: "enter / e", Desc: "编辑选中的设置项"},

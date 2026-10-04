@@ -96,20 +96,100 @@ kqflow-data/
 
 - **`archive.sessions` 是专注时长的唯一来源**，不要在别处再存一份。
   只有 `ended` 不为空的记录才计入总计（未结束的计时不算）。
+  专注时长读 `Session.Focus`（`*time.Duration`，按段累计）；老数据为 `nil`
+  时退回旧口径（休息不算、其余都算），见 `Session.FocusDur` / `HasBreakdown`。
+  `FocusRecord` 是早期遗留类型，统计口径已不再依赖它。
 - **`activity` 按条目名聚合**，不是按 ID。所以重命名条目会产生新的 key；
   删条目后由 `DayData.PruneOrphans()` 在读入时清理悬空项。
 - **写入一律原子**（临时文件 + rename），写前备份。恢复逻辑从 `backup/` 找同月文件。
 - 数据文件是给用户看和手改的，**保持可读、稳定**；改字段名必须能读老文件。
+- **数据版本保护已经实现**（`internal/store/dataversion.go` 的 `CheckDataVersion`，
+  由 `cmd/kqf` 在 `store.Open` **之前**调用）。保守策略：只要发现数据来自更新的
+  版本，就拒绝启动并列出文件名与版本号，请用户升级程序或把文件移走。
+  **`schema_version` 与程序版本号是两套独立的编号，命名规则见
+  [release.md](release.md) 第 0 节**——那是判断兼容性的证据，不是程序版本。
+  两个要点：
+  - **存在却读不出内容的文件同样拒绝启动**。认不出内容就无法保证它不是新版本
+    的数据，而本项目是整份 JSON 读进来再整份写回，写回就等于抹掉不认识的字段。
+  - 检查过程**只读、绝不写入**，也不建任何目录——否则用户想回退就没有干净数据。
+  - `config.json` 由 `config` 包自己把关（`config.Load` 返回
+    `IncompatibleConfigError`），并有独立的 `config.ConfigSchemaVersion` 常量。
+    两个包各留一个版本常量是因为 `model` 不依赖任何内部包、`config` 引用它会绕成环。
+    注意 `config.Load` 对「损坏」仍然是退回默认值不阻断启动，只对「来自更新版本」
+    拒绝——这两种情况必须区别对待。
+  - **开发期一律不动 `schema_version`**（用户明确要求）：开发版没有真实用户、
+    数据随时可弃，每加字段就升版只会让「旧开发版打不开新数据」反复阻塞调试。
+    只有**对外发布稳定版**、且变化会让更早的**已发布**版本读错时才升。
+    详见 [release.md](release.md) 第 0 节。
 
 ## 数据结构要点
 
 - `Todo`：`ID` / `Title` / `Kind`(fixed|floating) / `Status` / `Tasks` / `Day` / 时间戳。
   状态有 todo / doing / done 三态，`SyncFromTasks` 由子任务反推父条目状态。
+- **标签（Labels）有两个同名的东西，别混**（见 `internal/model/label.go`）：
+  - `Todo.Labels` / `Goal.Labels`：**用户**起的记号（星星 / 紧急 / 自定义），
+    `[]string`，可以增删。这是需求 1 的「标签」。
+  - `Goal.Tag`：**程序**算出的标题指纹（`#a1b2c3`），用于继承时避免同名混淆，
+    用户改不了。
+  标签没有全局标签库：可用标签 = 内置预设（`labelPresets`）+ 配置里的
+  `custom_labels`（只存用户新造的）+ 所有条目上已用过的，去重后得到。
+  这样标签库不会随使用膨胀，也不会出现「库里有用不上的悬空项」。
+  单个条目上限 `MaxLabelsPerItem`，单个标签长度上限 `MaxLabelRunes`，
+  入库前一律走 `LabelName` 清洗（读入时由 `PruneOrphans` 自愈）。
 - `Task`：子任务，有 `Status` 与 `DoneAt`。
 - `Goal`：长期目标；`ArchivedDay` 非空表示它归档在某一天（存在日数据里），
   为空表示它活跃在 `goals.json` 里。
 - `Session`：一次计时。`TodoRef` 是条目 ID，`TodoName` 是当时的名字（冗余保存，
-  这样条目被删后历史仍可读）。`SegmentKind` 区分 focus / break。
+  这样条目被删后历史仍可读）。`SegmentKind` 区分 focus / break / other，
+  记录的是**结束时**所在的那一段；`Focus` 才是这次计时真正的专注时长
+  （按段累计，跨段方案也正确）。
+- **DDL（截止时间）的粒度按条目类型分开**（见 `internal/model/ddl.go`）：
+  `Todo.Due` 是 `"HH:MM"`（待办每天重置，18:30 天然指「今天 18:30」）；
+  `Goal.Due` 是 `"YYYY-MM-DD"`（目标不随天重置，指「到该逻辑日结束为止」）。
+  存字符串而不是时间戳，是为了数据文件可读、可手改。
+  算到期时刻时会经过日界线：**日界线只决定「算哪个逻辑日」，不能加到钟点上**
+  （这个 bug 被测试抓到过——日界线 04:00 时 18:30 曾被算成 22:30）。
+- **收藏的自定义专注方案**（见需求 2）存在**配置**里（`config.saved_plans`），
+  不是日数据：它是「偏好」，与日界线无关，也不该随某天数据被清理。
+  实现上「一套收藏」就是一个带了 `Plan.Label` 的 `Plan`，没有另造类型；
+  相关工具在 `internal/model/plan.go`（校验、自动命名、`ClonePlan`）。
+  **`ClonePlan` 必须用**：`Segments` 是切片，直接赋值会让「当模板改」改到收藏
+  原件（这一点有专门的测试）。动作串用**下标**（`saved_start:0`）而不是方案名，
+  因为方案名是用户随便起的、可能含冒号等字符。
+- **时段切换提醒**（见需求 3）的调度中心是 `internal/ui/notify.go`：
+  跨过时段边界（`timerState.lastSeg` 变化）或**计时自然结束**（`timerDoneMsg`）时
+  触发提醒。三档各自可关（配置里都是布尔开关），默认全关：
+  - 流光 `notifyLogo` → **只做在 LOGO 那几行**。实机反馈走过两轮弯路：一开始
+    只替换一行（用户说"太微弱"），改成铺满整个中间栏（用户说"确实很丑"），
+    最终定成"只在 LOGO 上"——Logo 本来就有流动渐变，提醒期间换更亮的配色、
+    加快流动并加 `◈` 记号即可，不动中间栏其它内容、不动左右面板。
+  - 提示音 `notifySoundCmd` → **只有终端响铃**（`\a`）。曾经用代码合成过颂钵/
+    风铃/白噪音三种音频并通过 PowerShell SoundPlayer 播放（见 git 历史），
+    但用户实测在本机都放不出声，而系统响铃好听且可用，所以整条合成音频与
+    平台播放的代码都被删掉了，配置里它是个开/关。
+  - 手机推送 `notify_ntfy.go` → POST 到 `<server>/<topic>`，标题放 `X-Title`。
+    **纯单向、失败就算**（不重试不排队）。用户实测能正常收到短信。
+  - 设置页有一项**测试**（`demoNotify`）：立刻演示流光 + 提示音 + 推送，
+    并如实报告哪几项因为没打开而跳过。这是用户要求的——三项提醒都得等"时段
+    切换"才能看到效果，验证成本太高。
+    `notifyText` 必须容忍 `a.timer == nil`（测试按钮随时可能按下，曾经 panic）。
+- `config.AutoArchiveOnFinish` 决定专注走完后要不要**自动结束并归档**。
+  默认 false：停在"已完成"等用户按 p 菜单确认，时长不会被自动定成"完成"。
+  打开后走完即刻归档（`timerDoneMsg` 分支里直接 `stopTimer(false)`）。
+  **两个功能不能互相吃掉**：自动归档时该发的提醒照发，有测试盯着。
+- **ntfy 频道名由程序生成**（`config.GenerateNtfyTopic`，crypto/rand + base32，
+  32 字节熵）：ntfy 频道默认**全网公开**，谁猜到名字都能收、也能发，所以
+  不把安全防线寄托在用户的安全意识上。生成一次就固化在配置里（每次换频道会
+  让手机订阅失效），用户可在设置里主动「重新生成手机频道」。
+  `config.NotifyDisclaimer` 是必须原样展示的风险说明（第三方关系、不加密、
+  不要泄露、不承担责任），措辞合规见 bug.md 注意 2 / 用户要求。
+- **二维码已经被移除，不要再加回来**。曾经自研过一个精简 QR 编码器
+  （字节模式 + L 级 + 纠错 + 掩码）并配了测试用解码器，数学闭环、格式信息与
+  标准逐位一致、几何断言也全过，但**真机始终扫不出来**（"连识别都识别不出
+  是二维码"，改过模块比例与静默区后仍然不行）。用户决定弃用该功能，改为直接
+  显示订阅地址让用户复制。**教训**：测试能证明的只有"矩阵在数学上合法"，
+  证明不了"手机能读"；这类与人/硬件交互的功能，自己造轮子的验证成本极高，
+  要么用成熟库，要么干脆不做。
 - `Activity`：按名字聚合的累计投入，用于「今日最投入的条目」。
 - `DayData.PruneOrphans()`：数据自愈入口，读入时调用。它会把指向已删除条目的
   `todo_ref` 清空、把确实由这些孤儿记录产生的 `activity` 项删掉
@@ -121,8 +201,12 @@ kqflow-data/
 
 | 想改什么 | 从哪里入手 |
 | --- | --- |
-| 看板三栏宽度 / 高度分配 | `columnLayout()`（唯一来源） |
+| 看板三栏宽度 / 高度分配 | `columnLayout()`（唯一来源）；左栏是「固定 / 临时 / 汇总」，右栏是「GOAL / DDL / 汇总」，两边高度分配对称 |
 | 按键 | `handleKey` 的路由 + `handleEditorKey` / `handlePickKey` / `handleSettingsKey` |
+| 标签 | `labels.go`（页面 + 渲染）、`model/label.go`（数据与清洗） |
+| DDL / 截止时间 | `ddl.go`（页面 + 排序）、`model/ddl.go`（粒度与到期计算） |
+| 收藏的专注方案 | `savedplans.go`（菜单 + 三种动作）、`model/plan.go`（校验与克隆） |
+| 时段切换提醒 | `notify.go`（调度 + LOGO 流光）、`notify_ntfy.go`（推送） |
 | 菜单项 | `menuItems` |
 | 设置项 | `settingItems` |
 | 二级页内容 | `helpLines` / `settingsLines` / `historyLines` / `carryContent` |

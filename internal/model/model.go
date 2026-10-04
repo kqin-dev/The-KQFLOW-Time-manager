@@ -75,6 +75,13 @@ type Todo struct {
 	OrigDay   string    `json:"orig_day"`
 	// CarriedFrom 记录该条目是从哪一日继承过来的（空表示当日新建）。
 	CarriedFrom string `json:"carried_from,omitempty"`
+	// Labels 是用户给这条待办打的标签（见 label.go）。
+	Labels []string `json:"labels,omitempty"`
+	// Due 是这条待办的 DDL，格式 “HH:MM”（只到分，见 ddl.go）。
+	//
+	// 待办每天都会重置，所以它的 DDL 没有日期部分：18:30 指当天 18:30，
+	// 过了就表示「今天已经超时」。
+	Due string `json:"due,omitempty"`
 	// Notes 保留给用户补充说明。
 	Notes string `json:"notes,omitempty"`
 }
@@ -171,7 +178,14 @@ type Goal struct {
 	Created time.Time  `json:"created_at"`
 	// ArchivedDay 在目标被勾选后由日界线逻辑填入，表示归档到哪一天（见需求 10）。
 	ArchivedDay string `json:"archived_day,omitempty"`
-	Notes       string `json:"notes,omitempty"`
+	// Labels 是用户给这个目标打的标签（见 label.go）。
+	Labels []string `json:"labels,omitempty"`
+	// Due 是这个目标的 DDL，格式 “YYYY-MM-DD”（只到天，见 ddl.go）。
+	//
+	// 目标没有「每天重置」的概念，所以它的 DDL 带日期：2026-10-31 表示
+	// 到这一天结束（逻辑日结束）为止。
+	Due   string `json:"due,omitempty"`
+	Notes string `json:"notes,omitempty"`
 }
 
 // NewGoal 创建一个新目标。
@@ -244,6 +258,9 @@ type Plan struct {
 	Segments []Segment `json:"segments"`
 	// Cycle 表示番茄钟的轮数，仅用于展示。
 	Cycle int `json:"cycle,omitempty"`
+	// Label 是用户给这套方案起的名字，只在「收藏的方案」里有值（见需求 2）。
+	// 新建计时时为空，不影响计时逻辑。
+	Label string `json:"label,omitempty"`
 }
 
 // Total 返回全时段总时长；正计时返回 0，表示没有终点。
@@ -271,6 +288,45 @@ func (p Plan) SegmentAt(elapsed time.Duration) (idx int, seg Segment, within tim
 	return last, p.Segments[last], p.Segments[last].Dur
 }
 
+// FocusUpTo 返回从计时开始到 elapsed 为止，处于专注时段的总时长。
+//
+// 一次计时可以跨多个时段，只按结束时所处的那一段判断会把整段都算成
+// 专注或休息。这里按段累加，口径与 SegmentAt 保持一致：超过方案末尾的
+// 时间归入最后一段，因此正计时（总长为 0）也会全部落在它的那一段上。
+func (p Plan) FocusUpTo(elapsed time.Duration) time.Duration {
+	if elapsed <= 0 || len(p.Segments) == 0 {
+		return 0
+	}
+	last := len(p.Segments) - 1
+	var focus time.Duration
+	acc := time.Duration(0)
+	for i, s := range p.Segments {
+		if elapsed <= acc {
+			break
+		}
+		within := elapsed - acc
+		if i != last && within > s.Dur {
+			// 中间那些段已经完整走完，只计它自己的长度。
+			within = s.Dur
+		}
+		// 只有明确标成“专注”的段计入专注时长：自定义时段里用户还能
+		// 把一段标成“其它”，它既不是专注也不是休息。
+		if s.Kind == SegmentKindFocus {
+			focus += within
+		}
+		acc += s.Dur
+	}
+	return focus
+}
+
+// SegmentKindFocus / SegmentKindBreak 是计时时段的两类语义。
+//
+// 自定义时段里用户还能把一段标成“其它”（自定义），它既不是专注也不是休息。
+const (
+	SegmentKindFocus = "focus"
+	SegmentKindBreak = "break"
+)
+
 // Session 是一次真实的计时记录，中断或结束时都会落盘（见需求 17、21）。
 type Session struct {
 	ID       string        `json:"id"`
@@ -280,11 +336,35 @@ type Session struct {
 	Started  time.Time     `json:"started"`
 	Ended    *time.Time    `json:"ended,omitempty"`
 	Elapsed  time.Duration `json:"elapsed"`
+	// Focus 是这次计时里真正处于专注时段的时长。
+	//
+	// 一段计时可以跨多个时段（例如自定义的“专注 25 分 + 休息 5 分”），
+	// 只按结束时所处的那一段判断会把整段都算成休息或专注，既少算也多算。
+	// 老数据没有这个字段（nil），由 FocusDur / HasBreakdown 退回旧口径。
+	// 新数据一律写入它，所以“专注 0 秒”也会被如实记成 0 而不是缺省。
+	Focus *time.Duration `json:"focus,omitempty"`
 	// Completed 表示这段计时是否完整走完，未走完即为中断。
 	Completed bool `json:"completed"`
 	// SegmentName 记录结束时所在的时段名，便于统计专注与休息。
 	SegmentName string `json:"segment_name,omitempty"`
 	SegmentKind string `json:"segment_kind,omitempty"`
+}
+
+// HasBreakdown 报告这条记录是否带有分时段统计（新数据一律带）。
+func (s Session) HasBreakdown() bool { return s.Focus != nil }
+
+// FocusDur 返回这次计时计入“专注”的时长。
+//
+// 新数据按 Focus 字段；老数据没有这个字段，退回本程序原本的统计口径
+// （休息不算专注，其余都算），这样用户已有的历史数字不会因为升级而变化。
+func (s Session) FocusDur() time.Duration {
+	if s.Focus != nil {
+		return *s.Focus
+	}
+	if s.SegmentKind == SegmentKindBreak {
+		return 0
+	}
+	return s.Elapsed
 }
 
 // FocusRecord 是归档后的专注时长，按日统计今日专注小时数（见需求 18）。
@@ -394,6 +474,19 @@ func (d *DayData) PruneOrphans() bool {
 				changed = true
 			}
 		}
+		// 标签：清控制字符、去重、截断（老数据或手改文件里可能不干净）。
+		if cleaned := NormalizeLabels(t.Labels); !sameLabels(cleaned, t.Labels) {
+			t.Labels = cleaned
+			changed = true
+		}
+		// DDL：清掉控制字符与首尾空白。
+		//
+		// 格式非法的 DDL 刻意**保留原样**、只在展示时当作「没有 DDL」：
+		// 静默改写用户手打的内容（例如把 “25:00” 抹掉）比留着更让人困惑。
+		if cleaned := Sanitize(t.Due, false); cleaned != t.Due {
+			t.Due = cleaned
+			changed = true
+		}
 	}
 	for _, t := range d.Fixed {
 		cleanTodo(t)
@@ -497,16 +590,30 @@ func (d *DayData) Find(id string) *Todo {
 //
 // 只统计已经结束的计时：仍在进行中的那一段由看板实时显示，不计入当日总计，
 // 否则进行中的计时会随时间不断重复累加。
+//
+// 专注时长按记录里的分段统计累加（见 Session.FocusDur）：自定义时段可以
+// 跨段，只按结束时所处的那一段判断会把整段算错。
 func (d *DayData) FocusTotal() (focus, rest time.Duration) {
 	for _, r := range d.Archive.Sessions {
 		if r.Ended == nil {
 			continue
 		}
-		if r.SegmentKind == "break" {
-			rest += r.Elapsed
-		} else {
-			focus += r.Elapsed
+		if !r.HasBreakdown() {
+			// 老数据：保持原来的口径，别让升级改变用户已有的数字。
+			if r.SegmentKind == SegmentKindBreak {
+				rest += r.Elapsed
+			} else {
+				focus += r.Elapsed
+			}
+			continue
 		}
+		f := r.FocusDur()
+		if f > r.Elapsed {
+			// 自愈：专注时长不该超过总时长，超过就以总时长封顶。
+			f = r.Elapsed
+		}
+		focus += f
+		rest += r.Elapsed - f
 	}
 	return focus, rest
 }

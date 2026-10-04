@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
@@ -42,7 +43,13 @@ func (a *App) defaultCustomPlan() model.Plan {
 }
 
 // openCustom 打开自定义时段编辑器。
+//
+// 计时进行中同样拒绝：这个编辑器最终也是通向 beginTimer 的一条路，
+// 在这里就拦住，用户才不会白编排一套方案之后才发现开不了。
 func (a *App) openCustom() {
+	if a.refuseSecondTimer() {
+		return
+	}
 	a.custom = &customState{plan: a.defaultCustomPlan()}
 }
 
@@ -127,6 +134,9 @@ func (a *App) handleCustomKey(key string) (tea.Model, tea.Cmd) {
 	case "r":
 		a.custom = &customState{plan: a.defaultCustomPlan()}
 		a.setToast("已恢复默认时段", toastInfo)
+	case "s":
+		// 把当前编排存成收藏方案（见需求 2）。
+		a.saveCustomAsFavorite()
 	case "enter":
 		return a.commitCustom()
 	case "esc", "q":
@@ -137,6 +147,49 @@ func (a *App) handleCustomKey(key string) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	}
 	return a, nil
+}
+
+// saveCustomAsFavorite 把编辑器里当前这套方案收进收藏。
+//
+// 方案名预填一个按内容生成的可读名字（例「深度工作 + 2 段」），用户可以直接
+// 回车采用，也可以改成自己习惯的叫法。
+func (a *App) saveCustomAsFavorite() {
+	if a.custom == nil {
+		return
+	}
+	plan := a.custom.plan
+	if !model.PlanValid(plan) {
+		a.setToast("方案还不完整（每段要有名字和大于 0 的时长）", toastWarn)
+		return
+	}
+	a.editor.set("收藏名（回车采用，或用这个名字覆盖同名方案）", model.AutoPlanLabel(plan))
+	a.editor.onCommit = func(value string) (tea.Model, tea.Cmd) {
+		return a.commitSaveFavorite(value)
+	}
+}
+
+// commitSaveFavorite 处理收藏名输入框的提交。
+func (a *App) commitSaveFavorite(value string) (tea.Model, tea.Cmd) {
+	if a.custom == nil {
+		return a, nil
+	}
+	plan := model.ClonePlan(a.custom.plan)
+	plan.Label = value
+	label := a.cfg.AddSavedPlan(plan)
+	if label == "" {
+		a.setToast("收藏失败：方案不完整", toastErr)
+		return a, nil
+	}
+	a.setToast(fmt.Sprintf("已收藏方案「%s」，下次可从计时菜单直接调用", label), toastInfo)
+	// 收藏写进配置，立刻落盘。
+	paths := a.pathsForSave()
+	cfg := a.cfg
+	return a, func() tea.Msg {
+		if err := config.Save(paths, cfg); err != nil {
+			return savedMsg{err: err}
+		}
+		return savedMsg{}
+	}
 }
 
 // editCustomName 让用户给当前时段起名。
@@ -252,7 +305,7 @@ func (a *App) customContent() string {
 		fmt.Sprintf("合计 %s（%d 段）", clock.ClockString(total), len(a.custom.plan.Segments)), inner))
 	lines = append(lines, "")
 	lines = append(lines, a.modalLine(a.st.Muted, "j/k 选择 · e 改名 · p 时长 · t 类型", inner))
-	lines = append(lines, a.modalLine(a.st.Muted, "n 新增 · d 删除 · r 恢复默认", inner))
+	lines = append(lines, a.modalLine(a.st.Muted, "n 新增 · d 删除 · r 恢复默认 · s 收藏", inner))
 	lines = append(lines, a.modalLine(a.st.Muted, "enter 开始 · esc 取消", inner))
 	return strings.Join(lines, "\n")
 }

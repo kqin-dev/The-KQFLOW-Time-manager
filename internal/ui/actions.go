@@ -401,9 +401,12 @@ func stripControlChars(s string, keepNewline bool) string {
 // ---------- 计时 ----------
 
 // startTimer 让用户选择计时模式与所属 TODO（见需求 16、17）。
+//
+// 计时进行中直接拒绝：早期这里只弹了一句 toast 就继续打开菜单，用户选完
+// 方式与归属后 a.timer 被覆盖，旧计时的时长静默丢失。
 func (a *App) startTimer() {
-	if a.timer != nil {
-		a.setToast("已有计时在进行，按 enter 打开计时菜单", toastWarn)
+	if a.refuseSecondTimer() {
+		return
 	}
 	a.pick = &pickState{
 		title: "选择计时方式",
@@ -412,6 +415,7 @@ func (a *App) startTimer() {
 			{Label: "倒计时", Action: "timer_countdown"},
 			{Label: "正计时（不设终点）", Action: "timer_countup"},
 			{Label: "自定义时段", Action: "timer_custom"},
+			{Label: fmt.Sprintf("收藏的方案（%d）", len(a.savedPlans())), Action: "timer_saved"},
 			{Label: "取消", Action: "cancel"},
 		},
 	}
@@ -419,6 +423,9 @@ func (a *App) startTimer() {
 
 // chooseTimerTodo 让用户为本次计时选择归属的 TODO（见需求 17）。
 func (a *App) chooseTimerTodo(plan model.Plan) {
+	if a.refuseSecondTimer() {
+		return
+	}
 	items := make([]pickItem, 0, len(a.data.All())+1)
 	for _, t := range a.data.All() {
 		label := t.Title
@@ -460,13 +467,36 @@ func segDur(p model.Plan, idx int) time.Duration {
 }
 
 // beginTimer 真正开始计时。
+//
+// 这是创建计时的唯一出口：计时进行中一律拒绝，而不是覆盖 a.timer。
+// 覆盖会让旧计时连同它的时长一起静默消失（既没归档也没提示），
+// 与「计时中退出，时长白记」是同一类事故。
 func (a *App) beginTimer(plan model.Plan, todoID string) {
+	if a.refuseSecondTimer() {
+		return
+	}
 	var todo *model.Todo
 	if todoID != "" {
 		todo = a.data.Find(todoID)
 	}
 	a.timer = newTimer(plan, todo, a.clock.Now())
 	a.setToast(fmt.Sprintf("开始%s", describePlan(plan)), toastInfo)
+}
+
+// refuseSecondTimer 在已有计时在进行时拦下“再开一个计时”的请求。
+//
+// 返回 true 表示已经拒绝、调用方必须中止。提示必须同时给出出路，
+// 否则用户只会觉得“按了没反应”。
+//
+// 为什么是“拒绝”而不是“自动把旧计时归档后再开新的”：归档是一次写入，
+// 也是对用户数据的一次定性（旧计时算完成还是中断、算在哪个时段），
+// 这类动作在本项目一律要用户明确确认，不能由一个顺手的操作代为决定。
+func (a *App) refuseSecondTimer() bool {
+	if a.timer == nil {
+		return false
+	}
+	a.setToast("已有计时在进行，按 p 打开计时菜单结束它", toastWarn)
+	return true
 }
 
 // pomodoroPlan 依据配置的段数构造番茄钟方案（见需求 16）。
@@ -496,6 +526,11 @@ type settingItem struct {
 	Label string
 	// Value 返回当前值的展示文本。
 	Value func(a *App) string
+	// Lines 让一项占多行（每行一条），用于需要完整展示的内容。
+	//
+	// 手机推送那一组就必须用：用户明确要求「看到了地址就要看到声明」，
+	// 而声明很长，塞进一行的值里会被截断。
+	Lines func(a *App) []string
 	// Edit 在用户选中并确认时打开输入框；为 nil 表示只读展示。
 	Edit func(a *App)
 }
@@ -552,6 +587,77 @@ var settingItems = []settingItem{
 		Label: "数据目录",
 		Value: func(a *App) string { return a.store.Root() },
 	},
+	// ---------- 时段切换提醒（见需求 3） ----------
+	{
+		Label: "提醒 · 流光（做在 LOGO 上）",
+		Value: func(a *App) string { return onOff(a.cfg.NotifyGlow) },
+		Edit:  (*App).cycleNotifyGlow,
+	},
+	{
+		Label: "提醒 · 提示音（系统响铃）",
+		Value: func(a *App) string { return onOff(a.cfg.NotifySound) },
+		Edit:  (*App).cycleNotifySound,
+	},
+	{
+		Label: "提醒 · 手机推送 ntfy（离机）",
+		Value: func(a *App) string {
+			return onOff(a.cfg.NtfyEnabled)
+		},
+		Edit: (*App).toggleNtfy,
+	},
+	{
+		// 地址与声明的关系：地址在这一层就能看到并复制；**完整声明放在说明页**
+		// （那里版面更宽、能逐字排开），这里给一句最关键的风险提示 + 指路。
+		//
+		// 这样安排是因为用户三次报「风险提示显示不全」都发生在设置页的窄正文区里：
+		// 一整段两百多字的声明挤在窄栏里折行，很容易看成"少了内容"。与其继续和
+		// 边界较劲，不如把它放到一间更宽敞的屋子里逐字展示。
+		Label: "提醒 · 手机订阅地址（可复制）",
+		Lines: func(a *App) []string {
+			if !a.cfg.NtfyReady() {
+				return []string{"先打开上一项，程序会生成随机频道"}
+			}
+			return []string{
+				a.cfg.NtfyURL(),
+				"⚠ 频道不加密、全网可读：不要透露给陌生人，来历不明的消息别轻信。",
+				"按 enter 查看完整说明与免责声明。",
+			}
+		},
+		Edit: (*App).showNtfyHelp,
+	},
+	{
+		Label: "提醒 · 重新生成手机频道",
+		Value: func(a *App) string {
+			if !a.cfg.NtfyReady() {
+				return "先打开手机推送"
+			}
+			if config.NtfyTopicIsWeak(a.cfg.NtfyTopic) {
+				return "当前频道偏弱，建议重新生成"
+			}
+			return "换一个频道（手机需重新订阅）"
+		},
+		Edit: (*App).regenerateNtfyTopic,
+	},
+	{
+		Label: "提醒 · 测试（流光 + 提示音 + 推送）",
+		Value: func(a *App) string {
+			if !a.notifyEnabled() {
+				return "先打开上面任意一项"
+			}
+			return "按 enter 立刻演示一次"
+		},
+		Edit: (*App).demoNotify,
+	},
+	{
+		Label: "专注结束时自动结束并归档",
+		Value: func(a *App) string {
+			if a.cfg.AutoArchiveOnFinish {
+				return "开（走完即刻归档）"
+			}
+			return "关（停住，按 p 菜单确认）"
+		},
+		Edit: (*App).toggleAutoArchive,
+	},
 	{
 		Label: "配置文件",
 		Value: func(a *App) string { return a.pathsForSave().ConfigFile },
@@ -575,7 +681,7 @@ func (a *App) handleSettingsKey(key string) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		a.settingsCursor = len(settingItems) - 1
 	case "enter", "e", " ":
-		a.activateSetting()
+		return a.activateSetting()
 	case "ctrl+c":
 		a.quitting = true
 		return a, tea.Quit
@@ -583,17 +689,30 @@ func (a *App) handleSettingsKey(key string) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// hearingCmd 是「刚才那次设置变更顺带要执行的一次性命令」。
+//
+// 只在需要试听的设置项上用（例如刚选好提示音就放一遍），一次性消费。
+// 不这么做就得把 settingItem.Edit 的签名改成返回 tea.Cmd，那会牵动十几个
+// 已有的设置项实现，不值得。
+func (a *App) takeHearingCmd() tea.Cmd {
+	cmd := a.hearingCmd
+	a.hearingCmd = nil
+	return cmd
+}
+
 // activateSetting 打开当前选中设置的输入框。
-func (a *App) activateSetting() {
+func (a *App) activateSetting() (tea.Model, tea.Cmd) {
 	if a.settingsCursor < 0 || a.settingsCursor >= len(settingItems) {
-		return
+		return a, nil
 	}
 	item := settingItems[a.settingsCursor]
 	if item.Edit == nil {
 		a.setToast("这一项是只读的", toastInfo)
-		return
+		return a, nil
 	}
 	item.Edit(a)
+	// 设置项可能顺手要求播放一次提示音（试听）。
+	return a, a.takeHearingCmd()
 }
 
 // editCutoff 编辑日界线。

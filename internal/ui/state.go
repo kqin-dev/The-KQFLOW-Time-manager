@@ -346,6 +346,8 @@ func (a *App) stopTimer(interrupted bool) {
 	now := a.clock.Now()
 	elapsed := a.timer.elapsed(now)
 	_, seg, _ := a.timer.segment(now)
+	// 分时段累计专注时长：自定义方案可能跨段，只取结束时的段会算错。
+	focus := a.timer.plan.FocusUpTo(elapsed)
 
 	session := model.Session{
 		ID:          model.NewID("sess"),
@@ -355,6 +357,7 @@ func (a *App) stopTimer(interrupted bool) {
 		Started:     a.timer.started,
 		Ended:       &now,
 		Elapsed:     elapsed,
+		Focus:       &focus,
 		Completed:   !interrupted,
 		SegmentName: seg.Name,
 		SegmentKind: seg.Kind,

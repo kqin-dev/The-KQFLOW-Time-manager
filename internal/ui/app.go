@@ -29,6 +29,10 @@ const (
 	ViewHelp
 	// ViewCarry 是“继承昨日”的确认页。
 	ViewCarry
+	// ViewLabels 是给当前条目打标签的页面（见需求 1）。
+	ViewLabels
+	// ViewDdl 是给当前条目设截止时间的页面（见需求 4）。
+	ViewDdl
 )
 
 // Focus 标记当前获得键盘焦点的区域。
@@ -90,6 +94,11 @@ type App struct {
 	paths *config.Paths
 
 	timer *timerState
+	// stopAsk 为真时正在问“确定要结束这次计时吗”。
+	//
+	// 计时中几乎每个按键都可能被误触，而结束计时是不可撤销的，
+	// 所以结束动作必须先问一句（见已知 bug 1）。
+	stopAsk bool
 
 	celebrate *celebrateState
 
@@ -106,6 +115,21 @@ type App struct {
 	pageScroll int
 	// settingsCursor 是设置页当前选中的项。
 	settingsCursor int
+	// labelView 是标签编辑页的状态（见需求 1）。
+	labelView labelViewState
+	// ddlView 是截止时间设置页的状态（见需求 4）。
+	ddlView ddlViewState
+	// notifyState 是时段切换提醒的播放状态（见需求 3）。
+	notifyState *notifyState
+	// hearingCmd 是设置页里「选完就试听」这类一次性命令（见 activateSetting）。
+	hearingCmd tea.Cmd
+	// bellPending 表示下一帧要响一次铃。
+	//
+	// 与 timer.bell 分开：铃不属于计时器——设置页的测试随时可能在没有计时的时候
+	// 响，用 timer 上的标记就会把响铃整个丢掉（用户报过"测试没有提示音"）。
+	bellPending bool
+	// ntfyHelp 为真时显示「手机推送怎么用」的说明页（见需求 3）。
+	ntfyHelp bool
 
 	toast     string
 	toastKind toastKind
@@ -278,13 +302,66 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.NextQuote()
 			a.quoteAt = now
 		}
+		// 响铃标记要在这里清掉，而不是等渲染。
+		//
+		// 用户实测报过：「一直呆在设置页面，貌似就不会播放提示音」。原因是响铃
+		// 原来只在看板的渲染路径里 `consumeBell()` 输出 `\a`，停在设置页时那段
+		// 根本不执行，标记就一直是"待响"状态。这里改成动画帧统一处理：
+		// **不管用户停在哪个页面，提示音都会响**。
+		//
+		// 注意不能早返回：跨段与 tick 都会 return，若在那里直接返回就会把响铃
+		// 命令丢掉。所以先把所有命令攒进 cmds，最后统一 Batch。
+		var cmds []tea.Cmd
+		if a.bellPending || (a.timer != nil && a.timer.consumeBell()) {
+			// bellPending 是"立刻响一次"（设置页测试 / 无计时场景）；
+			// timer.consumeBell 是计时器自己要求的响铃。两者都在这里统一输出。
+			a.bellPending = false
+			cmds = append(cmds, bellOnce())
+		}
 		// 计时状态在动画帧里推进，保证进度条平滑动起来。
 		if a.timer != nil {
-			if cmd := a.timer.tick(a.clock.Now()); cmd != nil {
-				return a, tea.Batch(animCmd(), cmd)
+			now := a.clock.Now()
+			// 时段切换提醒（见需求 3）：跨过时段边界时触发流光 / 提示音 / 推送。
+			if n := a.checkSegmentChange(now); n != nil {
+				a.notifyState = n
+				if sc := a.notifySoundCmd(); sc != nil {
+					cmds = append(cmds, sc)
+				}
+				if n.pushCmd != nil {
+					cmds = append(cmds, n.pushCmd)
+				}
+			} else if cmd := a.timer.tick(now); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
-		return a, animCmd()
+		// 流光播完就收掉。
+		if a.notifyState != nil && a.notifyDone(a.clock.Now()) {
+			a.notifyState = nil
+		}
+		cmds = append(cmds, animCmd())
+		return a, tea.Batch(cmds...)
+
+	case bellMsg:
+		// 让下一帧输出响铃字符（提示音就是终端响铃，见 notify.go）。
+		if a.timer != nil {
+			a.timer.bell = true
+		}
+		return a, nil
+
+	case bellOnceMsg:
+		// 立刻响一次铃（不依赖计时器状态）：提示音测试与"没有计时也要响"的场景用。
+		//
+		// 只置标记：响铃字符 `\a` 由下一帧的渲染输出带上（见 View）。这样响铃
+		// 与"当前在哪一页""有没有计时器"都无关。
+		a.bellPending = true
+		return a, nil
+
+	case ntfyPushedMsg:
+		// 纯单向推送，失败就算了（用户明确要求不重试）。
+		if m.err != nil {
+			a.setToast("手机推送失败（不影响计时）："+m.err.Error(), toastWarn)
+		}
+		return a, nil
 
 	case savedMsg:
 		if m.err != nil {
@@ -297,7 +374,41 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case timerDoneMsg:
 		if a.timer != nil {
 			a.timer.finished = true
-			a.setToast("计时时段已完成，按 enter 结束并归档", toastInfo)
+			// 最后一个时段走完时也要提醒。
+			//
+			// 用户实测指出：状态改变时会触发提示，但最后一个状态结束却没有——
+			// 这不合直觉（"结束了"恰恰是最需要知道的一次）。跨段检测靠 lastSeg
+			// 变化，而走完最后一段时它不再变化，所以必须在这里单独补一次。
+			cmds := []tea.Cmd{}
+			if a.notifyEnabled() {
+				_, seg, _ := a.timer.segment(a.clock.Now())
+				a.notifyState = &notifyState{
+					started: a.clock.Now(),
+					kind:    seg.Kind,
+					toName:  seg.Name + " 已结束",
+					pushCmd: a.ntfyPushCmd(seg),
+				}
+				cmds = append(cmds, animCmd())
+				if sc := a.notifySoundCmd(); sc != nil {
+					cmds = append(cmds, sc)
+				}
+				if a.notifyState.pushCmd != nil {
+					cmds = append(cmds, a.notifyState.pushCmd)
+				}
+			}
+
+			// 走完就自动结束并归档（可在设置里打开）。
+			if a.cfg != nil && a.cfg.AutoArchiveOnFinish {
+				a.stopTimer(false)
+				cmds = append(cmds, saveCmd(a.saveDay))
+				// 归档本身也是一次"完成了"的提醒：发光收尾由 stopTimer 的 toast 承担。
+				return a, tea.Batch(cmds...)
+			}
+
+			a.setToast("计时时段已完成，按 p 菜单确认结束并归档", toastInfo)
+			if len(cmds) > 0 {
+				return a, tea.Batch(cmds...)
+			}
 		}
 		return a, nil
 
@@ -316,6 +427,18 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// 手机推送说明页是叠在设置页之上的浮层，必须最先处理按键：它打开时
+	// view 仍是 ViewSettings，放在设置页判断之后就会永远轮不到它。
+	if a.ntfyHelp {
+		return a.handleNtfyHelpKey(key)
+	}
+
+	// 结束计时的确认优先于一切：计时中几乎所有按键都可能是误触，
+	// 这里必须能拦住它们（见已知 bug 1）。
+	if a.stopAsk {
+		return a.handleStopConfirm(key)
+	}
+
 	// 模态框优先处理按键。
 	if a.pick != nil {
 		return a.handlePickKey(key)
@@ -327,18 +450,16 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.custom != nil {
 		return a.handleCustomKey(key)
 	}
-	// 计时进行中，用少量按键控制计时器。
+	// 计时进行中：计时相关的动作全部收进 p 菜单，不再占用空格与回车。
+	//
+	// 空格与回车是终端里最容易误触的两个键，而且它们在看板上本来另有用处
+	// （空格勾选完成、回车进入子任务）。计时中把它们借走，用户就没法在
+	// 计时期间勾选任务，也失去了防误触的意义——一律走 p 菜单。
 	if a.timer != nil {
 		switch key {
-		case " ":
-			a.timer.pause(a.clock.Now())
+		case "p":
+			a.openTimerMenu()
 			return a, nil
-		case "esc":
-			a.stopTimer(true)
-			return a, saveCmd(a.saveDay)
-		case "enter":
-			a.stopTimer(a.timer.finished)
-			return a, saveCmd(a.saveDay)
 		case "ctrl+c":
 			a.stopTimer(true)
 			a.quitting = true
@@ -356,6 +477,12 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if a.view == ViewHelp {
 		return a.handleHelpKey(key)
+	}
+	if a.view == ViewLabels {
+		return a.handleLabelKey(key)
+	}
+	if a.view == ViewDdl {
+		return a.handleDdlKey(key)
 	}
 
 	switch key {
@@ -400,6 +527,12 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.startDelete()
 	case "t":
 		a.startAddTask()
+	case "l":
+		// 小写 l 给当前条目打标签（大写 L 是勾选父条目，两者区分开）。
+		a.openLabels()
+	case "D":
+		// 大写 D 设截止时间（小写 d 是删除，两者区分开）。
+		a.openDdl()
 	case "r":
 		return a.askCarry()
 	case "1":
@@ -412,11 +545,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.focus, a.cursors.menu = FocusGoals, 0
 		return a.activateMenuItem(2)
 	case "enter":
-		// 计时进行中时，enter 用于结束并归档计时。
-		if a.timer != nil {
-			a.stopTimer(a.timer.finished)
-			return a, saveCmd(a.saveDay)
-		}
+		// 计时进行中的 enter 已经在上面被计时分支接管（打开计时菜单），
+		// 走不到这里，因此这里只管看板本身的语义。
 		if a.focus == FocusMenu {
 			return a.activateMenuItem(a.cursors.menu)
 		}
@@ -946,11 +1076,33 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		a.chooseTimerTodo(plan)
 		return a, nil
 	case action == "timer_countup":
-		a.chooseTimerTodo(model.Plan{Kind: model.TimerCountUp})
+		// 正计时也要有一个时段：过去这里传的是完全没有段的方案，
+		// 于是进度条显示“第 1 段 ”（没有名字），归档时的分段统计
+		// 也无从判断，专注时长会被记成 0。
+		countUp := model.Plan{Kind: model.TimerCountUp}
+		countUp.Segments = []model.Segment{{Name: "自由专注", Kind: model.SegmentKindFocus}}
+		a.chooseTimerTodo(countUp)
 		return a, nil
 	case action == "timer_custom":
 		// 让用户自己编排状态名与时长（见需求 16、20）。
 		a.openCustom()
+		return a, nil
+	case action == "timer_pause":
+		if a.timer != nil {
+			a.timer.pause(a.clock.Now())
+			a.setToast("计时已暂停，按 p 打开计时菜单继续", toastInfo)
+		}
+		return a, nil
+	case action == "timer_resume":
+		if a.timer != nil {
+			a.timer.pause(a.clock.Now())
+			a.setToast("计时已继续", toastInfo)
+		}
+		return a, nil
+	case action == "timer_stop":
+		// 从计时菜单里选“结束”同样只是一次请求，仍然要过确认这一关，
+		// 保证“结束计时”这条动作只有一个永远一致的收口（见已知 bug 1）。
+		a.askStopTimer()
 		return a, nil
 	case strings.HasPrefix(action, "custom:"):
 		minutes, err := strconv.Atoi(strings.TrimPrefix(action, "custom:"))
@@ -970,10 +1122,21 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		if a.pendingPlan == nil {
 			return a, nil
 		}
+		// 兜底：正常路径上 beginTimer 之前的入口已经拒绝过了，这里再确认一次，
+		// 免得哪天真出现“方案被清空却没开始计时”。
+		if a.refuseSecondTimer() {
+			a.pendingPlan = nil
+			return a, nil
+		}
 		plan := *a.pendingPlan
 		a.pendingPlan = nil
 		a.beginTimer(plan, todoID)
 		return a, nil
+	}
+
+	// 收藏的自定义方案（见需求 2）：动作串较多，单独收在一处。
+	if m, cmd, handled := a.savedPlanActions(action); handled {
+		return m, cmd
 	}
 	return a, nil
 }
@@ -981,6 +1144,88 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 func (a *App) setToast(msg string, kind toastKind) {
 	a.toast = msg
 	a.toastKind = kind
+}
+
+// ---------- 计时结束确认（见已知 bug 1） ----------
+
+// askStopTimer 打开“确定要结束这次计时吗”的确认。
+//
+// 只改状态、不动计时器：计时在确认期间照常推进，不需要补偿逻辑，
+// 也不会出现“边问边把时长算错”的竞态。
+func (a *App) askStopTimer() {
+	if a.timer == nil {
+		return
+	}
+	a.stopAsk = true
+}
+
+// handleStopConfirm 处理结束确认里的按键。
+//
+// enter 确认结束，其余（esc / q / n）一律当作“继续计时”，
+// 这样贴着键盘随手按一下不会把专注时段清掉。
+func (a *App) handleStopConfirm(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter":
+		a.stopAsk = false
+		a.stopTimer(a.timer != nil && a.timer.finished)
+		a.setToast("已结束计时", toastInfo)
+		return a, saveCmd(a.saveDay)
+	case "ctrl+c":
+		a.stopAsk = false
+		a.stopTimer(true)
+		a.quitting = true
+		return a, tea.Quit
+	default:
+		a.stopAsk = false
+		a.setToast("已继续计时", toastInfo)
+		return a, nil
+	}
+}
+
+// stopConfirmContent 渲染结束确认的内容，只占中间栏。
+func (a *App) stopConfirmContent() string {
+	inner := a.contentWidth()
+	elapsed := time.Duration(0)
+	if a.timer != nil {
+		elapsed = a.timer.elapsed(a.clock.Now())
+	}
+	lines := []string{
+		a.modalLine(a.st.Title, "确定要结束这次计时吗？", inner),
+		"",
+		a.modalLine(a.st.Text, "已专注 "+clock.HumanDuration(elapsed), inner),
+		"",
+		a.modalLine(a.st.Accent, "enter 结束并归档", inner),
+		a.modalLine(a.st.Muted, "esc / 其它键 继续计时", inner),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// openTimerMenu 在计时中打开计时菜单（暂停 / 继续 / 结束）。
+//
+// 这是计时中唯一的控制入口（p 键）：空格与回车在计时中一律不拦截，
+// 它们在看板上本来就有别的用处（勾选完成、进入子任务），而且这两个键
+// 在终端里最容易误触。计时相关的动作因此全部收在这里（见已知 bug 1）。
+func (a *App) openTimerMenu() {
+	if a.timer == nil {
+		return
+	}
+	items := []pickItem{}
+	if a.timer.paused {
+		items = append(items, pickItem{Label: "继续计时", Action: "timer_resume"})
+	} else {
+		items = append(items, pickItem{Label: "暂停计时", Action: "timer_pause"})
+	}
+	items = append(items,
+		pickItem{Label: "结束计时并归档", Action: "timer_stop"},
+		pickItem{Label: "取消", Action: "cancel"},
+	)
+	a.pick = &pickState{
+		title: "计时进行中",
+		items: items,
+		// 默认停在“暂停”，误触回车不会顺手结束计时。
+		cursor: 0,
+		small:  true,
+	}
 }
 
 // askCloseEditor 在随手记等内容没保存就要关闭时，问清怎么处理。

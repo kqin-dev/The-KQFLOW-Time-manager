@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,7 +20,22 @@ const (
 )
 
 // View 渲染当前界面。
+//
+// 响铃在这里统一输出：`\a` 是终端响铃字符，必须作为**渲染输出**的一部分写出去
+// （单独发一条消息不会产生任何可听效果——曾经就是这个原因让提示音完全没声音）。
+// 放在 View 的最外层，所以**任何页面**响铃都有效。
 func (a *App) View() string {
+	out := a.renderView()
+	// 响铃只输出一次；取走标记。
+	if a.bellPending {
+		a.bellPending = false
+		return "\a" + out
+	}
+	return out
+}
+
+// renderView 是真正的渲染实现（View 只在外面负责附加响铃字符）。
+func (a *App) renderView() string {
 	if a.width == 0 || a.height == 0 {
 		return "正在启动 KQFLOW…"
 	}
@@ -27,6 +43,16 @@ func (a *App) View() string {
 		return a.viewTooSmall()
 	}
 
+	// 结束计时的确认同样只占中间栏，计时指示与进度条保持可见。
+	if a.stopAsk && a.timer != nil {
+		return clipBlock(a.renderCenterBox(a.stopConfirmContent()), a.width, a.height)
+	}
+	// 手机推送说明页（见需求 3）：盖住中间栏、左右面板保持可见。
+	// 走 pageContent 以便裁剪与滚动——说明文字比中间栏高是常态。
+	if a.ntfyHelp {
+		styled, plain := a.ntfyHelpContent()
+		return clipBlock(a.renderCenterBox(a.pageContent(styled, plain, -1)), a.width, a.height)
+	}
 	// 选择框优先级最高：它常常是“在编辑器之上”弹出的确认（例如
 	// 随手记没保存就问“保存还是丢弃”），必须盖住下面的输入框，
 	// 否则用户看不到这个提问。
@@ -55,14 +81,120 @@ func (a *App) View() string {
 		return clipBlock(a.renderCenterBox(a.pageContent(styled, plain, -1)), a.width, a.height)
 	case ViewCarry:
 		return clipBlock(a.renderCenterBox(a.carryContent()), a.width, a.height)
+	case ViewLabels:
+		return clipBlock(a.renderCenterBox(a.labelsContent()), a.width, a.height)
+	case ViewDdl:
+		return clipBlock(a.renderCenterBox(a.ddlContent()), a.width, a.height)
 	default:
-		base := a.renderDashboard()
-		// 计时结束时响一声，提醒正在别处工作的用户。
-		if a.timer != nil && a.timer.consumeBell() {
-			base = "\a" + base
-		}
-		return base
+		// 响铃已经改成在 Update 的动画帧里统一处理（见 App.Update 的 animMsg），
+		// 不再依赖看板的渲染路径——否则用户停在设置页时提示音不会响。
+		return a.renderDashboard()
 	}
+}
+
+// replaceColumns 把 s 里显示列区间 [start, end) 的内容替换成 fill。
+//
+// fill 必须**自带正确的显示宽度**（由调用方保证），这里不做截断：fill 里可能带
+// ANSI 转义，按显示宽度切它会切坏转义序列（conventions 第 1 条：带样式的字符串
+// 不能直接量宽度，也不能直接切片）。宽度不符时原样返回，宁可这次不画也不画坏。
+func replaceColumns(s, fill string, start, end int) string {
+	if start < 0 {
+		start = 0
+	}
+	if end < start {
+		end = start
+	}
+	target := lipgloss.Width(displayRange(s, start, end))
+	if lipgloss.Width(fill) != target {
+		return s
+	}
+	return takeColumns(s, start) + fill + dropColumns(s, end)
+}
+
+// takeColumns 取 s 里前 n 个显示列的内容。
+func takeColumns(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > n {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String()
+}
+
+// dropColumns 丢掉 s 里前 n 个显示列的内容。
+func dropColumns(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	w := 0
+	for i, r := range s {
+		if w >= n {
+			return s[i:]
+		}
+		w += lipgloss.Width(string(r))
+	}
+	return ""
+}
+
+// displayRange 取 s 里第 [start, end) 个显示列的内容。
+func displayRange(s string, start, end int) string {
+	return takeColumns(dropColumns(s, start), end-start)
+}
+
+// fitColumns 把 s 调整为正好 width 个显示列：短了补空格，长了按列截断。
+//
+// 只用于**纯文本**（无 ANSI）；带样式的字符串不能这样切。
+func fitColumns(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	got := lipgloss.Width(s)
+	if got == width {
+		return s
+	}
+	if got < width {
+		return s + strings.Repeat(" ", width-got)
+	}
+	return truncateCells(s, width)
+}
+
+// notifyBanner 返回流光期间显示在中间栏顶部的时段提示文本（纯文本，无样式）。
+//
+// 光带本身只有颜色，没有文字；用户在空白处看到光带但不知道"换到什么时段了"，
+// 所以顶部补一句。
+func (a *App) notifyBanner(width int) string {
+	if a.notifyState == nil {
+		return ""
+	}
+	return truncate("◈ "+a.notifyState.toName+" 即将开始", width)
+}
+
+// stripANSI 去掉 ANSI 转义序列，用于按显示宽度处理带样式的行。
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for _, r := range s {
+		switch {
+		case inEscape:
+			// CSI 序列以字母结尾（如 m）。
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEscape = false
+			}
+		case r == 0x1b:
+			inEscape = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // settingsCursorRow 返回设置页当前选中项在内容行里的下标。
@@ -124,6 +256,13 @@ func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
 	}
 	if a.width < 90 {
 		leftW, rightW = 24, 22
+	}
+	// 说明页要在中间栏里逐字展示整段风险声明，给它更宽的正文区。
+	//
+	// 这里**不改成两栏**（试过，右栏消失会让用户以为渲染坏了），而是把左右两栏
+	// 各收窄一些、中间栏加宽，三栏结构保持不变。
+	if a.ntfyHelp && a.width >= 120 {
+		leftW, rightW = 26, 22
 	}
 	// 中间栏的最小宽度按「内容」定，不按 Logo 定。
 	//
@@ -395,6 +534,13 @@ func (a *App) renderTodoRow(item *model.Todo, selected bool, width int) string {
 	if total > 0 {
 		label += fmt.Sprintf(" (%d/%d)", done, total)
 	}
+	if len(item.Labels) > 0 {
+		label += " " + labelsInline(item.Labels)
+	}
+	// DDL 贴在行上，用户设了就要能一眼看到。
+	if item.Due != "" {
+		label += " ⌛" + item.Due
+	}
 	if item.GoalTag != "" {
 		label += " " + item.GoalTag
 	}
@@ -415,12 +561,24 @@ func (a *App) renderTodoRow(item *model.Todo, selected bool, width int) string {
 	return style.Render(label)
 }
 
-// renderGoalPanel 渲染右栏 GOAL（见需求 6、10）。
+// renderGoalPanel 渲染右栏：上方 GOAL，下方 DDL（见需求 4、需求 6、10）。
+//
+// 与左栏（固定 TODO / 临时 TODO / 汇总）对称：上面是 GOAL 主列表，下面是
+// DDL 栏位，最底一行给汇总。对称的好处是用户扫一眼就知道右栏下面也有内容。
 func (a *App) renderGoalPanel(width, height int) string {
 	inner := width - 4
 	if inner < 8 {
 		inner = 8
 	}
+
+	// 底部留一行显示 DDL 汇总，与左栏的“完成 x/y”对称。
+	stack := height - 1
+	if stack < 6 {
+		stack = 6
+	}
+	topH := stack / 2
+	bottomH := stack - topH
+
 	active := 0
 	for _, g := range a.goals {
 		if !g.Done {
@@ -429,6 +587,30 @@ func (a *App) renderGoalPanel(width, height int) string {
 	}
 	title := fmt.Sprintf("GOAL (%d 进行中 · %d 今日完成)", active, len(a.data.Archive.Goals))
 
+	goals := a.renderGoalList(title, width, topH)
+	ddl := a.renderDdlPanel(width, bottomH)
+
+	dueCount := len(a.dueEntries())
+	summary := a.st.Muted.Render(truncate(fmt.Sprintf("DDL %d 项", dueCount), width-2))
+	if dueCount > 0 && a.overdueCount() > 0 {
+		summary = a.st.Warn.Render(truncate(fmt.Sprintf("DDL %d 项 · %d 项超时", dueCount, a.overdueCount()), width-2))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, goals, ddl, summary)
+}
+
+// renderGoalList 渲染右栏上半部分的 GOAL 列表。
+func (a *App) renderGoalList(title string, width, height int) string {
+	inner := width - 4
+	if inner < 8 {
+		inner = 8
+	}
+	focused := a.focus == FocusGoals
+	_, innerH := a.panelInner(width, height)
+	if innerH < 1 {
+		innerH = 1
+	}
+
 	list := a.goalList()
 	var lines []string
 	lines = append(lines, a.st.PanelTitle.Render(truncate(title, inner)))
@@ -436,16 +618,16 @@ func (a *App) renderGoalPanel(width, height int) string {
 		lines = append(lines, a.renderEmpty("按 A 添加目标", inner))
 	}
 
-	listHeight := height - 1
+	listHeight := innerH - 1
 	if listHeight < 1 {
 		listHeight = 1
 	}
 	cursor := a.cursors.goals
 	offset := scrollOffset(cursor, len(list), listHeight)
 
-	for i := offset; i < len(list) && len(lines) < listHeight; i++ {
+	for i := offset; i < len(list) && len(lines) < innerH+1; i++ {
 		g := list[i]
-		selected := a.focus == FocusGoals && i == cursor
+		selected := focused && i == cursor
 
 		mark := MarkTodo
 		if g.Done {
@@ -455,6 +637,14 @@ func (a *App) renderGoalPanel(width, height int) string {
 		done, total := g.Progress()
 		if total > 0 {
 			label += fmt.Sprintf(" (%d/%d)", done, total)
+		}
+		// 标签贴在标题后面，和 TODO 栏保持一致。
+		if len(g.Labels) > 0 {
+			label += " " + labelsInline(g.Labels)
+		}
+		// DDL 也贴在行上：右栏上半部分保持紧凑，详细倒计时在下方的 DDL 栏。
+		if g.Due != "" {
+			label += " ⌛" + g.Due
 		}
 		// 标记出归档到当天的目标，它们已经不在 goals.json 里。
 		if g.ArchivedDay != "" {
@@ -479,12 +669,12 @@ func (a *App) renderGoalPanel(width, height int) string {
 			if g.ArchivedDay != "" {
 				meta += " · 已归档到 " + g.ArchivedDay
 			}
-			if len(lines) < listHeight {
+			if len(lines) < innerH+1 {
 				lines = append(lines, a.st.Muted.Render(truncate(meta, inner)))
 			}
 			if !a.collapsed[g.ID] {
 				for ti, task := range g.Tasks {
-					if len(lines) >= listHeight {
+					if len(lines) >= innerH+1 {
 						break
 					}
 					tmark := MarkTodo
@@ -506,7 +696,141 @@ func (a *App) renderGoalPanel(width, height int) string {
 			}
 		}
 	}
-	return a.panel(a.focus == FocusGoals, width, height, strings.Join(lines, "\n"))
+	return a.panel(focused, width, height, strings.Join(lines, "\n"))
+}
+
+// dueEntry 是 DDL 栏位里的一行：可能是待办，也可能是目标。
+type dueEntry struct {
+	Item model.Ddl
+	// State 与 Left 是算好的到期状态与剩余时长，排序与渲染都用它。
+	State model.DueState
+	Left  time.Duration
+	// Title 是条目名，Kind 是 “TODO” / “GOAL”。
+	Title string
+	Kind  string
+}
+
+// dueEntries 返回所有设了有效 DDL 的条目，按紧迫程度排序（最紧急在前）。
+//
+// 排序规则：超时的排最前（超得越久越前），然后是快到的，最后是还早的；
+// 同一档里按剩余时间由小到大。格式非法的 DDL 不列出（见 model.DueStatus）。
+func (a *App) dueEntries() []dueEntry {
+	now := a.clock.Now()
+	cut := a.cfg.Cutoff()
+	loc := a.cfg.Location()
+
+	out := make([]dueEntry, 0, 8)
+	add := func(item model.Ddl, kind string) {
+		state, left := model.DueStatus(item.DueText(), item.DueIsTodo(), now, cut, loc)
+		if state == model.DueNone {
+			return
+		}
+		out = append(out, dueEntry{
+			Item:  item,
+			State: state,
+			Left:  left,
+			Title: item.ItemTitle(),
+			Kind:  kind,
+		})
+	}
+	for _, t := range a.data.All() {
+		add(t, "TODO")
+	}
+	for _, g := range a.goalList() {
+		if g.Done {
+			// 已完成的目标不再需要盯着 DDL。
+			continue
+		}
+		add(g, "GOAL")
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		// 超时的整体排在前面，其中超得越久越靠前。
+		if (out[i].State == model.DueOverdue) != (out[j].State == model.DueOverdue) {
+			return out[i].State == model.DueOverdue
+		}
+		return out[i].Left < out[j].Left
+	})
+	return out
+}
+
+// overdueCount 返回已超时的 DDL 数量，用于右栏汇总行提醒。
+func (a *App) overdueCount() int {
+	n := 0
+	for _, e := range a.dueEntries() {
+		if e.State == model.DueOverdue {
+			n++
+		}
+	}
+	return n
+}
+
+// renderDdlPanel 渲染右栏下半部分的 DDL 栏位（见需求 4）。
+func (a *App) renderDdlPanel(width, height int) string {
+	inner := width - 4
+	if inner < 8 {
+		inner = 8
+	}
+	_, innerH := a.panelInner(width, height)
+	if innerH < 1 {
+		innerH = 1
+	}
+
+	entries := a.dueEntries()
+	title := fmt.Sprintf("DDL (%d)", len(entries))
+
+	var lines []string
+	lines = append(lines, a.st.PanelTitle.Render(truncate(title, inner)))
+	if len(entries) == 0 {
+		lines = append(lines, a.renderEmpty("选中条目按 D 设截止", inner))
+	}
+
+	listHeight := innerH - 1
+	if listHeight < 1 {
+		listHeight = 1
+	}
+
+	for i := 0; i < len(entries) && len(lines) < innerH+1; i++ {
+		e := entries[i]
+		// 例：`! 18:30 写周报 · 已过 20m`、`⚑ 10-31 跑半马 · 3d`
+		line := fmt.Sprintf("%s %s %s · %s",
+			dueMark(e.State), dueStamp(e), truncate(e.Title, max(4, inner/2)), model.DueCountdown(e.Left))
+		line = truncate(line, inner)
+
+		switch e.State {
+		case model.DueOverdue:
+			lines = append(lines, a.st.Error.Render(line))
+		case model.DueSoon:
+			lines = append(lines, a.st.Warn.Render(line))
+		default:
+			lines = append(lines, a.st.Row.Render(line))
+		}
+	}
+	return a.panel(false, width, height, strings.Join(lines, "\n"))
+}
+
+// dueMark 返回 DDL 状态记号：超时 / 快到 / 还早。
+func dueMark(state model.DueState) string {
+	switch state {
+	case model.DueOverdue:
+		return "!"
+	case model.DueSoon:
+		return "◔"
+	default:
+		return "·"
+	}
+}
+
+// dueStamp 返回 DDL 的时间展示：待办显示时分，目标显示月-日。
+//
+// 目标只显示 “10-31” 而不是完整年月：面板窄，年份在绝大多数情况下没有信息量，
+// 完整日期在 DDL 页与数据文件里都能看到。
+func dueStamp(e dueEntry) string {
+	due := e.Item.DueText()
+	if !e.Item.DueIsTodo() && len(due) >= 10 {
+		return due[5:10]
+	}
+	return due
 }
 
 // renderCenterPanel 渲染中间栏：Logo、状态、选项、字条。
@@ -531,7 +855,18 @@ func (a *App) centerContent(width, height int) string {
 	}
 
 	// Logo：按可用宽度自动选字形，绝不让它折行。
-	logo := GradientLogo(a.st.Theme.Primary, a.st.Theme.Secondary, a.animPhase, inner)
+	//
+	// 时段切换提醒就做在 Logo 上（见 notifyLogo）：Logo 本来就有流动渐变，这里
+	// 在提醒期间换更亮的配色、加速流动并叠加脉冲高亮。用户明确要求"只局限在
+	// LOGO 所在的那几行"——之前铺满整个中间栏确实很丑。
+	logoFrom, logoTo, logoPhase := a.st.Theme.Primary, a.st.Theme.Secondary, a.animPhase
+	logo := ""
+	if a.notifyActive() {
+		logo = a.notifyLogo(inner)
+	}
+	if logo == "" {
+		logo = GradientLogo(logoFrom, logoTo, logoPhase, inner)
+	}
 	var logoLines []string
 	if logo != "" {
 		logoLines = strings.Split(logo, "\n")
@@ -789,7 +1124,7 @@ func (a *App) renderPlanBar(plan model.Plan, elapsed time.Duration, width int) s
 			n = 1
 		}
 		style := a.st.BarFocus
-		if seg.Kind == "break" {
+		if seg.Kind == model.SegmentKindBreak {
 			style = a.st.BarBreak
 		}
 		for i := 0; i < n; i++ {
@@ -863,6 +1198,9 @@ func dayRangeLabel(start, end time.Time, cut time.Duration) string {
 }
 
 // renderHints 渲染按键提示。
+//
+// 计时进行中大部分看板按键都不再生效（见已知 bug 1），所以提示行要跟着
+// 换成计时真正可用的那几个键——否则用户会照着提示按，却发现什么都没发生。
 func (a *App) renderHints() string {
 	pairs := [][2]string{
 		{"tab", "切换栏"},
@@ -870,9 +1208,27 @@ func (a *App) renderHints() string {
 		{"space", "勾选"},
 		{"a", "添加"},
 		{"t", "子任务"},
+		{"l", "标签"},
+		{"D", "DDL"},
 		{"r", "继承昨日"},
 		{"?", "帮助"},
 		{"q", "退出"},
+	}
+	if a.stopAsk {
+		pairs = [][2]string{
+			{"enter", "结束并归档"},
+			{"其它", "继续计时"},
+		}
+	} else if a.timer != nil {
+		// 计时中只保留 p 菜单这一个计时入口：空格与回车是终端里最容易
+		// 误触的两个键，而且它们在计时中仍要保持看板语义（勾选 / 子任务）。
+		pairs = [][2]string{
+			{"p", "计时菜单"},
+			{"space", "勾选"},
+			{"enter", "子任务"},
+			{"N/?", "随手记/帮助"},
+			{"q", "退出"},
+		}
 	}
 	var parts []string
 	for _, p := range pairs {

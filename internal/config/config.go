@@ -5,6 +5,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +16,43 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
 // FileName 是配置文件名。
 const FileName = "config.json"
+
+// ConfigSchemaVersion 是本程序支持的配置文件版本。
+//
+// 与 model.SchemaVersion 分开：配置文件与日数据文件是两套独立的格式，
+// 将来也可能各自演进。这里不能引用 model（model 不依赖任何内部包，
+// config 引用它会绕成环），所以各留一个常量。
+const ConfigSchemaVersion = 1
+
+// IncompatibleConfigError 报告配置文件来自更新的版本。
+//
+// 这种情况必须拒绝启动，不能像「配置损坏」那样静默退回默认值：默认值一旦
+// 被写回，用户在新版本里做的设置就永久丢了，而且没有任何提示。
+type IncompatibleConfigError struct {
+	Path    string
+	Current int
+	Found   int
+}
+
+func (e *IncompatibleConfigError) Error() string {
+	return fmt.Sprintf(
+		"配置文件来自更新的版本：%s（schema_version=%d，本程序支持 ≤ %d）。\n"+
+			"请升级到最新版本的程序后再启动；\n"+
+			"若确实要用旧程序打开，请先把这个文件移出数据目录（另存备份），再重新启动。",
+		e.Path, e.Found, e.Current)
+}
+
+// IsIncompatibleConfig 报告错误是否属于「配置来自更新版本」。
+func IsIncompatibleConfig(err error) bool {
+	var target *IncompatibleConfigError
+	return errors.As(err, &target)
+}
 
 // Config 是 KQFLOW 的全部可配置项。
 type Config struct {
@@ -34,6 +69,52 @@ type Config struct {
 	CountdownMin int `json:"countdown_minutes,omitempty"`
 	// Quotes 是用户自定义的随机字条；为空时使用内置字条（见需求 9）。
 	Quotes []string `json:"quotes,omitempty"`
+	// CustomLabels 是用户自己新增的标签名（见 label.go）。
+	//
+	// 只存「用户新造的」那些：内置预设写死在代码里，条目上正在用的标签从
+	// 条目本身收集。这样标签库不会随着使用不断膨胀，也不会出现
+	// 「标签库里有、但哪个条目都没用」的悬空项。
+	CustomLabels []string `json:"custom_labels,omitempty"`
+	// SavedPlans 是用户收藏的自定义专注方案（见需求 2）。
+	//
+	// 放在配置里而不是日数据里：它是「偏好」而不是「当天记录」，与日界线无关，
+	// 也不该随某一天的数据被清理。
+	SavedPlans []model.Plan `json:"saved_plans,omitempty"`
+
+	// ---------- 时段切换提醒（见需求 3） ----------
+	//
+	// 三种提醒按「注意力距离」覆盖三个场景：人在屏幕前（流光）、人在设备附近
+	// 但没看屏幕（提示音）、人离开设备只带了手机（ntfy 推送）。
+	// 每一项都能关掉，默认全关——需要装 App、需要联网的功能不该默认打开。
+
+	// NotifyGlow 打开时段切换的流光提示（做在 LOGO 上）。
+	NotifyGlow bool `json:"notify_glow,omitempty"`
+	// NotifySound 打开时段切换的提示音。
+	//
+	// **只保留系统响铃**：程序曾经用代码合成过颂钵/风铃/白噪音三种音频并通过
+	// PowerShell 播放，但用户实测在本机都放不出声，而系统响铃好听且可用。
+	// 所以它是个开关而不是预设列表（见 internal/ui/notify.go）。
+	NotifySound bool `json:"notify_sound,omitempty"`
+	// NtfyTopic 是用户订阅的 ntfy.sh 频道名。
+	//
+	// ntfy.sh 的频道默认是**全网公开**的：知道名字的人都能收到、也能发。
+	// 所以这里只应该放高熵随机串（见 EffectiveNtfyTopic），不要放 "myphone"
+	// 这种猜得到的名字。
+	NtfyTopic string `json:"ntfy_topic,omitempty"`
+	// NtfyServer 是 ntfy 服务地址；留空表示用官方 https://ntfy.sh。
+	NtfyServer string `json:"ntfy_server,omitempty"`
+	// NtfyEnabled 是推送总开关。
+	//
+	// 与「填了 Topic」分开：需求明确要求「可以填了但是关掉」。
+	NtfyEnabled bool `json:"ntfy_enabled,omitempty"`
+
+	// AutoArchiveOnFinish 决定专注时段走完后要不要**自动结束并归档**。
+	//
+	// 默认 false：走完最后一段后停在"已完成"，等你按 p 菜单确认再归档。这样
+	// 时长不会在你不注意的时候被定成"完成"，也不会因为手滑被当成中断。
+	// 打开后则走完即刻归档，适合"设好就不管"的用法。
+	AutoArchiveOnFinish bool `json:"auto_archive_on_finish,omitempty"`
+
 	// ShowNote 决定是否在看板上展示当日随手记的前几行。
 	ShowNote bool `json:"show_note,omitempty"`
 	// Timezone 为空时使用系统本地时区。
@@ -115,6 +196,228 @@ func (c *Config) CountdownMinutes() int {
 // QuotesText 把自定义字条拼成多行文本，供设置页编辑。
 func (c *Config) QuotesText() string {
 	return strings.Join(c.Quotes, "\n")
+}
+
+// CustomLabelList 返回清洗过的自定义标签（去空、去重、按原顺序）。
+func (c *Config) CustomLabelList() []string {
+	if len(c.CustomLabels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(c.CustomLabels))
+	seen := make(map[string]bool, len(c.CustomLabels))
+	for _, raw := range c.CustomLabels {
+		name := strings.TrimSpace(strings.Join(strings.Fields(raw), " "))
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// AddCustomLabel 把一个标签记进自定义标签库；已存在或为空则不动。
+func (c *Config) AddCustomLabel(name string) bool {
+	name = strings.TrimSpace(strings.Join(strings.Fields(name), " "))
+	if name == "" || HasString(c.CustomLabelList(), name) {
+		return false
+	}
+	c.CustomLabels = append(c.CustomLabelList(), name)
+	return true
+}
+
+// HasString 报告切片里是否含有某个字符串。
+func HasString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// SavedPlanList 返回校验过、去重后的收藏方案。
+//
+// 手改过的配置里可能有非法方案（段时长为 0、没名字等），这里连带标签一起去掉，
+// 免得脏数据一路进到计时逻辑里。同名视为同一套方案，只保留最后一个——用户在
+// 编辑器里用同一个名字再存一次，意图显然是「覆盖」。
+func (c *Config) SavedPlanList() []model.Plan {
+	if len(c.SavedPlans) == 0 {
+		return nil
+	}
+	// 先从后往前扫，同名只留最后出现的那个。
+	out := make([]model.Plan, 0, len(c.SavedPlans))
+	seen := make(map[string]bool, len(c.SavedPlans))
+	for i := len(c.SavedPlans) - 1; i >= 0; i-- {
+		p := c.SavedPlans[i]
+		if !model.PlanValid(p) {
+			continue
+		}
+		label := model.NormalizePlanLabel(p.Label)
+		if label == "" {
+			label = model.AutoPlanLabel(p)
+		}
+		if seen[label] {
+			continue
+		}
+		seen[label] = true
+		stored := model.ClonePlan(p)
+		stored.Label = label
+		out = append(out, stored)
+	}
+	// 反转回原始顺序，用户看到的顺序与保存顺序一致。
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// AddSavedPlan 收藏一套方案；同名视为覆盖，返回最终使用的名字。
+//
+// 非法方案返回空串表示拒绝。
+func (c *Config) AddSavedPlan(p model.Plan) string {
+	if !model.PlanValid(p) {
+		return ""
+	}
+	label := model.NormalizePlanLabel(p.Label)
+	if label == "" {
+		label = model.AutoPlanLabel(p)
+	}
+	stored := model.ClonePlan(p)
+	stored.Label = label
+
+	list := c.SavedPlanList()
+	replaced := false
+	for i := range list {
+		if list[i].Label == label {
+			list[i] = stored
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		list = append(list, stored)
+	}
+	c.SavedPlans = list
+	return label
+}
+
+// RemoveSavedPlan 按名字删除一套收藏方案，返回是否删掉了。
+func (c *Config) RemoveSavedPlan(label string) bool {
+	list := c.SavedPlanList()
+	out := make([]model.Plan, 0, len(list))
+	removed := false
+	for _, p := range list {
+		if p.Label == label {
+			removed = true
+			continue
+		}
+		out = append(out, p)
+	}
+	if removed {
+		c.SavedPlans = out
+	}
+	return removed
+}
+
+// ---------- 时段切换提醒（见需求 3） ----------
+
+// NtfyDefaultServer 是官方 ntfy 服务地址。
+const NtfyDefaultServer = "https://ntfy.sh"
+
+// NtfyTopicLength 是自动生成频道名的长度（字节）。32 字节 = 256 位熵。
+//
+// ntfy.sh 的频道是全网公开的：谁猜到名字谁就能收到、也能往里发。用户自己起的
+// 名字（"myphone"、"kqflow"）基本必然被猜到，所以由程序生成高熵随机名，
+// 不把安全防线寄托在用户的安全意识上。
+const NtfyTopicLength = 32
+
+// GenerateNtfyTopic 生成一个高熵频道名。
+//
+// 用 crypto/rand（不是 math/rand）：这个名字是唯一的访问凭据，必须不可预测。
+// 返回的是 URL 安全的 base32（去掉容易看错的填充与易混字符），既够短也够随机。
+func GenerateNtfyTopic() (string, error) {
+	buf := make([]byte, NtfyTopicLength)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("生成随机频道名失败: %w", err)
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf), nil
+}
+
+// EffectiveNtfyTopic 返回生效的频道名：用户填过就用用户的，没填过就自动生成一个
+// 并写回配置（固化下来，不能每次专注都换频道——否则用户的手机订阅就失效了）。
+//
+// 返回的第二个值表示本次是否新生成并写入了配置，调用方据此决定要不要落盘。
+func (c *Config) EffectiveNtfyTopic() (string, bool) {
+	if t := strings.TrimSpace(c.NtfyTopic); t != "" {
+		return t, false
+	}
+	generated, err := GenerateNtfyTopic()
+	if err != nil {
+		return "", false
+	}
+	c.NtfyTopic = generated
+	return generated, true
+}
+
+// NtfyURL 返回该频道的订阅地址。
+func (c *Config) NtfyURL() string {
+	topic := strings.TrimSpace(c.NtfyTopic)
+	if topic == "" {
+		return ""
+	}
+	return c.NtfyServerURL() + "/" + topic
+}
+
+// NtfyServerURL 返回服务地址（末尾不带 /）。
+func (c *Config) NtfyServerURL() string {
+	server := strings.TrimSpace(c.NtfyServer)
+	if server == "" {
+		return NtfyDefaultServer
+	}
+	return strings.TrimRight(server, "/")
+}
+
+// NtfyTopicIsWeak 报告频道名是否弱到有明显被猜中的风险。
+//
+// 判据刻意宽松（只拦明显危险的）：太短、纯字母数字且很短、或与项目/常见词同名。
+// 警告而不阻止——用户有权自己决定，但程序有义务把风险讲清楚。
+func NtfyTopicIsWeak(topic string) bool {
+	t := strings.TrimSpace(topic)
+	if t == "" {
+		return true
+	}
+	// 高熵名字按长度就能排除：32 字节 base32 是 52 个字符。
+	if len(t) >= 20 {
+		return false
+	}
+	lower := strings.ToLower(t)
+	for _, weak := range []string{
+		"kqflow", "kqf", "test", "demo", "phone", "myphone", "me",
+		"abc", "123", "topic", "channel", "push", "notice", "alert",
+	} {
+		if lower == weak || strings.Contains(lower, weak) {
+			return true
+		}
+	}
+	return true
+}
+
+// NotifyDisclaimer 是向用户展示的风险提示。
+//
+// 需求（注意 2）要求：引导用户使用 ntfy.sh 时注意措辞，不要被误解为附属软件；
+// 用户也要求把「频道不加密、不要泄露、不要轻信收到的奇怪消息」讲清楚。
+const NotifyDisclaimer = "ntfy.sh 是独立的第三方开源推送服务，KQFLOW 与它没有隶属或合作关系，" +
+	"只是把消息发到你指定的地址。ntfy 的频道默认不加密、且全网可读：" +
+	"知道频道名的人都能收到消息、也能往里发。请不要把这个频道名告诉陌生人；" +
+	"收到来源不明的消息不要轻信。由此造成的任何损失，KQFLOW 不承担责任。"
+
+// NtfyReady 报告推送是否已就绪（开了开关且频道名非空）。
+func (c *Config) NtfyReady() bool {
+	return c.NtfyEnabled && strings.TrimSpace(c.NtfyTopic) != ""
 }
 
 func minutes(v, fallback int) time.Duration {
@@ -247,14 +550,24 @@ func Load(p *Paths) (*Config, error) {
 		// 配置损坏时退回默认值，绝不因此阻断启动。
 		return Default(), nil
 	}
+	// 但「来自更新版本」不是损坏，必须拒绝：下面的 normalize/Save 会把这份
+	// 配置按当前版本整份写回，新版本的设置会静默消失。
+	if cfg.SchemaVersion > ConfigSchemaVersion {
+		return nil, &IncompatibleConfigError{
+			Path:    p.ConfigFile,
+			Current: ConfigSchemaVersion,
+			Found:   cfg.SchemaVersion,
+		}
+	}
 	normalize(cfg)
 	return cfg, nil
 }
 
 // Save 原子地写出配置。
 func Save(p *Paths, cfg *Config) error {
-	if cfg.SchemaVersion == 0 {
-		cfg.SchemaVersion = 1
+	// 永不把配置降级：宁可保留原版本号，也不让旧程序抹掉新版本写的设置。
+	if cfg.SchemaVersion < ConfigSchemaVersion {
+		cfg.SchemaVersion = ConfigSchemaVersion
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

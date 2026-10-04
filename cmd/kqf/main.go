@@ -66,6 +66,13 @@ func run() error {
 	}
 	cfg = loaded
 
+	// 数据版本保护（见 bug.md 注意 1）：数据来自更新的版本时拒绝启动，
+	// 而不是按当前结构读进来再整份写回——那会把新版本的字段直接抹掉。
+	// 必须排在 store.Open 之前：Open 会建目录，而发现未来版本后不该留下痕迹。
+	if err := store.CheckDataVersion(paths.Root); err != nil {
+		return err
+	}
+
 	st, err := store.Open(paths.Root)
 	if err != nil {
 		return err
@@ -138,6 +145,9 @@ func usage() {
   tab 切换栏位 · j/k 移动 · space 勾选 · a 添加 · t 加子任务 · r 继承昨日 · ? 帮助 · q 退出
 
 计时:
-  中间栏按 enter 选择番茄钟 / 倒计时 / 正计时 / 自定义，计时中 space 暂停、enter 归档、esc 中断
+  中间栏按 enter 选择番茄钟 / 倒计时 / 正计时 / 自定义。
+  计时中按 p 打开计时菜单（暂停 / 继续 / 结束），结束会先确认。
+  空格与回车在计时中仍然是勾选完成 / 进入子任务，不会被计时占用，
+  因此终端里最容易误触的两个键不会误伤正在进行的专注。
 `, version.Version)
 }

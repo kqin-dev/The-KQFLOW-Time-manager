@@ -107,15 +107,75 @@ func TestNoViewOverflowsTerminal(t *testing.T) {
 			assertNoOverflow(t, "继承确认页", app.View(), w, h)
 			app.view = ViewDashboard
 
+			// 浮层：标签页（见需求 1）。一条带很多标签的长标题最容易撑破边框。
+			app.openLabels()
+			if app.labelView.active {
+				assertNoOverflow(t, "标签页", app.View(), w, h)
+				// 满载标签时也要装得下。
+				app.labelView.target.SetItemLabels([]string{
+					"一个相当长的自定义标签名字", "星星", "紧急", "爱心",
+				})
+				assertNoOverflow(t, "标签页（满载）", app.View(), w, h)
+			}
+			app.closeLabels()
+
+			// 浮层：DDL 设置页（见需求 4）。
+			if entries := app.dueEntries(); len(entries) == 0 {
+				// 没有设 DDL 的条目时页面会被拒绝打开，先给一条设上。
+				app.data.Floating = append(app.data.Floating, model.NewTodo(
+					"一个名字相当长的待办用来试探 DDL 页宽度", model.KindFloating, "2026-10-03", at))
+				app.data.Floating[len(app.data.Floating)-1].SetDue("23:59")
+				app.focus = FocusFloating
+			}
+			app.openDdl()
+			if app.ddlView.active {
+				assertNoOverflow(t, "DDL 设置页", app.View(), w, h)
+			}
+			app.closeDdl()
+
 			// 浮层：计时菜单（第二级菜单，含方向键选择）。
 			app.startTimer()
 			assertNoOverflow(t, "计时菜单", app.View(), w, h)
 			app.pick = nil
 
+			// 浮层：收藏的方案菜单（见需求 2）。方案名可能很长，专门造一个。
+			app.cfg.AddSavedPlan(model.Plan{
+				Kind:  model.TimerCustom,
+				Label: "一个相当长的方案名字用来试探菜单宽度",
+				Segments: []model.Segment{
+					{Name: "深度工作", Kind: model.SegmentKindFocus, Dur: 50 * time.Minute},
+					{Name: "休息", Kind: model.SegmentKindBreak, Dur: 10 * time.Minute},
+				},
+			})
+			app.openSavedPlans()
+			assertNoOverflow(t, "收藏的方案菜单", app.View(), w, h)
+			app.pick = nil
+			app.openSavedPlanManager()
+			assertNoOverflow(t, "收藏管理菜单", app.View(), w, h)
+			app.pick = nil
+			app.cfg.SavedPlans = nil
+
 			// 浮层：退出确认。
 			app.askQuit()
 			assertNoOverflow(t, "退出确认", app.View(), w, h)
 			app.pick = nil
+
+			// 浮层：计时结束确认（见已知 bug 1）。计时进行中的状态也要覆盖。
+			app.beginTimer(model.Plan{Kind: model.TimerCountUp, Segments: []model.Segment{
+				{Name: "自由专注", Kind: model.SegmentKindFocus},
+			}}, "")
+			app.askStopTimer()
+			assertNoOverflow(t, "计时结束确认", app.View(), w, h)
+			app.stopAsk = false
+
+			// 浮层：计时中打开的计时菜单。
+			app.openTimerMenu()
+			assertNoOverflow(t, "计时中菜单", app.View(), w, h)
+			app.pick = nil
+
+			// 计时进行中的看板本身（进度条与提示都要装得下）。
+			assertNoOverflow(t, "计时中的看板", app.View(), w, h)
+			app.timer = nil
 
 			// 浮层：庆祝特效。
 			app.celebrate = &celebrateState{started: time.Now()}
