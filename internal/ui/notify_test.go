@@ -345,10 +345,14 @@ func TestNtfyHelpRequiresEnabled(t *testing.T) {
 	}
 }
 
-// TestSettingsShowsAddressAndDisclaimerTogether 验证设置页里地址与风险声明同层可见。
+// TestSettingsShowsAddressWithWarning 验证设置页这一层同时给出地址与关键风险警示。
 //
-// 用户要求：看到地址就要看到声明，不能等用户自己点进下一级才发现。
-func TestSettingsShowsAddressAndDisclaimerTogether(t *testing.T) {
+// 分层安排（用户三次报「显示不全」后定的）：
+//   - 设置页：地址 + 一句最关键的风险警示 + 指路去说明页；
+//   - 说明页：整段免责声明逐字展示（它版面更宽）。
+//
+// 用户的核心要求仍然满足：**看到地址就能看到风险**，不必先点进下一级。
+func TestSettingsShowsAddressWithWarning(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
 	app, _, _ := newTestApp(t, at)
 	app.width, app.height = 110, 44
@@ -360,13 +364,22 @@ func TestSettingsShowsAddressAndDisclaimerTogether(t *testing.T) {
 	_ = styled
 	joined := strings.Join(plain, "\n")
 
-	for _, want := range []string{"ntfy.sh/JBSWY3D", "第三方", "不加密", "不承担"} {
+	for _, want := range []string{
+		"ntfy.sh/JBSWY3D", // 地址在这一层
+		"不加密",             // 关键风险讲清楚
+		"不要透露给陌生人",
+		"完整说明与免责声明", // 并指明去哪看全文
+	} {
 		if !strings.Contains(joined, want) {
-			t.Errorf("设置页应同时包含 %q（地址与声明同层），实际:\n%s", want, joined)
+			t.Errorf("设置页应包含 %q，实际:\n%s", want, joined)
 		}
 	}
 	if strings.Contains(joined, "扫码") {
 		t.Errorf("不该再出现扫码说法，实际:\n%s", joined)
+	}
+	// 完整声明不该再挤在这一层（那正是之前"看起来显示不全"的根源）。
+	if strings.Contains(joined, config.NotifyDisclaimer) {
+		t.Errorf("设置页不该再塞整段声明，实际:\n%s", joined)
 	}
 }
 

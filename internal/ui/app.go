@@ -350,6 +350,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case bellOnceMsg:
 		// 立刻响一次铃（不依赖计时器状态）：提示音测试与"没有计时也要响"的场景用。
+		//
+		// 只置标记：响铃字符 `\a` 由下一帧的渲染输出带上（见 View）。这样响铃
+		// 与"当前在哪一页""有没有计时器"都无关。
 		a.bellPending = true
 		return a, nil
 

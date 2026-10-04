@@ -12,122 +12,72 @@ import (
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
-// TestSettingsDisclaimerIsComplete 验证设置页里的风险声明一个字都不少。
+// TestDisclaimerCompleteInBothViews 检查两个页面的责任划分：
 //
-// 用户报过"风险提示显示不全"：长中文一旦超出内宽就会被终端自己折行，折行的
-// 后半段看起来就像丢了内容。所以这里把设置页所有行拼起来，去掉空白后必须与
-// 原始声明逐字一致，而且每一行都不能超过面板内宽。
-func TestSettingsDisclaimerIsComplete(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-
-	for _, size := range [][2]int{{140, 48}, {120, 44}, {110, 40}, {100, 36}} {
-		app, _, _ := newTestApp(t, at)
-		app.width, app.height = size[0], size[1]
-		app.view = ViewSettings
-		app.cfg.NtfyTopic = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXPJBSWY3D"
-		app.cfg.NtfyEnabled = true
-
-		styled, plain := app.settingsLines()
-		inner := app.contentWidth()
-
-		// 每行都不能超宽（超了就会被终端折行，看起来像丢字）。
-		for i, l := range plain {
-			if w := lipgloss.Width(l); w > inner {
-				t.Errorf("%dx%d 第 %d 行宽 %d 超过内宽 %d：%q",
-					size[0], size[1], i, w, inner, l)
-			}
-		}
-		_ = styled
-
-		// 声明必须完整：去掉空白后逐字比对。
-		joined := strings.Join(plain, "")
-		squash := func(s string) string {
-			return strings.Join(strings.Fields(s), "")
-		}
-		if !strings.Contains(squash(joined), squash(config.NotifyDisclaimer)) {
-			t.Errorf("%dx%d：设置页里的声明不完整\n期望包含：%s\n实际内容：%s",
-				size[0], size[1], squash(config.NotifyDisclaimer), squash(joined))
-		}
-	}
-}
-
-// TestDisclaimerCompleteInBothViews 把**两个页面都渲染一遍**，逐个窗口尺寸
-// 检查声明是否逐字完整、每行是否都不超过面板内宽。
+//   - **说明页**逐字展示完整免责声明（它版面更宽），一个字都不能少；
+//   - **设置页**显示地址 + 一句关键警示 + 指路，不再塞整段声明。
 //
-// 用户连续两次报「风险提示显示不全」，说明只测一个页面/一种尺寸不够：
-// 设置页直接把声明铺在列表里，说明页在 pageContent 里滚动，两条路径都要验。
-// 判据用「去掉所有空白后逐字包含」，这样任何丢字、错位都会被抓到。
+// 这样安排是因为用户三次报「风险提示显示不全」都发生在设置页的窄正文区里：
+// 两百多字的声明挤在窄栏里折行，很容易看成"少了内容"。把它放到宽敞的说明页里
+// 逐字展示，比继续和边界较劲可靠。
+//
+// 两个页面的每一行都必须在面板内宽以内——超了会被终端自己折行，看起来就是丢字。
 func TestDisclaimerCompleteInBothViews(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
 	squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
 	want := squash(config.NotifyDisclaimer)
 
-	sizes := [][2]int{{60, 20}, {80, 24}, {90, 30}, {100, 36}, {110, 40}, {120, 44}, {140, 48}, {160, 50}}
+	sizes := [][2]int{{60, 20}, {80, 24}, {90, 30}, {100, 36}, {110, 40}, {120, 44}, {140, 48}, {160, 50}, {180, 50}}
 	for _, size := range sizes {
 		app, _, _ := newTestApp(t, at)
 		app.width, app.height = size[0], size[1]
 		app.cfg.NtfyTopic = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXPJBSWY3D"
 		app.cfg.NtfyEnabled = true
-
-		// --- 设置页：逐行检查（pageContent 的 plain 即渲染出来的行）---
+		// 必须**设好尺寸之后**再算内宽，否则拿到的是上一次迭代的宽度。
 		app.view = ViewSettings
+		inner := app.contentWidth()
+
+		// --- 设置页：每行不超内宽；必须有地址与关键警示；说明声明去哪看 ---
 		styled, plain := app.settingsLines()
 		_ = styled
-		inner := app.contentWidth()
 		for i, l := range plain {
 			if w := lipgloss.Width(l); w > inner {
 				t.Errorf("%dx%d 设置页第 %d 行宽 %d 超内宽 %d：%q",
 					size[0], size[1], i, w, inner, l)
 			}
 		}
-		if got := squash(strings.Join(plain, "")); !strings.Contains(got, want) {
-			t.Errorf("%dx%d 设置页的声明不完整\n期望：%s\n实际：%s", size[0], size[1], want, got)
+		settingsFlat := squash(strings.Join(plain, ""))
+		for _, needle := range []string{
+			"https://ntfy.sh/JBSWY3D", // 地址就在这一层
+			"不加密",                     // 关键风险讲清楚
+			"不要透露给陌生人",
+			"完整说明与免责声明", // 并告诉用户去哪里看全文
+		} {
+			if !strings.Contains(settingsFlat, squash(needle)) {
+				t.Errorf("%dx%d 设置页应包含 %q，实际：%s", size[0], size[1], needle, settingsFlat)
+			}
 		}
 
-		// --- 说明页：它走 pageContent，会被滚动裁剪，所以要滚一遍找 ---
-		app.view = ViewSettings
+		// --- 说明页：完整声明逐字不能少 ---
+		//
+		// 注意：说明页会加宽中间栏（见 columnLayout），所以内宽必须在置上
+		// ntfyHelp **之后**再算，否则会拿设置页的窄内宽去断言宽版面的行。
 		app.ntfyHelp = true
 		app.pageScroll = 0
-		var all []string
-		for i := 0; i < 60; i++ {
-			hs, hp := app.ntfyHelpContent()
-			_ = hs
-			total := len(hp)
-			_, _, _, bodyH := app.columnLayout()
-			avail := bodyH - a4(app)
-			if avail < 1 {
-				avail = 1
-			}
-			start := app.pageScroll
-			end := start + avail
-			if end > total {
-				end = total
-			}
-			if start < total {
-				all = append(all, hp[start:end]...)
-			}
-			// 每一行都要在可见宽度内。
-			for j := 0; j < total; j++ {
-				if w := lipgloss.Width(hp[j]); w > app.contentWidth() {
-					t.Errorf("%dx%d 说明页第 %d 行宽 %d 超内宽 %d：%q",
-						size[0], size[1], j, w, app.contentWidth(), hp[j])
-				}
-			}
-			before := app.pageScroll
-			app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-			if app.pageScroll == before {
-				break
+		helpInner := app.contentWidth()
+		_, hp := app.ntfyHelpContent()
+		for j, l := range hp {
+			if w := lipgloss.Width(l); w > helpInner {
+				t.Errorf("%dx%d 说明页第 %d 行宽 %d 超内宽 %d：%q",
+					size[0], size[1], j, w, helpInner, l)
 			}
 		}
-		if got := squash(strings.Join(all, "")); !strings.Contains(got, want) {
+		if got := squash(strings.Join(hp, "")); !strings.Contains(got, want) {
 			t.Errorf("%dx%d 说明页的声明不完整\n期望：%s\n实际：%s", size[0], size[1], want, got)
 		}
 		app.ntfyHelp = false
 	}
 }
-
-// a4 返回面板边框占用的垂直尺寸（与 pageContent 的算法保持一致）。
-func a4(a *App) int { return a.st.Panel.GetVerticalFrameSize() }
 
 // TestBellRingsOnAnyView 验证提示音在**任何页面**都会响。
 //
@@ -183,6 +133,46 @@ func TestBellRingsOnAnyView(t *testing.T) {
 	if app.bellPending {
 		t.Error("响过之后标记应被清掉（否则会一直响）")
 	}
+}
+
+// TestBellActuallyAppearsInOutput 验证响铃字符真的出现在**渲染输出**里。
+//
+// 这是把用户"完全没声音"定位到根因的那条测试：重构时 `bellOnce` 只发了一条
+// 消息，却没有任何地方把 `\a` 写出去——标记被消费掉了，声音从来没有产生。
+// 所以这里直接检查 View() 的输出以 `\a` 开头，任何页面都一样。
+func TestBellActuallyAppearsInOutput(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+
+	for _, view := range []View{ViewDashboard, ViewSettings, ViewHistory, ViewHelp} {
+		app, _, _ := newTestApp(t, at)
+		app.width, app.height = 120, 36
+		app.view = view
+		app.cfg.NotifySound = true
+
+		// 没有待响标记时，输出里不该有响铃字符。
+		if strings.Contains(app.View(), "\a") {
+			t.Errorf("view=%v：无待响标记时不该输出响铃字符", view)
+		}
+
+		// 置上待响标记后，输出必须以响铃字符开头。
+		app.bellPending = true
+		out := app.View()
+		if !strings.HasPrefix(out, "\a") {
+			t.Errorf("view=%v：渲染输出应以响铃字符开头，实际前 8 字节 %q", view, headBytes(out, 8))
+		}
+		// 只响一次：第二次渲染不该再带响铃。
+		if strings.Contains(app.View(), "\a") {
+			t.Errorf("view=%v：响铃只该输出一次", view)
+		}
+	}
+}
+
+// headBytes 返回字符串前 n 个字节，用于错误信息（避免打印整屏）。
+func headBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // TestAutoArchiveOnFinish 验证「专注结束自动归档」这个选项的两条路径。

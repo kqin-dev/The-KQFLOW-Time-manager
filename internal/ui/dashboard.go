@@ -17,12 +17,25 @@ import (
 const (
 	minWidth  = 60
 	minHeight = 16
-	// wideCenterThreshold 是「给二级页加宽中间栏」的终端宽度门槛（见 columnLayout）。
-	wideCenterThreshold = 150
 )
 
 // View 渲染当前界面。
+//
+// 响铃在这里统一输出：`\a` 是终端响铃字符，必须作为**渲染输出**的一部分写出去
+// （单独发一条消息不会产生任何可听效果——曾经就是这个原因让提示音完全没声音）。
+// 放在 View 的最外层，所以**任何页面**响铃都有效。
 func (a *App) View() string {
+	out := a.renderView()
+	// 响铃只输出一次；取走标记。
+	if a.bellPending {
+		a.bellPending = false
+		return "\a" + out
+	}
+	return out
+}
+
+// renderView 是真正的渲染实现（View 只在外面负责附加响铃字符）。
+func (a *App) renderView() string {
 	if a.width == 0 || a.height == 0 {
 		return "正在启动 KQFLOW…"
 	}
@@ -230,15 +243,6 @@ func (a *App) viewTooSmall() string {
 // 看板与中间栏内容（二级菜单、输入框、二级页）共用这一份计算，
 // 保证它们永远落在中间栏里，不会盖住左右两侧的边框。
 func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
-	// 手机推送说明页要在中间栏里放地址与整段声明。
-	//
-	// 宽终端上用**两栏排版**（左栏照常 + 中间栏吃掉右栏）：三栏均分时中间栏只有
-	// 五六十列，长句会被折得很碎，用户两次报「显示不全」都发生在这种边界附近。
-	// 给它更宽的版面，长句就远离边界了。窄终端维持三栏不变。
-	if a.twoColumnMode() {
-		return a.twoColumnLayout()
-	}
-
 	header := a.renderHeader()
 	footer := a.renderFooter()
 	bodyH = a.height - lipgloss.Height(header) - lipgloss.Height(footer)
@@ -252,6 +256,13 @@ func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
 	}
 	if a.width < 90 {
 		leftW, rightW = 24, 22
+	}
+	// 说明页要在中间栏里逐字展示整段风险声明，给它更宽的正文区。
+	//
+	// 这里**不改成两栏**（试过，右栏消失会让用户以为渲染坏了），而是把左右两栏
+	// 各收窄一些、中间栏加宽，三栏结构保持不变。
+	if a.ntfyHelp && a.width >= 120 {
+		leftW, rightW = 26, 22
 	}
 	// 中间栏的最小宽度按「内容」定，不按 Logo 定。
 	//
@@ -284,33 +295,6 @@ func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
 		rightW = max(0, a.width-leftW-centerW)
 	}
 	return leftW, centerW, rightW, bodyH
-}
-
-// twoColumnLayout 是「左栏 + 加宽中间栏」的两栏排版，只给说明页用。
-//
-// 这样中间栏能拿到右栏的宽度，长句远离边界；右栏（GOAL）在这一页暂时不显示。
-func (a *App) twoColumnLayout() (leftW, centerW, rightW, bodyH int) {
-	header := a.renderHeader()
-	footer := a.renderFooter()
-	bodyH = a.height - lipgloss.Height(header) - lipgloss.Height(footer)
-	if bodyH < 6 {
-		bodyH = 6
-	}
-
-	leftW = 34
-	if a.width < 110 {
-		leftW = 28
-	}
-	if a.width < 90 {
-		leftW = 24
-	}
-	const minCenterWidth = 40
-	centerW = a.width - leftW
-	if centerW < minCenterWidth && leftW > 18 {
-		leftW = max(18, a.width-minCenterWidth)
-		centerW = a.width - leftW
-	}
-	return leftW, centerW, 0, bodyH
 }
 
 // renderDashboard 组装主看板：左 TODO、中选项、右 GOAL、下进度条（见需求 5）。
@@ -348,26 +332,11 @@ func (a *App) renderCenterBox(content string) string {
 	leftWidth, centerWidth, rightWidth, bodyHeight := a.columnLayout()
 
 	left := a.renderLeftPanel(leftWidth, bodyHeight)
+	right := a.renderGoalPanel(rightWidth, bodyHeight)
 	center := a.panel(false, centerWidth, bodyHeight, content)
 
-	// 两栏排版（说明页在宽终端上）时右栏宽度为 0，不再渲染 GOAL 面板——
-	// 否则会画出一个只有半截内容的空面板，看起来像渲染坏了。
-	if a.twoColumnMode() {
-		body := lipgloss.JoinHorizontal(lipgloss.Top, left, center)
-		return clipBlock(lipgloss.JoinVertical(lipgloss.Left, header, body, footer), a.width, a.height)
-	}
-
-	right := a.renderGoalPanel(rightWidth, bodyHeight)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
 	return clipBlock(lipgloss.JoinVertical(lipgloss.Left, header, body, footer), a.width, a.height)
-}
-
-// twoColumnMode 报告当前是否在用「左栏 + 加宽中间栏」的两栏排版。
-//
-// 与 columnLayout 里的判断必须是同一个条件，否则会出现"布局算两栏、
-// 渲染却还在画右栏"的错位。
-func (a *App) twoColumnMode() bool {
-	return a.ntfyHelp && a.width >= wideCenterThreshold
 }
 
 // overlayBox 在已经渲染好的面板文本上叠加另一段内容（用于庆祝特效）。

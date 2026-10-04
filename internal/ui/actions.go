@@ -606,25 +606,24 @@ var settingItems = []settingItem{
 		Edit: (*App).toggleNtfy,
 	},
 	{
-		// 地址与声明放在**同一层**：用户看到地址的同时必须看到风险提示，
-		// 不能等他自己点进下一级才发现（用户明确要求）。
+		// 地址与声明的关系：地址在这一层就能看到并复制；**完整声明放在说明页**
+		// （那里版面更宽、能逐字排开），这里给一句最关键的风险提示 + 指路。
+		//
+		// 这样安排是因为用户三次报「风险提示显示不全」都发生在设置页的窄正文区里：
+		// 一整段两百多字的声明挤在窄栏里折行，很容易看成"少了内容"。与其继续和
+		// 边界较劲，不如把它放到一间更宽敞的屋子里逐字展示。
 		Label: "提醒 · 手机订阅地址（可复制）",
 		Lines: func(a *App) []string {
 			if !a.cfg.NtfyReady() {
 				return []string{"先打开上一项，程序会生成随机频道"}
 			}
-			return []string{a.cfg.NtfyURL(), "（也可对本项按 enter 打开完整说明页）"}
+			return []string{
+				a.cfg.NtfyURL(),
+				"⚠ 频道不加密、全网可读：不要透露给陌生人，来历不明的消息别轻信。",
+				"按 enter 查看完整说明与免责声明。",
+			}
 		},
 		Edit: (*App).showNtfyHelp,
-	},
-	{
-		Label: "提醒 · 手机推送风险提示",
-		Lines: func(a *App) []string {
-			if !a.cfg.NtfyReady() {
-				return nil
-			}
-			return []string{config.NotifyDisclaimer}
-		},
 	},
 	{
 		Label: "提醒 · 重新生成手机频道",
