@@ -123,6 +123,11 @@ type App struct {
 	notifyState *notifyState
 	// hearingCmd 是设置页里「选完就试听」这类一次性命令（见 activateSetting）。
 	hearingCmd tea.Cmd
+	// bellPending 表示下一帧要响一次铃。
+	//
+	// 与 timer.bell 分开：铃不属于计时器——设置页的测试随时可能在没有计时的时候
+	// 响，用 timer 上的标记就会把响铃整个丢掉（用户报过"测试没有提示音"）。
+	bellPending bool
 	// ntfyHelp 为真时显示「手机推送怎么用」的说明页（见需求 3）。
 	ntfyHelp bool
 
@@ -307,7 +312,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 注意不能早返回：跨段与 tick 都会 return，若在那里直接返回就会把响铃
 		// 命令丢掉。所以先把所有命令攒进 cmds，最后统一 Batch。
 		var cmds []tea.Cmd
-		if a.timer != nil && a.timer.consumeBell() {
+		if a.bellPending || (a.timer != nil && a.timer.consumeBell()) {
+			// bellPending 是"立刻响一次"（设置页测试 / 无计时场景）；
+			// timer.consumeBell 是计时器自己要求的响铃。两者都在这里统一输出。
+			a.bellPending = false
 			cmds = append(cmds, bellOnce())
 		}
 		// 计时状态在动画帧里推进，保证进度条平滑动起来。
@@ -342,7 +350,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case bellOnceMsg:
 		// 立刻响一次铃（不依赖计时器状态）：提示音测试与"没有计时也要响"的场景用。
-		return a, bellOnce()
+		a.bellPending = true
+		return a, nil
 
 	case ntfyPushedMsg:
 		// 纯单向推送，失败就算了（用户明确要求不重试）。

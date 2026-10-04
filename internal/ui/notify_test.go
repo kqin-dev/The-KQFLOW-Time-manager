@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
@@ -303,10 +304,16 @@ func TestNtfyHelpShowsAddressAndDisclaimer(t *testing.T) {
 	styled, plain := app.ntfyHelpContent()
 	_ = styled
 	joined := strings.Join(plain, "\n")
+	// 判据要先去掉空白再比对：折行会把一个词断在两行（例如「不承担」被断成
+	// 「KQFLOW 不」+「承担责任。」），逐行 Contains 会误报"少了内容"。
+	squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	flat := squash(joined)
+
 	for _, want := range []string{
-		"ntfy", "testtopic", "订阅地址", "topic", "风险提示", "第三方", "不加密", "不承担",
+		"ntfy", "testtopic", "订阅地址", "topic", "风险提示", "第三方", "不加密",
+		config.NotifyDisclaimer,
 	} {
-		if !strings.Contains(joined, want) {
+		if !strings.Contains(flat, squash(want)) {
 			t.Errorf("说明页应包含 %q，实际:\n%s", want, joined)
 		}
 	}

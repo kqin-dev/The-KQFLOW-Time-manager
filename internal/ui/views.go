@@ -20,14 +20,27 @@ func (a *App) IsCompact() bool { return a.width < compactWidth }
 // contentWidth 返回中间栏内容区可用的字符数。
 //
 // 二级菜单、输入框、帮助/设置/历史都只占中间栏，所以宽度都以它为准。
+//
+// 上限 maxContentWidth 是刻意加的：超宽终端（比如 200 列）下三栏均分会把中间栏
+// 拉到 130+ 列，一整句中文挤在一行里既难读，也让"恰好接近边界"的长句容易出问题
+// （用户两次报「风险提示显示不全」都发生在他的宽终端上）。所以超过上限就按上限
+// 折行——多出来的列留白，不再一味拉长。
 func (a *App) contentWidth() int {
 	_, centerW, _, _ := a.columnLayout()
 	w := centerW - a.st.Panel.GetHorizontalFrameSize()
 	if w < 8 {
 		w = 8
 	}
+	if w > maxContentWidth {
+		w = maxContentWidth
+	}
 	return w
 }
+
+// maxContentWidth 是中间栏正文内容区的最大列数。
+//
+// 92 是常见终端下一行中文的可读上限附近；再宽就该靠留白而不是拉长行宽。
+const maxContentWidth = 92
 
 // modalLine 渲染一行内容，超宽时截断。
 func (a *App) modalLine(style lipgloss.Style, text string, inner int) string {

@@ -163,16 +163,25 @@ func TestBellRingsOnAnyView(t *testing.T) {
 	app, _, _ := newTestApp(t, at)
 	app.view = ViewSettings
 	app.cfg.NotifySound = true
-	cmd := app.notifySoundCmd()
-	if cmd == nil {
+	plan := app.notifySoundCmd()
+	if plan == nil {
 		t.Fatal("没有计时器时也应能响")
 	}
-	if _, ok := cmd().(bellOnceMsg); !ok {
+	if _, ok := plan().(bellOnceMsg); !ok {
 		t.Error("应产生 bellOnceMsg")
 	}
-	// bellOnceMsg 交给 Update 后应再产出一条响铃命令。
-	if _, cmd2 := app.Update(bellOnceMsg{}); cmd2 == nil {
-		t.Error("bellOnceMsg 应触发一次响铃")
+	// bellOnceMsg 只置标记，真正的响铃在下一个动画帧统一发出——
+	// 这样"响铃"这件事与计时器状态彻底解耦，也不依赖任何页面的渲染。
+	app.Update(bellOnceMsg{})
+	if !app.bellPending {
+		t.Fatal("bellOnceMsg 应置上待响标记")
+	}
+	_, cmd2 := app.Update(animMsg{})
+	if cmd2 == nil {
+		t.Error("下一个动画帧应产生响铃命令")
+	}
+	if app.bellPending {
+		t.Error("响过之后标记应被清掉（否则会一直响）")
 	}
 }
 

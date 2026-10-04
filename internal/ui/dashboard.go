@@ -17,6 +17,8 @@ import (
 const (
 	minWidth  = 60
 	minHeight = 16
+	// wideCenterThreshold 是「给二级页加宽中间栏」的终端宽度门槛（见 columnLayout）。
+	wideCenterThreshold = 150
 )
 
 // View 渲染当前界面。
@@ -228,13 +230,12 @@ func (a *App) viewTooSmall() string {
 // 看板与中间栏内容（二级菜单、输入框、二级页）共用这一份计算，
 // 保证它们永远落在中间栏里，不会盖住左右两侧的边框。
 func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
-	// 手机推送说明页要在中间栏里放二维码，需要更宽的版面（见 ntfyHelpContent）。
+	// 手机推送说明页要在中间栏里放地址与整段声明。
 	//
-	// 这里是「两栏排版」：左栏照常显示 TODAY TODO，中间栏吃掉整个右栏的宽度，
-	// 不再渲染 GOAL。这是本项目唯一一处不按三栏排版的地方，理由具体且有限：
-	// 二维码的最小可用宽度（v2 起就要 37 列）在 110 列终端下会被三栏均分挤到
-	// 44 列，正好放不下；而让用户在手机上装完 App 再回来把终端拉宽是最差的体验。
-	if a.ntfyHelp {
+	// 宽终端上用**两栏排版**（左栏照常 + 中间栏吃掉右栏）：三栏均分时中间栏只有
+	// 五六十列，长句会被折得很碎，用户两次报「显示不全」都发生在这种边界附近。
+	// 给它更宽的版面，长句就远离边界了。窄终端维持三栏不变。
+	if a.twoColumnMode() {
 		return a.twoColumnLayout()
 	}
 
@@ -285,10 +286,9 @@ func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
 	return leftW, centerW, rightW, bodyH
 }
 
-// twoColumnLayout 是手机推送说明页用的两栏排版：左栏照常，中间栏吃到右栏。
+// twoColumnLayout 是「左栏 + 加宽中间栏」的两栏排版，只给说明页用。
 //
-// 这样中间栏宽度在 110 列终端下从 46 变成 76，二维码（v3 需 45 列）就能放下。
-// 只影响说明页，看板与其它二级页仍是标准三栏。
+// 这样中间栏能拿到右栏的宽度，长句远离边界；右栏（GOAL）在这一页暂时不显示。
 func (a *App) twoColumnLayout() (leftW, centerW, rightW, bodyH int) {
 	header := a.renderHeader()
 	footer := a.renderFooter()
@@ -348,11 +348,26 @@ func (a *App) renderCenterBox(content string) string {
 	leftWidth, centerWidth, rightWidth, bodyHeight := a.columnLayout()
 
 	left := a.renderLeftPanel(leftWidth, bodyHeight)
-	right := a.renderGoalPanel(rightWidth, bodyHeight)
 	center := a.panel(false, centerWidth, bodyHeight, content)
 
+	// 两栏排版（说明页在宽终端上）时右栏宽度为 0，不再渲染 GOAL 面板——
+	// 否则会画出一个只有半截内容的空面板，看起来像渲染坏了。
+	if a.twoColumnMode() {
+		body := lipgloss.JoinHorizontal(lipgloss.Top, left, center)
+		return clipBlock(lipgloss.JoinVertical(lipgloss.Left, header, body, footer), a.width, a.height)
+	}
+
+	right := a.renderGoalPanel(rightWidth, bodyHeight)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
 	return clipBlock(lipgloss.JoinVertical(lipgloss.Left, header, body, footer), a.width, a.height)
+}
+
+// twoColumnMode 报告当前是否在用「左栏 + 加宽中间栏」的两栏排版。
+//
+// 与 columnLayout 里的判断必须是同一个条件，否则会出现"布局算两栏、
+// 渲染却还在画右栏"的错位。
+func (a *App) twoColumnMode() bool {
+	return a.ntfyHelp && a.width >= wideCenterThreshold
 }
 
 // overlayBox 在已经渲染好的面板文本上叠加另一段内容（用于庆祝特效）。
