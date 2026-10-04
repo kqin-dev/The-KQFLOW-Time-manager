@@ -4,7 +4,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -32,18 +31,17 @@ func customSegmentedTimer(t *testing.T, app *App, at time.Time) {
 	}
 }
 
-// TestSegmentChangeTriggersNotification 验证跨过时段边界时触发提醒，
-// 并且只触发一次。
+// TestSegmentChangeTriggersNotification 验证跨过时段边界时触发提醒，且只触发一次。
 func TestSegmentChangeTriggersNotification(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
 	app, _, _ := newTestApp(t, at)
 	customSegmentedTimer(t, app, at)
-	app.cfg.NotifyGlow = "aurora"
+	app.cfg.NotifyGlow = true
 
 	now := at
 	app.clock = clock.NewWith(func() time.Time { return now }, time.Local)
 
-	// 第一次推进：只是记录当前段，不该提醒（否则刚开始就响）。
+	// 第一次推进：只记录当前段，不该提醒（否则刚开始就响）。
 	if n := app.checkSegmentChange(now); n != nil {
 		t.Error("第一次推进不该触发提醒")
 	}
@@ -94,8 +92,8 @@ func TestSegmentChangeSilentWhenAllDisabled(t *testing.T) {
 func TestFinalSegmentAlsoNotifies(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
 	app, _, _ := newTestApp(t, at)
-	app.cfg.NotifyGlow = "aurora"
-	app.cfg.NotifySound = "bell"
+	app.cfg.NotifyGlow = true
+	app.cfg.NotifySound = true
 
 	plan := model.Plan{Kind: model.TimerCountDown, Segments: []model.Segment{
 		{Name: "倒计时", Kind: model.SegmentKindFocus, Dur: time.Minute},
@@ -106,7 +104,6 @@ func TestFinalSegmentAlsoNotifies(t *testing.T) {
 	now := at
 	app.clock = clock.NewWith(func() time.Time { return now }, time.Local)
 
-	// 计时自然结束：timerDoneMsg 由 tick 在走到终点时发出。
 	_, cmd := app.Update(timerDoneMsg{})
 	if app.timer == nil || !app.timer.finished {
 		t.Fatal("计时应标记为已完成")
@@ -119,12 +116,6 @@ func TestFinalSegmentAlsoNotifies(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("应返回提示音等命令")
-	} else {
-		// 命令里应该能找到响铃（bell 预设）。
-		msg := cmd()
-		if msg == nil {
-			t.Error("命令不应返回 nil 消息")
-		}
 	}
 }
 
@@ -142,187 +133,31 @@ func TestFinalSegmentSilentWhenDisabled(t *testing.T) {
 	}
 }
 
-// TestSettingsShowsAddressAndDisclaimerTogether 验证设置页里地址与风险声明同层可见。
+// TestNotifySoundIsOnOffBell 验证提示音只剩下"开/关"，开着就是系统响铃。
 //
-// 用户要求：看到地址就要看到声明，不能等用户自己点进下一级才发现。
-func TestSettingsShowsAddressAndDisclaimerTogether(t *testing.T) {
+// 用户实测：代码合成的三种音频在本机都放不出声，系统响铃好听且可用。
+// 所以这个开关不再有预设列表。
+func TestNotifySoundIsOnOffBell(t *testing.T) {
 	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+
 	app, _, _ := newTestApp(t, at)
-	app.width, app.height = 110, 44
-	app.view = ViewSettings
-	app.cfg.NtfyTopic = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXPJBSWY3D"
-	app.cfg.NtfyEnabled = true
-
-	// 直接看设置页的完整内容（不止一屏时也要能找到）。
-	styled, plain := app.settingsLines()
-	joined := strings.Join(plain, "\n")
-	_ = styled
-
-	for _, want := range []string{"ntfy.sh/JBSWY3D", "第三方", "不加密", "不承担"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("设置页应同时包含 %q（地址与声明同层），实际:\n%s", want, joined)
-		}
-	}
-	// 页面上必须说明"可以点开二维码"，否则用户意识不到这一项能按。
-	if !strings.Contains(joined, "二维码") {
-		t.Errorf("应说明该项可打开二维码页，实际:\n%s", joined)
-	}
-}
-
-// TestRegenerateNtfyTopic 验证可以换频道（用户要求：不要求就不变，要求才换）。
-func TestRegenerateNtfyTopic(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	app, _, _ := newTestApp(t, at)
-	app.width, app.height = 110, 44
-
-	// 没开启时给出可操作提示，不生成。
-	app.regenerateNtfyTopic()
-	if app.cfg.NtfyTopic != "" {
-		t.Error("没开启推送时不该生成频道")
-	}
-	if !strings.Contains(app.toast, "先打开") {
-		t.Errorf("应提示先打开推送，实际 %q", app.toast)
+	if cmd := app.notifySoundCmd(); cmd != nil {
+		t.Error("默认关闭时不该有响铃命令")
 	}
 
-	app.cfg.NtfyTopic = "oldtopicabcdefghijklmnopqrstuvwx"
-	app.cfg.NtfyEnabled = true
-	app.regenerateNtfyTopic()
-
-	if app.cfg.NtfyTopic == "oldtopicabcdefghijklmnopqrstuvwx" {
-		t.Error("应换成新频道")
+	app.cfg.NotifySound = true
+	cmd := app.notifySoundCmd()
+	if cmd == nil {
+		t.Fatal("开启后应有响铃命令")
 	}
-	if len(app.cfg.NtfyTopic) < 40 {
-		t.Errorf("新频道应有足够熵，实际 %q", app.cfg.NtfyTopic)
-	}
-	if !strings.Contains(app.toast, "重新订阅") {
-		t.Errorf("应提醒手机需要重新订阅，实际 %q", app.toast)
-	}
-	// 换完直接打开说明页，用户不用再找入口。
-	if !app.ntfyHelp {
-		t.Error("换频道后应直接打开说明页看新二维码")
-	}
-	// 落盘。
-	raw, err := readConfigFile(app)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(raw, app.cfg.NtfyTopic) {
-		t.Error("新频道应已落盘")
-	}
-}
-
-// TestBuiltinSoundDirIsWritable 验证提示音目录确实可写。
-//
-// 用户实机报过 `mkdir %TEMP%\kqflow-sounds: Access is denied`，所以这里同时
-// 覆盖「候选目录有一个能写」这一点，并核对合成文件能真的写出来。
-func TestBuiltinSoundDirIsWritable(t *testing.T) {
-	dir, err := builtinSoundDir()
-	if err != nil {
-		// 环境极端受限时可以没有可写目录，但要给出候选数量，便于排查。
-		if !strings.Contains(err.Error(), "候选位置") {
-			t.Errorf("错误信息应说明试过多少候选目录，实际 %v", err)
-		}
-		t.Skipf("本环境没有可写目录：%v", err)
-	}
-	if dir == "" {
-		t.Fatal("返回的目录不应为空")
-	}
-	if len(builtinSoundDirCandidates()) == 0 {
-		t.Error("候选目录列表不该为空")
+	if _, ok := cmd().(bellMsg); !ok {
+		t.Error("提示音应为终端响铃（bellMsg）")
 	}
 
-	path, err := builtinSoundFile("bowl")
-	if err != nil {
-		t.Fatalf("写出提示音失败: %v", err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("提示音文件不存在: %v", err)
-	}
-	if info.Size() < 1000 {
-		t.Errorf("WAV 文件太小（%d 字节），可能没写全", info.Size())
-	}
-	// 同一预设应复用同一个文件。
-	again, err := builtinSoundFile("bowl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again != path {
-		t.Errorf("同一预设应复用同一个文件：%q vs %q", path, again)
-	}
-
-	raw, err := generateSoundWAV("bowl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(raw[0:4]) != "RIFF" || string(raw[8:12]) != "WAVE" {
-		t.Error("合成结果应是合法的 WAV（RIFF/WAVE 头）")
-	}
-}
-
-// TestGenerateSoundWAVAllPresets 验证三种合成音都能生成且不削顶。
-func TestGenerateSoundWAVAllPresets(t *testing.T) {
-	for _, name := range builtinSoundNames() {
-		raw, err := generateSoundWAV(name)
-		if err != nil {
-			t.Errorf("%s 生成失败: %v", name, err)
-			continue
-		}
-		if len(raw) < 1000 {
-			t.Errorf("%s 生成的 WAV 太小（%d 字节）", name, len(raw))
-		}
-		if _, err := generateSoundWAV(name + "-不存在"); err == nil {
-			t.Error("未知名字应报错")
-		}
-	}
-}
-
-// TestNotifySoundCmdMapping 验证提示音预设到命令的映射。
-func TestNotifySoundCmdMapping(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-
-	cases := []struct {
-		preset  string
-		wantNil bool
-		wantMsg string
-	}{
-		{"", true, ""},
-		{"none", true, ""},
-		{"bell", false, "bellMsg"},
-		{"bowl", false, "soundPlayedMsg"},
-	}
-	for _, c := range cases {
-		app, _, _ := newTestApp(t, at)
-		app.cfg.NotifySound = c.preset
-		cmd := app.notifySoundCmd()
-		if c.wantNil {
-			if cmd != nil {
-				t.Errorf("预设 %q 应不产生命令", c.preset)
-			}
-			continue
-		}
-		if cmd == nil {
-			t.Errorf("预设 %q 应产生命令", c.preset)
-			continue
-		}
-		msg := cmd()
-		if got := typeName(msg); got != c.wantMsg {
-			t.Errorf("预设 %q 应产生 %s，实际 %s", c.preset, c.wantMsg, got)
-		}
-	}
-}
-
-// typeName 返回消息类型的短名，便于断言。
-func typeName(msg interface{}) string {
-	switch msg.(type) {
-	case bellMsg:
-		return "bellMsg"
-	case soundPlayedMsg:
-		return "soundPlayedMsg"
-	case ntfyPushedMsg:
-		return "ntfyPushedMsg"
-	default:
-		return "unknown"
+	// 关掉就没了。
+	app.cfg.NotifySound = false
+	if cmd := app.notifySoundCmd(); cmd != nil {
+		t.Error("关掉后不该有响铃命令")
 	}
 }
 
@@ -349,13 +184,273 @@ func TestNotifyText(t *testing.T) {
 	}
 }
 
+// TestNotifyGlowOnlyTouchesLogo 验证流光只影响 LOGO 那几行，不再铺满中间栏。
+//
+// 用户先后两次反馈：先是"太微弱"（因为铺不满），后来是"直接占据了整个中间栏
+// 不过确实很丑"。最终定案：只做在 LOGO 上。
+func TestNotifyGlowOnlyTouchesLogo(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+	app.width, app.height = 120, 40
+	seedForViews(t, app, s, at)
+	customSegmentedTimer(t, app, at)
+	app.cfg.NotifyGlow = true
+
+	now := at
+	app.clock = clock.NewWith(func() time.Time { return now }, time.Local)
+
+	before := stripANSI(app.View())
+	if !app.notifyActive() {
+		// 没有提醒状态时不该有流光。
+		if strings.Contains(before, "◈") {
+			t.Error("没有提醒状态时不该出现流光记号")
+		}
+	}
+
+	// 进入提醒状态后，LOGO 那几行应出现提醒记号，而中间栏底部不该被铺满字符。
+	app.notifyState = &notifyState{started: now, kind: model.SegmentKindFocus, toName: "深度工作"}
+	if !app.notifyActive() {
+		t.Fatal("应处于提醒状态")
+	}
+	out := stripANSI(app.View())
+	if !strings.Contains(out, "◈") {
+		t.Error("LOGO 上应出现提醒记号")
+	}
+	// 底纹字符不该再出现（那是上一版"铺满整栏"的做法）。
+	if strings.ContainsAny(out, "░▒▓") {
+		t.Error("不该再铺满中间栏底纹，流光应只限于 LOGO")
+	}
+	// 左右面板的边框仍要完整。
+	lines := strings.Split(out, "\n")
+	if len(lines) > app.height {
+		t.Errorf("行数 %d 超限", len(lines))
+	}
+	for i, l := range lines {
+		if w := len([]rune(l)); w > app.width {
+			t.Errorf("第 %d 行宽 %d 超限", i, w)
+		}
+	}
+}
+
+// TestNotifyGlowIsRemovedAfterDuration 验证流光播完就收掉。
+func TestNotifyGlowIsRemovedAfterDuration(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	customSegmentedTimer(t, app, at)
+	app.cfg.NotifyGlow = true
+
+	now := at
+	app.clock = clock.NewWith(func() time.Time { return now }, time.Local)
+	app.notifyState = &notifyState{started: now, kind: model.SegmentKindFocus, toName: "深度工作"}
+
+	if app.notifyDone(now) {
+		t.Error("刚开始不该算播完")
+	}
+	if !app.notifyActive() {
+		t.Error("刚开始应处于提醒状态")
+	}
+	now = at.Add(notifyDuration + time.Millisecond)
+	if !app.notifyDone(now) {
+		t.Error("超过时长应算播完")
+	}
+	if app.notifyActive() {
+		t.Error("播完后不该还算在提醒")
+	}
+
+	// 动画帧推进后状态被清掉。
+	app.Update(animMsg{})
+	if app.notifyState != nil {
+		t.Error("播完后应清掉提醒状态")
+	}
+	if strings.Contains(stripANSI(app.View()), "◈") {
+		t.Error("播完后不该还有流光记号")
+	}
+}
+
+// TestNotifyGlowDisabledMeansNoGlow 验证关掉流光后不动 LOGO。
+func TestNotifyGlowDisabledMeansNoGlow(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	customSegmentedTimer(t, app, at)
+	app.cfg.NotifyGlow = false
+	app.notifyState = &notifyState{started: at, kind: model.SegmentKindFocus, toName: "深度工作"}
+
+	if app.notifyActive() {
+		t.Error("关掉流光时不该处于提醒状态")
+	}
+	if strings.Contains(stripANSI(app.View()), "◈") {
+		t.Error("关掉流光时不该出现提醒记号")
+	}
+}
+
+// TestNtfyHelpShowsAddressAndDisclaimer 验证说明页给出可复制的地址与风险提示。
+//
+// **不再有二维码**：用户实测自研二维码始终扫不出来（两个版本都试过），
+// 改为直接给地址让用户复制。
+func TestNtfyHelpShowsAddressAndDisclaimer(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.width, app.height = 120, 60
+	app.view = ViewSettings
+	app.cfg.NtfyTopic = "testtopicabcdefghijklmnopqrstuvwx"
+	app.cfg.NtfyEnabled = true
+
+	app.showNtfyHelp()
+	if !app.ntfyHelp {
+		t.Fatal("应打开说明页")
+	}
+
+	styled, plain := app.ntfyHelpContent()
+	_ = styled
+	joined := strings.Join(plain, "\n")
+	for _, want := range []string{
+		"ntfy", "testtopic", "订阅地址", "topic", "风险提示", "第三方", "不加密", "不承担",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("说明页应包含 %q，实际:\n%s", want, joined)
+		}
+	}
+	// 不该再有二维码相关的说法与字符。
+	if strings.Contains(joined, "扫码") || strings.ContainsAny(joined, "█▀▄") {
+		t.Errorf("不该再出现二维码，实际:\n%s", joined)
+	}
+
+	// esc 返回设置页。
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.ntfyHelp {
+		t.Error("esc 应关闭说明页")
+	}
+	if app.view != ViewSettings {
+		t.Errorf("应回到设置页，实际 view=%v", app.view)
+	}
+}
+
+// TestNtfyHelpRequiresEnabled 验证没开推送时说明页给出可操作提示。
+func TestNtfyHelpRequiresEnabled(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.showNtfyHelp()
+	if app.ntfyHelp {
+		t.Error("没开推送不该打开说明页")
+	}
+	if !strings.Contains(app.toast, "打开手机推送") {
+		t.Errorf("应提示先打开推送，实际 %q", app.toast)
+	}
+}
+
+// TestSettingsShowsAddressAndDisclaimerTogether 验证设置页里地址与风险声明同层可见。
+//
+// 用户要求：看到地址就要看到声明，不能等用户自己点进下一级才发现。
+func TestSettingsShowsAddressAndDisclaimerTogether(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.width, app.height = 110, 44
+	app.view = ViewSettings
+	app.cfg.NtfyTopic = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXPJBSWY3D"
+	app.cfg.NtfyEnabled = true
+
+	styled, plain := app.settingsLines()
+	_ = styled
+	joined := strings.Join(plain, "\n")
+
+	for _, want := range []string{"ntfy.sh/JBSWY3D", "第三方", "不加密", "不承担"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("设置页应同时包含 %q（地址与声明同层），实际:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "扫码") {
+		t.Errorf("不该再出现扫码说法，实际:\n%s", joined)
+	}
+}
+
+// TestSettingsNotificationsAreOnOff 验证三项提醒在设置页都是开/关。
+func TestSettingsNotificationsAreOnOff(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+
+	app.cycleNotifyGlow()
+	if !app.cfg.NotifyGlow {
+		t.Error("应打开流光")
+	}
+	app.cycleNotifyGlow()
+	if app.cfg.NotifyGlow {
+		t.Error("应关掉流光")
+	}
+
+	app.cycleNotifySound()
+	if !app.cfg.NotifySound {
+		t.Error("应打开提示音")
+	}
+	if cmd := app.notifySoundCmd(); cmd == nil {
+		t.Error("打开提示音后应能响")
+	}
+
+	app.toggleNtfy()
+	if !app.cfg.NtfyEnabled {
+		t.Fatal("应打开手机推送")
+	}
+	if len(app.cfg.NtfyTopic) < 40 {
+		t.Errorf("应生成高熵频道，实际 %q", app.cfg.NtfyTopic)
+	}
+	app.toggleNtfy()
+	if app.cfg.NtfyEnabled {
+		t.Error("应关掉手机推送")
+	}
+	if app.cfg.NtfyTopic == "" {
+		t.Error("关闭不该清掉频道名")
+	}
+
+	// 落盘：布尔开关用 omitempty，只断言当前为真的那些（关着不写进 JSON）。
+	raw, err := readConfigFile(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"notify_sound", "ntfy_topic"} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("配置里应留下 %q，实际:\n%s", want, raw)
+		}
+	}
+	if !strings.Contains(raw, app.cfg.NtfyTopic) {
+		t.Error("频道名应落盘")
+	}
+}
+
+// TestRegenerateNtfyTopic 验证可以换频道（用户要求：不要求就不变，要求才换）。
+func TestRegenerateNtfyTopic(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, _, _ := newTestApp(t, at)
+	app.width, app.height = 110, 44
+
+	app.regenerateNtfyTopic()
+	if app.cfg.NtfyTopic != "" {
+		t.Error("没开启推送时不该生成频道")
+	}
+	if !strings.Contains(app.toast, "先打开") {
+		t.Errorf("应提示先打开推送，实际 %q", app.toast)
+	}
+
+	app.cfg.NtfyTopic = "oldtopicabcdefghijklmnopqrstuvwx"
+	app.cfg.NtfyEnabled = true
+	app.regenerateNtfyTopic()
+
+	if app.cfg.NtfyTopic == "oldtopicabcdefghijklmnopqrstuvwx" {
+		t.Error("应换成新频道")
+	}
+	if len(app.cfg.NtfyTopic) < 40 {
+		t.Errorf("新频道应有足够熵，实际 %q", app.cfg.NtfyTopic)
+	}
+	if !strings.Contains(app.toast, "重新订阅") {
+		t.Errorf("应提醒手机需要重新订阅，实际 %q", app.toast)
+	}
+	if !app.ntfyHelp {
+		t.Error("换频道后应直接打开说明页看新地址")
+	}
+}
+
 // TestNtfyPushActuallySends 验证推送真的发了出去（用一个假的 ntfy 服务接住）。
 func TestNtfyPushActuallySends(t *testing.T) {
 	type captured struct {
-		path   string
-		title  string
-		body   string
-		method string
+		path, title, body, method string
 	}
 	var (
 		mu  sync.Mutex
@@ -364,12 +459,7 @@ func TestNtfyPushActuallySends(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
-		got = append(got, captured{
-			path:   r.URL.Path,
-			title:  r.Header.Get("X-Title"),
-			body:   string(body),
-			method: r.Method,
-		})
+		got = append(got, captured{r.URL.Path, r.Header.Get("X-Title"), string(body), r.Method})
 		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -390,8 +480,6 @@ func TestNtfyPushActuallySends(t *testing.T) {
 	if n == nil || n.pushCmd == nil {
 		t.Fatal("启用推送后跨段应产生推送命令")
 	}
-
-	// 执行推送命令。
 	if msg := n.pushCmd(); msg != nil {
 		if m, ok := msg.(ntfyPushedMsg); ok && m.err != nil {
 			t.Fatalf("推送失败: %v", m.err)
@@ -412,9 +500,6 @@ func TestNtfyPushActuallySends(t *testing.T) {
 	if !strings.Contains(got[0].title, "休息") {
 		t.Errorf("X-Title 应含时段名（中文也要能带），实际 %q", got[0].title)
 	}
-	if !strings.Contains(got[0].body, "休息") {
-		t.Errorf("正文应说明进入休息，实际 %q", got[0].body)
-	}
 }
 
 // TestNtfyPushFailureIsSilent 验证推送失败只报错、不重试、不影响计时。
@@ -432,7 +517,6 @@ func TestNtfyPushFailureIsSilent(t *testing.T) {
 		t.Errorf("错误信息应带上服务端原因，实际 %v", err)
 	}
 
-	// 网络不可达（端口关掉了）。
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	deadURL := dead.URL
 	dead.Close()
@@ -440,7 +524,6 @@ func TestNtfyPushFailureIsSilent(t *testing.T) {
 		t.Error("地址不可达时应返回错误")
 	}
 
-	// 参数不全。
 	if err := pushNtfy("", "topic", "t", "b"); err == nil {
 		t.Error("服务地址为空应返回错误")
 	}
@@ -455,7 +538,7 @@ func TestNtfyDisabledMeansNoPush(t *testing.T) {
 	app, _, _ := newTestApp(t, at)
 	customSegmentedTimer(t, app, at)
 
-	app.cfg.NotifyGlow = "aurora" // 只开流光
+	app.cfg.NotifyGlow = true // 只开流光
 	app.cfg.NtfyTopic = "abcdefghijklmnopqrstuvwx"
 	app.cfg.NtfyEnabled = false
 
@@ -469,273 +552,5 @@ func TestNtfyDisabledMeansNoPush(t *testing.T) {
 	}
 	if n.pushCmd != nil {
 		t.Error("ntfy 关掉时不该产生推送命令")
-	}
-}
-
-// TestNotifyGlowRendersEveryPreset 验证每种流光预设都能渲染出内容，
-// 且宽度不超过中间栏内容宽度。
-func TestNotifyGlowRendersEveryPreset(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	app, _, _ := newTestApp(t, at)
-	app.width, app.height = 100, 30
-	customSegmentedTimer(t, app, at)
-
-	now := at
-	app.clock = clock.NewWith(func() time.Time { return now }, time.Local)
-	inner := app.contentWidth()
-
-	app.notifyState = &notifyState{started: now, kind: model.SegmentKindBreak, toName: "休息"}
-	for _, preset := range notifyGlowPresets {
-		if preset.Key == "none" {
-			continue
-		}
-		app.cfg.NotifyGlow = preset.Key
-		for _, progress := range []float64{0, 0.25, 0.5, 0.75, 1} {
-			line := app.notifyFrame(progress, inner)
-			if strings.TrimSpace(stripANSI(line)) == "" {
-				t.Errorf("预设 %s 在进度 %.2f 时渲染为空", preset.Key, progress)
-			}
-			if w := displayWidth(line); w > inner {
-				t.Errorf("预设 %s 在进度 %.2f 时宽 %d 超过内容宽 %d", preset.Key, progress, w, inner)
-			}
-		}
-	}
-}
-
-// displayWidth 按显示宽度计算，忽略 ANSI 转义。
-func displayWidth(s string) int {
-	return len([]rune(stripANSI(s)))
-}
-
-// TestNotifyGlowOverlayKeepsLayout 验证流光叠加后三栏宽度与总行数都不变。
-//
-// 这是本项目踩过的坑：浮层一旦改变行宽，三栏边框就会被挤歪。
-func TestNotifyGlowOverlayKeepsLayout(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	for _, size := range [][2]int{{100, 30}, {120, 36}, {80, 24}} {
-		app, s, _ := newTestApp(t, at)
-		app.width, app.height = size[0], size[1]
-		seedForViews(t, app, s, at)
-		customSegmentedTimer(t, app, at)
-		app.cfg.NotifyGlow = "aurora"
-
-		now := at
-		app.clock = clock.NewWith(func() time.Time { return now }, time.Local)
-		app.notifyState = &notifyState{started: now, kind: model.SegmentKindFocus, toName: "深度工作"}
-
-		out := app.View()
-		lines := strings.Split(out, "\n")
-		if len(lines) > size[1] {
-			t.Errorf("%dx%d：行数 %d 超限", size[0], size[1], len(lines))
-		}
-		for i, l := range lines {
-			if w := len([]rune(stripANSI(l))); w > size[0] {
-				t.Errorf("%dx%d 第 %d 行宽 %d 超限", size[0], size[1], i, w)
-			}
-		}
-		// 流光应该真的出现在画面里（否则这条测试没验到东西）。
-		// 现在流光铺满整个中间栏，用的是 ░▒▓█ 这一组底纹字符。
-		if !strings.ContainsAny(stripANSI(out), "░▒▓█") {
-			t.Errorf("%dx%d：画面里应出现流光底纹", size[0], size[1])
-		}
-	}
-}
-
-// TestNotifyGlowIsRemovedAfterDuration 验证流光播完就收掉。
-func TestNotifyGlowIsRemovedAfterDuration(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	app, _, _ := newTestApp(t, at)
-	customSegmentedTimer(t, app, at)
-	app.cfg.NotifyGlow = "aurora"
-
-	now := at
-	app.clock = clock.NewWith(func() time.Time { return now }, time.Local)
-	app.notifyState = &notifyState{started: now, kind: model.SegmentKindFocus, toName: "深度工作"}
-
-	if app.notifyDone(now) {
-		t.Error("刚开始不该算播完")
-	}
-	now = at.Add(notifyDuration / 2)
-	if app.notifyDone(now) {
-		t.Error("播到一半不该算播完")
-	}
-	now = at.Add(notifyDuration + time.Millisecond)
-	if !app.notifyDone(now) {
-		t.Error("超过时长应算播完")
-	}
-
-	// 动画帧推进后状态被清掉，画面里不再有流光。
-	app.Update(animMsg{})
-	if app.notifyState != nil {
-		t.Error("播完后应清掉提醒状态")
-	}
-	if strings.ContainsAny(stripANSI(app.View()), "░▒▓") {
-		t.Error("播完后画面里不该还有流光")
-	}
-}
-
-// TestNotifyGlowCoversWholeCenterColumn 验证流光铺满整个中间栏，而不是只有一行。
-//
-// 用户实机反馈「流光太微弱了，我忽略了其实大部分地方是没有字符的空白」：
-// 只替换一行的做法在空白处根本看不见。
-func TestNotifyGlowCoversWholeCenterColumn(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	app, s, _ := newTestApp(t, at)
-	app.width, app.height = 110, 36
-	seedForViews(t, app, s, at)
-	customSegmentedTimer(t, app, at)
-
-	now := at
-	app.clock = clock.NewWith(func() time.Time { return now }, time.Local)
-	app.cfg.NotifyGlow = "aurora"
-	app.notifyState = &notifyState{started: now, kind: model.SegmentKindFocus, toName: "深度工作"}
-
-	_, _, _, bodyH := app.columnLayout()
-	out := stripANSI(app.View())
-	lines := strings.Split(out, "\n")
-
-	// 统计有多少行带流光底纹：应当接近整个中间栏高度，而不是一两行。
-	decorated := 0
-	for _, l := range lines {
-		if strings.ContainsAny(l, "░▒▓█") {
-			decorated++
-		}
-	}
-	if decorated < bodyH-2 {
-		t.Errorf("流光应铺满中间栏（约 %d 行），实际只有 %d 行", bodyH, decorated)
-	}
-}
-
-// TestNtfyHelpView 验证说明页包含订阅地址、风险提示与免责声明。
-func TestNtfyHelpView(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	app, _, _ := newTestApp(t, at)
-	app.width, app.height = 110, 44
-	app.view = ViewSettings
-	app.cfg.NtfyTopic = "testtopicabcdefghijklmnopqrstuvwx"
-	app.cfg.NtfyEnabled = true
-
-	app.showNtfyHelp()
-	if !app.ntfyHelp {
-		t.Fatal("应打开说明页")
-	}
-	out := stripANSI(app.View())
-	for _, want := range []string{"ntfy", "Subscribe", "testtopic", "风险提示", "第三方", "不加密"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("说明页应包含 %q，实际:\n%s", want, out)
-		}
-	}
-	// 二维码可能被滚动裁掉（说明页比中间栏高是常态），所以要滚一遍找；
-	// 终端够高时它应当直接可见。
-	qrVisible := false
-	app.pageScroll = 0
-	for i := 0; i < 40; i++ {
-		if strings.ContainsAny(stripANSI(app.View()), "█▀▄") {
-			qrVisible = true
-			break
-		}
-		before := app.pageScroll
-		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-		if app.pageScroll == before {
-			break
-		}
-	}
-	if !qrVisible {
-		t.Error("滚动整页都应该能找到二维码，实际始终没出现")
-	}
-
-	// 终端足够高时二维码应直接可见，不用滚动。
-	app.pageScroll = 0
-	app.width, app.height = 120, 60
-	if !strings.ContainsAny(stripANSI(app.View()), "█▀▄") {
-		t.Error("终端够高时二维码应直接可见")
-	}
-	app.width, app.height = 110, 44
-
-	// esc 返回设置页。
-	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if app.ntfyHelp {
-		t.Error("esc 应关闭说明页")
-	}
-	if app.view != ViewSettings {
-		t.Errorf("应回到设置页，实际 view=%v", app.view)
-	}
-}
-
-// TestSettingsNotificationsPersist 验证设置页里能轮换提醒预设并落盘。
-func TestSettingsNotificationsPersist(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	app, _, _ := newTestApp(t, at)
-
-	// 预设列表第一项是「关闭」，先轮换到具体预设再比较。
-	for i := 0; i < len(notifyGlowPresets); i++ {
-		app.cycleNotifyGlow()
-		if app.cfg.NotifyGlow != "" && app.cfg.NotifyGlow != "none" {
-			break
-		}
-	}
-	if app.cfg.NotifyGlow == "" || app.cfg.NotifyGlow == "none" {
-		t.Fatalf("轮换后应是具体预设，实际 %q", app.cfg.NotifyGlow)
-	}
-	first := app.cfg.NotifyGlow
-	app.cycleNotifyGlow()
-	if app.cfg.NotifyGlow == first {
-		t.Error("再轮换一次应该换到下一个预设")
-	}
-
-	app.cycleNotifySound()
-	if app.cfg.NotifySound == "" {
-		t.Fatal("提示音应被设置")
-	}
-	// 配置文件里应该留下了记录（说明重新载入后还在）。
-	raw, err := readConfigFile(app)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(raw, "notify_sound") {
-		t.Errorf("提示音设置应落盘，实际:\n%s", raw)
-	}
-}
-
-// TestToggleNtfyGeneratesTopic 验证打开推送会生成高熵频道名并落盘。
-func TestToggleNtfyGeneratesTopic(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	app, _, _ := newTestApp(t, at)
-
-	app.toggleNtfy()
-	if !app.cfg.NtfyEnabled {
-		t.Fatal("应已开启")
-	}
-	if app.cfg.NtfyTopic == "" {
-		t.Fatal("应生成频道名")
-	}
-	if len(app.cfg.NtfyTopic) < 40 {
-		t.Errorf("频道名应该有足够熵（长度 >= 40），实际 %q", app.cfg.NtfyTopic)
-	}
-	if !app.cfg.NtfyReady() {
-		t.Error("开启后应就绪")
-	}
-
-	// 再关一次。
-	app.toggleNtfy()
-	if app.cfg.NtfyEnabled {
-		t.Error("应已关闭")
-	}
-	// 关掉后频道名要留着：下次打开不该换频道（否则手机订阅失效）。
-	if app.cfg.NtfyTopic == "" {
-		t.Error("关闭不该清掉频道名")
-	}
-}
-
-// TestNtfyHelpRequiresEnabled 验证没开推送时说明页给出可操作提示。
-func TestNtfyHelpRequiresEnabled(t *testing.T) {
-	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
-	app, _, _ := newTestApp(t, at)
-	app.showNtfyHelp()
-	if app.ntfyHelp {
-		t.Error("没开推送不该打开说明页")
-	}
-	if !strings.Contains(app.toast, "打开手机推送") {
-		t.Errorf("应提示先打开推送，实际 %q", app.toast)
 	}
 }

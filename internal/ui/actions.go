@@ -589,34 +589,31 @@ var settingItems = []settingItem{
 	},
 	// ---------- 时段切换提醒（见需求 3） ----------
 	{
-		Label: "提醒 · 流光（人在屏幕前）",
-		Value: func(a *App) string { return notifyPresetLabel(notifyGlowPresets, a.cfg.NotifyGlow) },
+		Label: "提醒 · 流光（做在 LOGO 上）",
+		Value: func(a *App) string { return onOff(a.cfg.NotifyGlow) },
 		Edit:  (*App).cycleNotifyGlow,
 	},
 	{
-		Label: "提醒 · 提示音（人在设备附近）",
-		Value: func(a *App) string { return notifyPresetLabel(notifySoundPresets, a.cfg.NotifySound) },
+		Label: "提醒 · 提示音（系统响铃）",
+		Value: func(a *App) string { return onOff(a.cfg.NotifySound) },
 		Edit:  (*App).cycleNotifySound,
 	},
 	{
 		Label: "提醒 · 手机推送 ntfy（离机）",
 		Value: func(a *App) string {
-			if !a.cfg.NtfyEnabled {
-				return "关"
-			}
-			return "开"
+			return onOff(a.cfg.NtfyEnabled)
 		},
 		Edit: (*App).toggleNtfy,
 	},
 	{
 		// 地址与声明放在**同一层**：用户看到地址的同时必须看到风险提示，
 		// 不能等他自己点进下一级才发现（用户明确要求）。
-		Label: "提醒 · 手机订阅地址（可扫下面的码）",
+		Label: "提醒 · 手机订阅地址（可复制）",
 		Lines: func(a *App) []string {
 			if !a.cfg.NtfyReady() {
 				return []string{"先打开上一项，程序会生成随机频道"}
 			}
-			return []string{a.cfg.NtfyURL(), "（扫码用：对本项按 enter 打开二维码页）"}
+			return []string{a.cfg.NtfyURL(), "（也可对本项按 enter 打开完整说明页）"}
 		},
 		Edit: (*App).showNtfyHelp,
 	},

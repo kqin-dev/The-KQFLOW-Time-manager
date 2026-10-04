@@ -14,42 +14,17 @@ import (
 
 // 时段切换提醒（见需求 3）。
 //
-// 需求把提醒按「注意力距离」分成三档，这里是这三档的调度中心：
-//   - 人在屏幕前、静音 → 流光特效（中间栏一行）
-//   - 人在设备附近但没看屏幕 → 提示音
-//   - 人离开设备、只带了手机 → ntfy 推送
+// 需求把提醒按「注意力距离」分成三档：人在屏幕前（流光）、人在设备附近但没看
+// 屏幕（提示音）、人离开设备只带了手机（ntfy 推送）。三档各自可关，默认全关。
 //
-// 三者各自可关（配置为空 / none 即关闭），默认全关。
-
-// notifyGlowPresets 是可选流光特效（需求要求提供几种预设，含关闭）。
-var notifyGlowPresets = []struct {
-	Key   string
-	Label string
-}{
-	{"none", "关闭"},
-	{"aurora", "极光（横向扫过的渐变光带）"},
-	{"pulse", "脉动（整行明暗呼吸）"},
-	{"wipe", "扫描（从左到右的亮块）"},
-}
-
-// notifySoundPresets 是可选提示音（需求要求提供几个预制的，含无声音）。
-//
-// "bell" 只用终端响铃：不需要任何音频能力，远程终端 / 精简系统上也能用。
-// 其余是程序合成的短音频（见 notify_sound.go）。
-var notifySoundPresets = []struct {
-	Key   string
-	Label string
-}{
-	{"none", "关闭"},
-	{"bell", "终端响铃（无需音频支持）"},
-	{"bowl", "颂钵（低频、长衰减）"},
-	{"chime", "风铃（清脆、带泛音）"},
-	{"white", "白噪音（一秒沙沙声，淡出）"},
-}
+// 经过实机反馈后收敛为：
+//   - 流光只做在 **Logo 那几行**（用户明确要求）——曾经铺满整个中间栏，很丑。
+//   - 提示音只保留**终端响铃**（用户实测：程序合成的几种都放不出声，而系统响铃
+//     好听且可用）。所以配置里它是个开/关，不再是预设列表。
+//   - ntfy 推送保留（用户实测能正常收到短信），但**不再显示二维码**：
+//     自研二维码在真机上始终扫不出来，改为直接给出订阅地址让用户复制。
 
 // notifyDuration 是流光特效持续时长。
-//
-// 需求要求「足够醒目又没有很强的割裂感」：太短看不见，太长会一直占着中间栏。
 const notifyDuration = 2500 * time.Millisecond
 
 // notifyState 保存一次时段切换提醒的播放状态。
@@ -96,14 +71,18 @@ func (a *App) notifyEnabled() bool {
 	if a.cfg == nil {
 		return false
 	}
-	return a.cfg.EffectiveNotifyGlow() != "" ||
-		a.cfg.EffectiveNotifySound() != "" ||
-		a.cfg.NtfyReady()
+	return a.cfg.NotifyGlow || a.cfg.NotifySound || a.cfg.NtfyReady()
 }
 
-// ---------- 流光特效 ----------
+// notifyActive 报告此刻是否正在播放流光。
+func (a *App) notifyActive() bool {
+	if a.notifyState == nil || a.cfg == nil || !a.cfg.NotifyGlow {
+		return false
+	}
+	return !a.notifyDone(a.clock.Now())
+}
 
-// notifyProgress 返回流光特效的播放进度（0..1）；没在播放时返回 1。
+// notifyProgress 返回流光的播放进度（0..1）；没在播放时返回 1。
 func (a *App) notifyProgress(now time.Time) float64 {
 	if a.notifyState == nil {
 		return 1
@@ -123,21 +102,39 @@ func (a *App) notifyDone(now time.Time) bool {
 	return a.notifyState == nil || now.Sub(a.notifyState.started) >= notifyDuration
 }
 
-// notifyFrame 渲染一次流光；width 是中间栏内容宽度。
-//
-// 刻意做成「一行浮动光带」而不是整屏反色：整屏反色在真实终端里观感很割裂
-// （需求明确说不要），而且会盖掉进度条与计时。这里只占一行，左右面板不动。
-func (a *App) notifyFrame(progress float64, width int) string {
-	if width < 8 || a.notifyState == nil {
-		return ""
-	}
-	preset := a.cfg.EffectiveNotifyGlow()
-	if preset == "" {
-		return ""
-	}
-	progress = clamp01(progress)
+// ---------- 流光：只做在 Logo 上 ----------
 
-	// 淡入淡出：两端各占 25%，避免突然出现又突然消失。
+// notifyColors 返回当前时段对应的两个配色端点。
+func (a *App) notifyColors() (lipgloss.Color, lipgloss.Color) {
+	if a.notifyState == nil {
+		return a.st.Theme.Primary, a.st.Theme.Secondary
+	}
+	switch a.notifyState.kind {
+	case model.SegmentKindBreak:
+		return a.st.Theme.Warning, a.st.Theme.Secondary
+	case "other":
+		return a.st.Theme.Secondary, a.st.Theme.Primary
+	default:
+		return a.st.Theme.Success, a.st.Theme.Primary
+	}
+}
+
+// notifyLogo 渲染提醒期间的 Logo：更亮的配色 + 更快的流动 + 脉冲高亮。
+//
+// 为什么做在 Logo 上：用户明确要求「只局限在 LOGO 所在的那几行」，而 Logo 本来
+// 就有流动渐变，把它"点亮"是最自然、也最不割裂的做法（不用另画一层浮层，
+// 左右面板与中间栏的其它内容都不受影响）。
+func (a *App) notifyLogo(avail int) string {
+	from, to := a.notifyColors()
+	progress := a.notifyProgress(a.clock.Now())
+	// 流动速度加快：正常是 animPhase 匀速推进，这里再叠一个来回摆动。
+	phase := a.animPhase + progress*2.5
+	logo := GradientLogo(from, to, phase, avail)
+	if logo == "" {
+		return ""
+	}
+
+	// 脉冲强度：两端淡入淡出（各占 25%），中间最亮。
 	fade := 1.0
 	switch {
 	case progress < 0.25:
@@ -147,60 +144,221 @@ func (a *App) notifyFrame(progress float64, width int) string {
 	}
 	fade = quantizeFade(fade)
 
-	base, accent := a.st.Theme.Primary, a.st.Theme.Success
-	switch a.notifyState.kind {
-	case model.SegmentKindBreak:
-		base, accent = a.st.Theme.Warning, a.st.Theme.Secondary
-	case "other":
-		base, accent = a.st.Theme.Secondary, a.st.Theme.Primary
+	lines := strings.Split(logo, "\n")
+	pulseStyle := a.fadeStyle(to, fade*0.9)
+	mark := pulseStyle.Render("◈")
+
+	// 首尾各加一个记号：让"正在提醒"这件事在没有颜色差异的终端里也看得出来。
+	out := make([]string, 0, len(lines))
+	for i, l := range lines {
+		pad := "  "
+		if i == 0 || i == len(lines)-1 {
+			pad = mark + " "
+		}
+		out = append(out, pad+l)
 	}
-	dim := a.fadeStyle(base, fade*0.35)
-	mid := a.fadeStyle(base, fade)
-	hot := a.fadeStyle(accent, fade)
+	return strings.Join(out, "\n")
+}
 
-	switch preset {
-	case "pulse":
-		head := " ◈ " + a.notifyState.toName + " 即将开始 "
-		if lipgloss.Width(head) >= width {
-			return a.st.Accent.Bold(true).Render(truncate(head, width))
-		}
-		body := strings.Repeat("─", width-lipgloss.Width(head))
-		return mid.Render(head + body)
+// ---------- 提示音：只保留终端响铃 ----------
 
-	case "wipe":
-		pos := int(progress * float64(width))
-		var b strings.Builder
-		for i := 0; i < width; i++ {
-			if abs(i-pos) <= 3 {
-				b.WriteString(hot.Render("━"))
-			} else {
-				b.WriteString(dim.Render("─"))
-			}
-		}
-		return b.String()
-
-	default: // aurora
-		head := " ◈ " + a.notifyState.toName + " 即将开始 "
-		headW := lipgloss.Width(head)
-		if headW >= width {
-			return a.st.Accent.Bold(true).Render(truncate(head, width))
-		}
-		body := width - headW
-		pos := int(progress * float64(body))
-		var b strings.Builder
-		for i := 0; i < body; i++ {
-			d := abs(i - pos)
-			switch {
-			case d <= 2:
-				b.WriteString(hot.Render("━"))
-			case d <= 6:
-				b.WriteString(mid.Render("━"))
-			default:
-				b.WriteString(dim.Render("─"))
-			}
-		}
-		return a.st.Accent.Bold(true).Render(head) + b.String()
+// notifySoundCmd 返回播放提示音的命令。
+//
+// 只保留"终端响铃"：用户实测程序合成的几种音频在本机都放不出声（分别试过
+// PowerShell SoundPlayer 与脱离进程的播放），而系统响铃好听且可用。所以这个
+// 开关不再需要预设列表——要么响，要么不响。
+//
+// 响铃不直接写在这里，而是发一个消息让下一帧输出 `\a`：响铃属于渲染副作用，
+// 不该在 Update 里直接动界面状态。
+func (a *App) notifySoundCmd() tea.Cmd {
+	if a.cfg == nil || !a.cfg.NotifySound {
+		return nil
 	}
+	return func() tea.Msg { return bellMsg{} }
+}
+
+// bellMsg 让下一帧输出响铃字符。
+type bellMsg struct{}
+
+// ---------- 推送文案 ----------
+
+// notifyText 返回推送用的标题与正文。
+func (a *App) notifyText(seg model.Segment) (title, body string) {
+	label := a.timer.name
+	if label == "" {
+		label = "自由专注"
+	}
+	title = "KQFLOW · " + seg.Name
+	if seg.Kind == model.SegmentKindBreak {
+		body = "休息时间到了（" + label + "）"
+	} else {
+		body = "进入「" + seg.Name + "」，继续加油"
+	}
+	return title, body
+}
+
+// ---------- 手机推送说明页 ----------
+
+// ntfyHelpContent 渲染「手机推送怎么用」的说明，只占中间栏。
+//
+// **不再有二维码**：自研的二维码在真机上始终扫不出来（两个版本都试过），
+// 与其放一个扫不了的东西，不如老老实实把订阅地址给全，让用户复制。
+// 地址很长，所以按行折好、并提示可以直接选中复制。
+//
+// 用户要求：看到地址就要看到风险声明，所以两者在同一页里紧挨着。
+func (a *App) ntfyHelpContent() (styled, plain []string) {
+	inner := a.contentWidth()
+	url := a.cfg.NtfyURL()
+
+	add := func(s, p string) {
+		styled = append(styled, s)
+		plain = append(plain, p)
+	}
+	add(a.st.ModalTitle.Render(truncate("手机推送 / ntfy.sh", inner)), "手机推送 / ntfy.sh")
+	add("", "")
+	add(a.st.Text.Render(truncate("1. 手机安装 ntfy App（应用商店搜 ntfy）", inner)),
+		"1. 手机安装 ntfy App（应用商店搜 ntfy）")
+	add(a.st.Text.Render(truncate("2. 在 App 里点 Subscribe to topic，把下面这个地址的", inner)),
+		"2. 在 App 里点 Subscribe to topic，把下面这个地址的")
+	add(a.st.Text.Render(truncate("   最后一段（/ 后面那串）填进 topic，或直接用地址订阅。", inner)),
+		"   最后一段（/ 后面那串）填进 topic，或直接用地址订阅。")
+	add("", "")
+
+	// 地址：分行给出，便于终端里选中复制。
+	add(a.st.Muted.Render(truncate("订阅地址（可选中复制）：", inner)), "订阅地址（可选中复制）：")
+	for _, l := range wrapBalanced(url, max(8, inner-2)) {
+		add(a.st.Accent.Bold(true).Render(truncate("   "+l, inner)), "   "+l)
+	}
+	add("", "")
+	add(a.st.Muted.Render(truncate("频道名（topic）：", inner)), "频道名（topic）：")
+	add(a.st.Accent.Render(truncate("   "+a.cfg.NtfyTopic, inner)), "   "+a.cfg.NtfyTopic)
+	add("", "")
+
+	if config.NtfyTopicIsWeak(a.cfg.NtfyTopic) {
+		add(a.st.Warn.Render(truncate("⚠ 当前频道名偏短，容易被猜到，建议在设置里重新生成", inner)),
+			"⚠ 当前频道名偏短，容易被猜到，建议在设置里重新生成")
+		add("", "")
+	}
+
+	add(a.st.Muted.Render(truncate("风险提示：", inner)), "风险提示：")
+	for _, l := range wrapBalanced(config.NotifyDisclaimer, max(8, inner)) {
+		add(a.st.Muted.Render(truncate(l, inner)), l)
+	}
+	add("", "")
+	add(a.st.Muted.Render(truncate("j/k 滚动 · esc / q 返回", inner)), "j/k 滚动 · esc / q 返回")
+	return styled, plain
+}
+
+// handleNtfyHelpKey 处理说明页的按键（支持滚动）。
+func (a *App) handleNtfyHelpKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "q", "?":
+		a.ntfyHelp = false
+		a.pageScroll = 0
+		a.view = ViewSettings
+	case "j", "down":
+		a.pageScroll++
+	case "k", "up":
+		if a.pageScroll > 0 {
+			a.pageScroll--
+		}
+	case "g", "home":
+		a.pageScroll = 0
+	case "ctrl+c":
+		a.quitting = true
+		return a, tea.Quit
+	}
+	return a, nil
+}
+
+// ---------- 设置项 ----------
+
+// cycleNotifyGlow 开关流光。
+func (a *App) cycleNotifyGlow() {
+	a.cfg.NotifyGlow = !a.cfg.NotifyGlow
+	a.saveConfig()
+	a.setToast("流光提示："+onOff(a.cfg.NotifyGlow), toastInfo)
+}
+
+// cycleNotifySound 开关提示音（只保留终端响铃）。
+func (a *App) cycleNotifySound() {
+	a.cfg.NotifySound = !a.cfg.NotifySound
+	a.saveConfig()
+	a.setToast("提示音（系统响铃）："+onOff(a.cfg.NotifySound), toastInfo)
+	// 开启时立刻响一声，让用户确认真的能响。
+	if cmd := a.notifySoundCmd(); cmd != nil {
+		a.hearingCmd = cmd
+	}
+}
+
+// onOff 把布尔值写成中文开关文案。
+func onOff(v bool) string {
+	if v {
+		return "开"
+	}
+	return "关"
+}
+
+// toggleNtfy 开关手机推送；开启时若还没有频道名就生成一个高熵频道。
+//
+// 频道名由程序生成而不是让用户起：ntfy 频道默认全网公开，靠用户的安全意识去
+// 避免被猜到是不现实的（用户明确要求 CLI 替用户把关）。
+func (a *App) toggleNtfy() {
+	a.cfg.NtfyEnabled = !a.cfg.NtfyEnabled
+	if !a.cfg.NtfyEnabled {
+		a.saveConfig()
+		a.setToast("手机推送已关闭", toastInfo)
+		return
+	}
+	generated, isNew := a.cfg.EffectiveNtfyTopic()
+	a.saveConfig()
+	if generated == "" {
+		a.setToast("生成频道名失败，推送未启用", toastErr)
+		a.cfg.NtfyEnabled = false
+		a.saveConfig()
+		return
+	}
+	if isNew {
+		a.setToast("已开启手机推送并生成随机频道；订阅地址已显示在设置页", toastInfo)
+		return
+	}
+	a.setToast("手机推送已开启", toastInfo)
+}
+
+// regenerateNtfyTopic 换一个手机频道（用户明确要求：不要求就不变，要求才换）。
+//
+// 换频道会让手机上的旧订阅失效，所以必须把后果说清楚。
+func (a *App) regenerateNtfyTopic() {
+	if !a.cfg.NtfyReady() {
+		a.setToast("先打开上一项「手机推送」，程序会先生成一个频道", toastWarn)
+		return
+	}
+	old := a.cfg.NtfyTopic
+	topic, err := config.GenerateNtfyTopic()
+	if err != nil {
+		a.setToast("生成新频道失败："+err.Error(), toastErr)
+		return
+	}
+	if topic == old {
+		// 概率极低（256 位熵），真出现就再取一次。
+		a.setToast("生成重复频道，请再试一次", toastWarn)
+		return
+	}
+	a.cfg.NtfyTopic = topic
+	a.cfg.NtfyEnabled = true
+	a.saveConfig()
+	a.setToast("已换新频道：手机需要重新订阅一次（旧频道已失效）", toastInfo)
+	// 换完直接打开说明页，用户不用再找入口就能复制新地址。
+	a.showNtfyHelp()
+}
+
+// showNtfyHelp 打开说明页（订阅地址 + 风险提示）。
+func (a *App) showNtfyHelp() {
+	if !a.cfg.NtfyReady() {
+		a.setToast("先在上一项打开手机推送，程序会生成频道", toastWarn)
+		return
+	}
+	a.ntfyHelp = true
 }
 
 // fadeStyle 返回一个按系数往背景色靠拢的颜色样式。
@@ -211,6 +369,18 @@ func (a *App) fadeStyle(c lipgloss.Color, factor float64) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(blendHex(
 		string(c), string(a.st.Theme.Bg), clamp01(factor),
 	)))
+}
+
+// ---------- 小工具 ----------
+
+func clamp01(f float64) float64 {
+	if f < 0 {
+		return 0
+	}
+	if f > 1 {
+		return 1
+	}
+	return f
 }
 
 // quantizeFade 把连续淡入淡出量化到有限档位，减少每帧生成的颜色数量。
@@ -256,289 +426,4 @@ func parseHex(s string) (r, g, b int, ok bool) {
 		return 0, 0, 0, false
 	}
 	return int(v >> 16 & 0xff), int(v >> 8 & 0xff), int(v & 0xff), true
-}
-
-// ---------- 提示音 ----------
-
-// notifySoundCmd 返回播放提示音的命令。
-//
-// "bell" 直接让终端响一声（项目里已有响铃机制）；其余走内置合成音频。
-// 播放是「尽力而为」：没有音频设备、被沙箱拦住都只是没声音，绝不能影响计时。
-func (a *App) notifySoundCmd() tea.Cmd {
-	switch a.cfg.EffectiveNotifySound() {
-	case "":
-		return nil
-	case "bell":
-		return func() tea.Msg { return bellMsg{} }
-	default:
-		name := a.cfg.EffectiveNotifySound()
-		return func() tea.Msg {
-			return soundPlayedMsg{name: name, err: playBuiltinSound(name)}
-		}
-	}
-}
-
-// bellMsg 让下一帧输出响铃字符。
-type bellMsg struct{}
-
-// soundPlayedMsg 报告提示音播放结果；失败只提示一次，不影响计时。
-type soundPlayedMsg struct {
-	name string
-	err  error
-}
-
-// ---------- 推送文案 ----------
-
-// notifyText 返回推送用的标题与正文。
-func (a *App) notifyText(seg model.Segment) (title, body string) {
-	label := a.timer.name
-	if label == "" {
-		label = "自由专注"
-	}
-	title = "KQFLOW · " + seg.Name
-	if seg.Kind == model.SegmentKindBreak {
-		body = "休息时间到了（" + label + "）"
-	} else {
-		body = "进入「" + seg.Name + "」，继续加油"
-	}
-	return title, body
-}
-
-// ---------- 设置项 ----------
-
-// notifyPresetLabel 返回预设的展示名；空值或未知值回退到「关闭」。
-func notifyPresetLabel(presets []struct {
-	Key   string
-	Label string
-}, key string) string {
-	if strings.TrimSpace(key) == "" {
-		return "关闭"
-	}
-	for _, p := range presets {
-		if p.Key == key {
-			return p.Label
-		}
-	}
-	return "关闭"
-}
-
-// nextPreset 返回列表里的下一个预设名（末项回到第一项）。
-func nextPreset(presets []struct {
-	Key   string
-	Label string
-}, current string) string {
-	for i, p := range presets {
-		if p.Key == current {
-			return presets[(i+1)%len(presets)].Key
-		}
-	}
-	// 未知值（例如手改成别的）从第一项重新开始。
-	if len(presets) == 0 {
-		return ""
-	}
-	return presets[0].Key
-}
-
-// cycleNotifyGlow 轮换流光预设并落盘。
-func (a *App) cycleNotifyGlow() {
-	a.cfg.NotifyGlow = nextPreset(notifyGlowPresets, a.cfg.NotifyGlow)
-	a.saveConfig()
-	a.setToast("流光提示："+notifyPresetLabel(notifyGlowPresets, a.cfg.NotifyGlow), toastInfo)
-}
-
-// cycleNotifySound 轮换提示音预设并落盘。
-//
-// 选到具体音效时顺手安排一次试听：否则用户要等到下次时段切换才知道自己选了什么。
-// 试听通过 a.hearingCmd 交给设置页的按键处理回传（见 activateSetting）。
-func (a *App) cycleNotifySound() {
-	a.cfg.NotifySound = nextPreset(notifySoundPresets, a.cfg.NotifySound)
-	a.saveConfig()
-	a.setToast("提示音："+notifyPresetLabel(notifySoundPresets, a.cfg.NotifySound), toastInfo)
-	if cmd := a.notifySoundCmd(); cmd != nil {
-		a.hearingCmd = cmd
-	}
-}
-
-// regenerateNtfyTopic 换一个手机频道（用户明确要求：不要求就不变，要求才换）。
-//
-// 换频道会让手机上的旧订阅失效，所以必须把后果说清楚，并给出下一步怎么做。
-func (a *App) regenerateNtfyTopic() {
-	if !a.cfg.NtfyReady() {
-		a.setToast("先打开上一项「手机推送」，程序会先生成一个频道", toastWarn)
-		return
-	}
-	old := a.cfg.NtfyTopic
-	topic, err := config.GenerateNtfyTopic()
-	if err != nil {
-		a.setToast("生成新频道失败："+err.Error(), toastErr)
-		return
-	}
-	a.cfg.NtfyTopic = topic
-	a.cfg.NtfyEnabled = true
-	a.saveConfig()
-	if old == topic {
-		// 概率极低（256 位熵），真出现就再取一次。
-		a.setToast("生成重复频道，请再试一次", toastWarn)
-		return
-	}
-	a.setToast("已换新频道：手机需要重新订阅一次（原始频道已失效）", toastInfo)
-	// 换完直接打开说明页，用户不用再找入口就能扫新码。
-	a.showNtfyHelp()
-}
-
-// toggleNtfy 开关手机推送；开启时若还没有频道名就生成一个高熵频道。
-//
-// 频道名由程序生成而不是让用户起：ntfy 频道默认全网公开，靠用户的安全意识去
-// 避免被猜到是不现实的（用户明确要求 CLI 替用户把关）。
-func (a *App) toggleNtfy() {
-	a.cfg.NtfyEnabled = !a.cfg.NtfyEnabled
-	if !a.cfg.NtfyEnabled {
-		a.saveConfig()
-		a.setToast("手机推送已关闭", toastInfo)
-		return
-	}
-	generated, isNew := a.cfg.EffectiveNtfyTopic()
-	a.saveConfig()
-	if generated == "" {
-		a.setToast("生成频道名失败，推送未启用", toastErr)
-		a.cfg.NtfyEnabled = false
-		a.saveConfig()
-		return
-	}
-	if isNew {
-		a.setToast("已开启手机推送并生成随机频道；订阅地址已显示在设置页", toastInfo)
-		return
-	}
-	a.setToast("手机推送已开启", toastInfo)
-}
-
-// showNtfyHelp 打开一条说明：订阅地址、二维码、风险提示。
-//
-// 手机端不用手打频道名——扫描二维码或直接打开订阅地址即可。
-func (a *App) showNtfyHelp() {
-	if !a.cfg.NtfyReady() {
-		a.setToast("先在上一项打开手机推送，程序会生成频道", toastWarn)
-		return
-	}
-	a.ntfyHelp = true
-}
-
-// ---------- 手机推送说明页 ----------
-
-// ntfyHelpContent 渲染「手机推送怎么用」的说明，只占中间栏。
-//
-// 返回 styled / plain 两份并交给 pageContent：说明文字 + 二维码很容易比中间栏高，
-// 走 pageContent 才能自动裁剪并按 j/k 滚动。直接字符串拼接会把页脚顶出屏幕
-// （这个 bug 在离屏预览里被看到过）。
-func (a *App) ntfyHelpContent() (styled, plain []string) {
-	inner := a.contentWidth()
-	url := a.cfg.NtfyURL()
-
-	add := func(s, p string) {
-		styled = append(styled, s)
-		plain = append(plain, p)
-	}
-	add(a.st.ModalTitle.Render(truncate("手机推送 / ntfy.sh", inner)), "手机推送 / ntfy.sh")
-	add("", "")
-	add(a.st.Text.Render(truncate("1. 手机安装 ntfy App（应用商店搜 ntfy）", inner)),
-		"1. 手机安装 ntfy App（应用商店搜 ntfy）")
-	add(a.st.Text.Render(truncate("2. 扫描下面的二维码，或直接打开这个地址订阅：", inner)),
-		"2. 扫描下面的二维码，或直接打开这个地址订阅：")
-	add("", "")
-	for _, l := range wrapBalanced(url, max(8, inner-4)) {
-		add(a.st.Accent.Render(truncate("   "+l, inner)), "   "+l)
-	}
-	add("", "")
-
-	// 二维码：半块字符，一个字符表示竖向两个模块。
-	//
-	// 上限按**字符列数**算，不是模块数：renderQR 返回的宽度包含四周静默区。
-	// 曾经把 41（模块数）当成列数上限传进去，而实际需要 45 列，于是渲染一直
-	// 失败、二维码被静默跳过——用户看到的就是"没有二维码"。
-	//
-	// 地址太长或栏太窄时逐档降低版本上限（宁可码小一点，也不能因为差一两列
-	// 就完全没有码）。53 列对应 v5，37 列对应 v3，29 列对应 v1。
-	qrWidth := inner - 3
-	if qrWidth < 0 {
-		qrWidth = 0
-	}
-	var qr []string
-	var qrErr error
-	for _, cap := range []int{53, 45, 37, 29} {
-		if cap > qrWidth {
-			continue
-		}
-		if qr, qrErr = renderQR(url, cap); qrErr == nil && len(qr) > 0 {
-			break
-		}
-	}
-	switch {
-	case len(qr) > 0:
-		for _, l := range qr {
-			// 缩进 3 列，与上下的说明文字对齐。
-			add(a.st.Text.Render(truncate("   "+l, inner)), "   "+l)
-		}
-		add(a.st.Muted.Render(truncate("   （扫码后点 Subscribe 即可）", inner)), "   （扫码后点 Subscribe 即可）")
-	case qrErr != nil:
-		add(a.st.Muted.Render(truncate("   （这一栏放不下二维码："+qrErr.Error()+"）", inner)),
-			"   （这一栏放不下二维码："+qrErr.Error()+"）")
-		add(a.st.Muted.Render(truncate("   把终端拉宽一些再进来，或用上面的地址手动订阅。", inner)),
-			"   把终端拉宽一些再进来，或用上面的地址手动订阅。")
-	}
-	add("", "")
-
-	if config.NtfyTopicIsWeak(a.cfg.NtfyTopic) {
-		add(a.st.Warn.Render(truncate("⚠ 当前频道名偏短，容易被猜到，建议重新生成", inner)),
-			"⚠ 当前频道名偏短，容易被猜到，建议重新生成")
-		add("", "")
-	}
-
-	add(a.st.Muted.Render(truncate("风险提示：", inner)), "风险提示：")
-	for _, l := range wrapBalanced(config.NotifyDisclaimer, max(8, inner)) {
-		add(a.st.Muted.Render(truncate(l, inner)), l)
-	}
-	add("", "")
-	add(a.st.Muted.Render(truncate("j/k 滚动 · esc / q 返回", inner)), "j/k 滚动 · esc / q 返回")
-	return styled, plain
-}
-
-// handleNtfyHelpKey 处理说明页的按键（支持滚动）。
-func (a *App) handleNtfyHelpKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc", "q", "?":
-		a.ntfyHelp = false
-		a.pageScroll = 0
-		a.view = ViewSettings
-	case "j", "down":
-		a.pageScroll++
-	case "k", "up":
-		if a.pageScroll > 0 {
-			a.pageScroll--
-		}
-	case "g", "home":
-		a.pageScroll = 0
-	case "ctrl+c":
-		a.quitting = true
-		return a, tea.Quit
-	}
-	return a, nil
-}
-
-// ---------- 小工具 ----------
-
-func clamp01(f float64) float64 {
-	if f < 0 {
-		return 0
-	}
-	if f > 1 {
-		return 1
-	}
-	return f
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
 }

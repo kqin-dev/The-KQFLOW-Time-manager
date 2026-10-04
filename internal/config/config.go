@@ -87,11 +87,14 @@ type Config struct {
 	// 但没看屏幕（提示音）、人离开设备只带了手机（ntfy 推送）。
 	// 每一项都能关掉，默认全关——需要装 App、需要联网的功能不该默认打开。
 
-	// NotifyGlow 是流光特效的预设名；空或 "none" 表示关闭。
-	NotifyGlow string `json:"notify_glow,omitempty"`
-	// NotifySound 是提示音的预设名；空或 "none" 表示关闭。
-	// "bell" 只用终端响铃（不需要任何音频能力），其余是内置合成音。
-	NotifySound string `json:"notify_sound,omitempty"`
+	// NotifyGlow 打开时段切换的流光提示（做在 LOGO 上）。
+	NotifyGlow bool `json:"notify_glow,omitempty"`
+	// NotifySound 打开时段切换的提示音。
+	//
+	// **只保留系统响铃**：程序曾经用代码合成过颂钵/风铃/白噪音三种音频并通过
+	// PowerShell 播放，但用户实测在本机都放不出声，而系统响铃好听且可用。
+	// 所以它是个开关而不是预设列表（见 internal/ui/notify.go）。
+	NotifySound bool `json:"notify_sound,omitempty"`
 	// NtfyTopic 是用户订阅的 ntfy.sh 频道名。
 	//
 	// ntfy.sh 的频道默认是**全网公开**的：知道名字的人都能收到、也能发。
@@ -404,24 +407,6 @@ const NotifyDisclaimer = "ntfy.sh 是独立的第三方开源推送服务，KQFL
 	"只是把消息发到你指定的地址。ntfy 的频道默认不加密、且全网可读：" +
 	"知道频道名的人都能收到消息、也能往里发。请不要把这个频道名告诉陌生人；" +
 	"收到来源不明的消息不要轻信。由此造成的任何损失，KQFLOW 不承担责任。"
-
-// EffectiveNotifyGlow 返回生效的流光预设（空表示关闭）。
-func (c *Config) EffectiveNotifyGlow() string {
-	v := strings.TrimSpace(c.NotifyGlow)
-	if v == "" || v == "none" {
-		return ""
-	}
-	return v
-}
-
-// EffectiveNotifySound 返回生效的提示音预设（空表示关闭）。
-func (c *Config) EffectiveNotifySound() string {
-	v := strings.TrimSpace(c.NotifySound)
-	if v == "" || v == "none" {
-		return ""
-	}
-	return v
-}
 
 // NtfyReady 报告推送是否已就绪（开了开关且频道名非空）。
 func (c *Config) NtfyReady() bool {

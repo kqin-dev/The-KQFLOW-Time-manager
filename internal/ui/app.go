@@ -323,16 +323,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, animCmd()
 
 	case bellMsg:
-		// 让下一帧输出响铃字符（终端响铃预设）。
+		// 让下一帧输出响铃字符（提示音就是终端响铃，见 notify.go）。
 		if a.timer != nil {
 			a.timer.bell = true
-		}
-		return a, nil
-
-	case soundPlayedMsg:
-		// 播放失败只提示一次，不影响计时。
-		if m.err != nil {
-			a.setToast("提示音播放失败："+m.err.Error(), toastWarn)
 		}
 		return a, nil
 

@@ -33,7 +33,7 @@ func (a *App) View() string {
 		return clipBlock(a.renderCenterBox(a.stopConfirmContent()), a.width, a.height)
 	}
 	// 手机推送说明页（见需求 3）：盖住中间栏、左右面板保持可见。
-	// 走 pageContent 以便裁剪与滚动——说明文字加二维码比中间栏高是常态。
+	// 走 pageContent 以便裁剪与滚动——说明文字比中间栏高是常态。
 	if a.ntfyHelp {
 		styled, plain := a.ntfyHelpContent()
 		return clipBlock(a.renderCenterBox(a.pageContent(styled, plain, -1)), a.width, a.height)
@@ -76,132 +76,8 @@ func (a *App) View() string {
 		if a.timer != nil && a.timer.consumeBell() {
 			base = "\a" + base
 		}
-		// 时段切换的流光提示（见需求 3）：覆盖在中间栏顶部一行，不动左右面板。
-		if a.notifyState != nil && !a.notifyDone(a.clock.Now()) {
-			base = a.overlayNotifyGlow(base)
-		}
 		return base
 	}
-}
-
-// overlayNotifyGlow 把流光提示铺在整个中间栏上。
-//
-// 用户实机反馈「流光太微弱了，我忽略了其实大部分地方是没有字符的空白」。
-// 所以不再只替换一行，而是：
-//   - 每一行都按进度画一条移动的渐变光带（在空白处也能看见）；
-//   - 中间栏的内容（选项、字条等）仍保留，只是被光带"扫过"时提亮；
-//   - 左右面板一个像素都不动。
-//
-// 列位置一律按**显示宽度**算（conventions 第 1 条）：中文占两列，用 rune 下标
-// 切会把汉字劈成两半、也会算错左右栏边界。
-func (a *App) overlayNotifyGlow(base string) string {
-	leftW, centerW, _, bodyH := a.columnLayout()
-	inner := centerW - a.st.Panel.GetHorizontalFrameSize()
-	if inner < 8 || bodyH < 4 {
-		return base
-	}
-
-	lines := strings.Split(base, "\n")
-	// 中间栏内容区：从第 2 行（第 1 行是面板上边框）起，共 bodyH 行。
-	start := 2
-	end := start + bodyH
-	if end > len(lines) {
-		end = len(lines)
-	}
-	if start >= end {
-		return base
-	}
-
-	progress := a.notifyProgress(a.clock.Now())
-
-	// 内容列的起点：左栏宽度 + 中间栏左边框 + 内边距。
-	col := leftW + 2
-	for y := start; y < end; y++ {
-		plain := stripANSI(lines[y])
-		if lipgloss.Width(plain) < col {
-			continue
-		}
-		// 每一行错开一点相位，光带看起来是斜着扫过去的。
-		rowPhase := float64(y-start) / float64(max(1, end-start))
-		band := a.notifyBand(progress, rowPhase, inner)
-		patched := replaceColumns(plain, band, col, col+inner)
-		if lipgloss.Width(patched) != lipgloss.Width(plain) {
-			continue
-		}
-		lines[y] = patched
-	}
-	return strings.Join(lines, "\n")
-}
-
-// notifyColors 返回当前时段的底色与强调色。
-func (a *App) notifyColors() (lipgloss.Color, lipgloss.Color) {
-	if a.notifyState == nil {
-		return a.st.Theme.Primary, a.st.Theme.Success
-	}
-	switch a.notifyState.kind {
-	case model.SegmentKindBreak:
-		return a.st.Theme.Warning, a.st.Theme.Secondary
-	case "other":
-		return a.st.Theme.Secondary, a.st.Theme.Primary
-	default:
-		return a.st.Theme.Primary, a.st.Theme.Success
-	}
-}
-
-// notifyBand 生成一行宽 width 的光带。
-//
-// preset 决定形态：
-//   - aurora：一条斜向扫过的亮带；
-//   - wipe：一条竖直的亮带从左扫到右；
-//   - pulse：整行明暗呼吸。
-//
-// phase 是行偏移（0..1），用来制造斜向错位。
-func (a *App) notifyBand(progress, phase float64, width int) string {
-	preset := a.cfg.EffectiveNotifyGlow()
-	if preset == "" || width <= 0 {
-		return ""
-	}
-	base, accent := a.notifyColors()
-	// 淡入淡出：两端各占 25%。
-	fade := 1.0
-	switch {
-	case progress < 0.25:
-		fade = progress / 0.25
-	case progress > 0.75:
-		fade = (1 - progress) / 0.25
-	}
-	fade = quantizeFade(fade)
-
-	if preset == "pulse" {
-		// 整行呼吸：用淡色字符铺满，空白处也能看见明暗变化。
-		return a.fadeStyle(base, fade*0.55).Render(strings.Repeat("·", width))
-	}
-
-	// 光带中心位置（含行偏移带来的斜向）。progress=0 时在左端，=1 时到右端。
-	pos := int((progress + phase*0.35) * float64(width-1))
-	hot := a.fadeStyle(accent, fade)
-	mid := a.fadeStyle(base, fade*0.8)
-	dim := a.fadeStyle(base, fade*0.3)
-
-	var b strings.Builder
-	for x := 0; x < width; x++ {
-		d := x - pos
-		if d < 0 {
-			d = -d
-		}
-		switch {
-		case d <= 2:
-			b.WriteString(hot.Render("█"))
-		case d <= 6:
-			b.WriteString(mid.Render("▓"))
-		case d <= 11:
-			b.WriteString(dim.Render("▒"))
-		default:
-			// 远处也留一层极淡的底纹：用户说空白太多，全空就看不见特效。
-			b.WriteString(dim.Render("░"))
-		}
-	}
-	return b.String()
 }
 
 // replaceColumns 把 s 里显示列区间 [start, end) 的内容替换成 fill。
@@ -998,7 +874,18 @@ func (a *App) centerContent(width, height int) string {
 	}
 
 	// Logo：按可用宽度自动选字形，绝不让它折行。
-	logo := GradientLogo(a.st.Theme.Primary, a.st.Theme.Secondary, a.animPhase, inner)
+	//
+	// 时段切换提醒就做在 Logo 上（见 notifyLogo）：Logo 本来就有流动渐变，这里
+	// 在提醒期间换更亮的配色、加速流动并叠加脉冲高亮。用户明确要求"只局限在
+	// LOGO 所在的那几行"——之前铺满整个中间栏确实很丑。
+	logoFrom, logoTo, logoPhase := a.st.Theme.Primary, a.st.Theme.Secondary, a.animPhase
+	logo := ""
+	if a.notifyActive() {
+		logo = a.notifyLogo(inner)
+	}
+	if logo == "" {
+		logo = GradientLogo(logoFrom, logoTo, logoPhase, inner)
+	}
 	var logoLines []string
 	if logo != "" {
 		logoLines = strings.Split(logo, "\n")

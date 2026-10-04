@@ -154,28 +154,22 @@ func TestNotifyDisclaimerWording(t *testing.T) {
 	}
 }
 
-// TestEffectiveNotifyPresets 验证提醒预设的生效判定（空与 none 都表示关闭）。
-func TestEffectiveNotifyPresets(t *testing.T) {
+// TestNotifySwitches 验证提醒开关的默认值与独立开关语义。
+//
+// 默认全关：需要装 App、需要联网的功能不该默认打开。
+// 三项都是**开/关**（提示音只保留系统响铃，不再是预设列表——用户实测程序合成
+// 的几种音频都放不出声）。
+func TestNotifySwitches(t *testing.T) {
 	cfg := Default()
-	if cfg.EffectiveNotifyGlow() != "" || cfg.EffectiveNotifySound() != "" {
-		t.Error("默认应该都是关闭的")
+	if cfg.NotifyGlow || cfg.NotifySound || cfg.NtfyEnabled {
+		t.Error("三项提醒默认都应关闭")
 	}
 
-	cfg.NotifyGlow = "none"
-	if cfg.EffectiveNotifyGlow() != "" {
-		t.Error("none 应等同于关闭")
-	}
-	cfg.NotifyGlow = "aurora"
-	if cfg.EffectiveNotifyGlow() != "aurora" {
-		t.Errorf("应返回 aurora，实际 %q", cfg.EffectiveNotifyGlow())
-	}
-
-	cfg.NotifySound = "none"
-	if cfg.EffectiveNotifySound() != "" {
-		t.Error("none 应等同于关闭")
-	}
-	cfg.NotifySound = "bowl"
-	if cfg.EffectiveNotifySound() != "bowl" {
-		t.Errorf("应返回 bowl，实际 %q", cfg.EffectiveNotifySound())
+	cfg.NotifyGlow = true
+	cfg.NotifySound = true
+	cfg.NtfyTopic = "abcdefghijklmnopqrstuvwx"
+	cfg.NtfyEnabled = true
+	if !cfg.NtfyReady() {
+		t.Error("都打开且填了频道后应就绪")
 	}
 }
