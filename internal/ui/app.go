@@ -347,13 +347,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case timerDoneMsg:
 		if a.timer != nil {
 			a.timer.finished = true
-			a.setToast("计时时段已完成，按 enter 结束并归档", toastInfo)
 			// 最后一个时段走完时也要提醒。
 			//
 			// 用户实测指出：状态改变时会触发提示，但最后一个状态结束却没有——
-			// 这不合直觉（"结束了"恰恰是最需要知道的一次）。这里单独补一次：
-			// 跨段检测靠 lastSeg 变化，而走完最后一段时它不再变化，所以必须在
-			// 计时自然结束这条路上触发。
+			// 这不合直觉（"结束了"恰恰是最需要知道的一次）。跨段检测靠 lastSeg
+			// 变化，而走完最后一段时它不再变化，所以必须在这里单独补一次。
+			cmds := []tea.Cmd{}
 			if a.notifyEnabled() {
 				_, seg, _ := a.timer.segment(a.clock.Now())
 				a.notifyState = &notifyState{
@@ -362,13 +361,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					toName:  seg.Name + " 已结束",
 					pushCmd: a.ntfyPushCmd(seg),
 				}
-				cmds := []tea.Cmd{animCmd()}
+				cmds = append(cmds, animCmd())
 				if sc := a.notifySoundCmd(); sc != nil {
 					cmds = append(cmds, sc)
 				}
 				if a.notifyState.pushCmd != nil {
 					cmds = append(cmds, a.notifyState.pushCmd)
 				}
+			}
+
+			// 走完就自动结束并归档（可在设置里打开）。
+			if a.cfg != nil && a.cfg.AutoArchiveOnFinish {
+				a.stopTimer(false)
+				cmds = append(cmds, saveCmd(a.saveDay))
+				// 归档本身也是一次"完成了"的提醒：发光收尾由 stopTimer 的 toast 承担。
+				return a, tea.Batch(cmds...)
+			}
+
+			a.setToast("计时时段已完成，按 p 菜单确认结束并归档", toastInfo)
+			if len(cmds) > 0 {
 				return a, tea.Batch(cmds...)
 			}
 		}

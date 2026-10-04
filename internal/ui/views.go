@@ -389,8 +389,11 @@ func (a *App) settingsLines() (styled, plain []string) {
 		plain = append(plain, p)
 	}
 	add(a.st.Title.Render("设置 / Settings"), "设置 / Settings")
-	sub := "日界线决定“今天”从几点开始，熬夜可设为 04:00。"
-	add(a.st.Muted.Render(truncate(sub, inner)), sub)
+	// 说明与底部提示都要按内宽折行，不能只 truncate：截断会让用户以为话没说完
+	// （而超宽的行会被终端折行、把面板撑歪）。这条曾经就是超宽的。
+	for _, l := range wrap("日界线决定“今天”从几点开始，熬夜可设为 04:00。", inner) {
+		add(a.st.Muted.Render(l), l)
+	}
 	add("", "")
 
 	for i, item := range settingItems {
@@ -409,7 +412,12 @@ func (a *App) settingsLines() (styled, plain []string) {
 				if strings.TrimSpace(l) == "" {
 					continue
 				}
-				for _, wl := range wrapBalanced(l, max(8, inner-4)) {
+				// 缩进 4 列后必须仍然放得下：折行宽度取 inner-4，再逐行截断兜底。
+				// 用贪心的 wrap（不是 wrapBalanced）：这里要的是"一行尽可能多装、
+				// 一定装得下"，均衡折行反而可能让某行更短、看起来像少了字。
+				// 用户报过"风险提示显示不全"——长中文一旦超出内宽就会被终端折行，
+				// 折行的后半段看起来就像丢了内容。
+				for _, wl := range wrap(l, max(8, inner-4)) {
 					sub := truncate("    "+wl, inner)
 					add(a.st.Muted.Render(sub), sub)
 				}
@@ -435,9 +443,10 @@ func (a *App) settingsLines() (styled, plain []string) {
 		addSettingRow(&styled, &plain, a, i, item, text, inner)
 	}
 
-	hint := "  j/k 或 ↑/↓ 选择 · enter/e 编辑 · esc 返回看板"
 	add("", "")
-	add(a.st.Muted.Render(truncate(hint, inner)), hint)
+	for _, l := range wrap("  j/k 或 ↑/↓ 选择 · enter/e 编辑 · esc 返回看板", inner) {
+		add(a.st.Muted.Render(l), l)
+	}
 	return styled, plain
 }
 

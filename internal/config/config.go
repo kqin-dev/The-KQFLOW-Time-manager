@@ -108,6 +108,13 @@ type Config struct {
 	// 与「填了 Topic」分开：需求明确要求「可以填了但是关掉」。
 	NtfyEnabled bool `json:"ntfy_enabled,omitempty"`
 
+	// AutoArchiveOnFinish 决定专注时段走完后要不要**自动结束并归档**。
+	//
+	// 默认 false：走完最后一段后停在"已完成"，等你按 p 菜单确认再归档。这样
+	// 时长不会在你不注意的时候被定成"完成"，也不会因为手滑被当成中断。
+	// 打开后则走完即刻归档，适合"设好就不管"的用法。
+	AutoArchiveOnFinish bool `json:"auto_archive_on_finish,omitempty"`
+
 	// ShowNote 决定是否在看板上展示当日随手记的前几行。
 	ShowNote bool `json:"show_note,omitempty"`
 	// Timezone 为空时使用系统本地时区。

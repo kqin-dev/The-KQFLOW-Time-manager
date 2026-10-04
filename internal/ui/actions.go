@@ -640,6 +640,26 @@ var settingItems = []settingItem{
 		Edit: (*App).regenerateNtfyTopic,
 	},
 	{
+		Label: "提醒 · 测试（流光 + 提示音 + 推送）",
+		Value: func(a *App) string {
+			if !a.notifyEnabled() {
+				return "先打开上面任意一项"
+			}
+			return "按 enter 立刻演示一次"
+		},
+		Edit: (*App).demoNotify,
+	},
+	{
+		Label: "专注结束时自动结束并归档",
+		Value: func(a *App) string {
+			if a.cfg.AutoArchiveOnFinish {
+				return "开（走完即刻归档）"
+			}
+			return "关（停住，按 p 菜单确认）"
+		},
+		Edit: (*App).toggleAutoArchive,
+	},
+	{
 		Label: "配置文件",
 		Value: func(a *App) string { return a.pathsForSave().ConfigFile },
 	},

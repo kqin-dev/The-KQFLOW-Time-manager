@@ -183,10 +183,13 @@ type bellMsg struct{}
 // ---------- 推送文案 ----------
 
 // notifyText 返回推送用的标题与正文。
+//
+// 必须容忍**没有正在进行的计时**：设置页里的「测试」按钮随时可能按下，那时
+// a.timer 是 nil（曾经因此 panic 过，被测试抓到）。
 func (a *App) notifyText(seg model.Segment) (title, body string) {
-	label := a.timer.name
-	if label == "" {
-		label = "自由专注"
+	label := "自由专注"
+	if a.timer != nil && a.timer.name != "" {
+		label = a.timer.name
 	}
 	title = "KQFLOW · " + seg.Name
 	if seg.Kind == model.SegmentKindBreak {
@@ -369,6 +372,64 @@ func (a *App) fadeStyle(c lipgloss.Color, factor float64) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(blendHex(
 		string(c), string(a.st.Theme.Bg), clamp01(factor),
 	)))
+}
+
+// toggleAutoArchive 开关「专注结束时自动结束并归档」。
+func (a *App) toggleAutoArchive() {
+	a.cfg.AutoArchiveOnFinish = !a.cfg.AutoArchiveOnFinish
+	a.saveConfig()
+	if a.cfg.AutoArchiveOnFinish {
+		a.setToast("专注走完会立刻结束并归档，不用再确认", toastInfo)
+		return
+	}
+	a.setToast("专注走完会停住等你确认（按 p 菜单结束）", toastInfo)
+}
+
+// demoNotify 立刻演示一次提醒：流光 + 提示音 + 手机推送。
+//
+// 用户要求加一个测试功能，理由是前三项都得等到"时段切换"才能看到效果，验证
+// 成本太高。这里就地把三种提醒都触发一次，让用户马上知道哪一项没生效。
+//
+// 每一项独立判断：只打开了的才会执行，并在提示里说清这次跑了哪几项、哪几项
+// 因为没开而跳过——否则"点了没反应"用户无从判断。
+func (a *App) demoNotify() {
+	if !a.notifyEnabled() {
+		a.setToast("三项提醒都没打开，先在设置里打开至少一项", toastWarn)
+		return
+	}
+
+	now := a.clock.Now()
+	demoSeg := model.Segment{Name: "测试提醒", Kind: model.SegmentKindFocus}
+	a.notifyState = &notifyState{
+		started: now,
+		kind:    demoSeg.Kind,
+		toName:  "测试提醒",
+		pushCmd: a.ntfyPushCmd(demoSeg),
+	}
+
+	ran := []string{}
+	cmds := []tea.Cmd{animCmd()}
+	if a.cfg.NotifyGlow {
+		ran = append(ran, "流光")
+	} else {
+		ran = append(ran, "流光（未开）")
+	}
+	if sc := a.notifySoundCmd(); sc != nil {
+		ran = append(ran, "提示音")
+		cmds = append(cmds, sc)
+	} else {
+		ran = append(ran, "提示音（未开）")
+	}
+	if a.notifyState.pushCmd != nil {
+		ran = append(ran, "手机推送")
+		cmds = append(cmds, a.notifyState.pushCmd)
+	} else {
+		ran = append(ran, "手机推送（未开）")
+	}
+
+	a.setToast("测试："+strings.Join(ran, " · "), toastInfo)
+	// 命令通过 hearingCmd 交给设置页的按键处理回传（与试听同一机制）。
+	a.hearingCmd = tea.Batch(cmds...)
 }
 
 // ---------- 小工具 ----------
