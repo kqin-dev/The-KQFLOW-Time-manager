@@ -359,6 +359,33 @@ func (a *App) cycleNotifySound() {
 	}
 }
 
+// regenerateNtfyTopic 换一个手机频道（用户明确要求：不要求就不变，要求才换）。
+//
+// 换频道会让手机上的旧订阅失效，所以必须把后果说清楚，并给出下一步怎么做。
+func (a *App) regenerateNtfyTopic() {
+	if !a.cfg.NtfyReady() {
+		a.setToast("先打开上一项「手机推送」，程序会先生成一个频道", toastWarn)
+		return
+	}
+	old := a.cfg.NtfyTopic
+	topic, err := config.GenerateNtfyTopic()
+	if err != nil {
+		a.setToast("生成新频道失败："+err.Error(), toastErr)
+		return
+	}
+	a.cfg.NtfyTopic = topic
+	a.cfg.NtfyEnabled = true
+	a.saveConfig()
+	if old == topic {
+		// 概率极低（256 位熵），真出现就再取一次。
+		a.setToast("生成重复频道，请再试一次", toastWarn)
+		return
+	}
+	a.setToast("已换新频道：手机需要重新订阅一次（原始频道已失效）", toastInfo)
+	// 换完直接打开说明页，用户不用再找入口就能扫新码。
+	a.showNtfyHelp()
+}
+
 // toggleNtfy 开关手机推送；开启时若还没有频道名就生成一个高熵频道。
 //
 // 频道名由程序生成而不是让用户起：ntfy 频道默认全网公开，靠用户的安全意识去
@@ -379,7 +406,7 @@ func (a *App) toggleNtfy() {
 		return
 	}
 	if isNew {
-		a.setToast("已开启手机推送，并生成了一个随机频道", toastInfo)
+		a.setToast("已开启手机推送并生成随机频道；订阅地址已显示在设置页", toastInfo)
 		return
 	}
 	a.setToast("手机推送已开启", toastInfo)
@@ -423,15 +450,40 @@ func (a *App) ntfyHelpContent() (styled, plain []string) {
 	}
 	add("", "")
 
-	// 二维码：半块字符，一个字符表示竖向两个模块，省一半高度。
-	if qr, err := renderQR(url, min(inner-6, 41)); err == nil && len(qr) > 0 {
+	// 二维码：半块字符，一个字符表示竖向两个模块。
+	//
+	// 上限按**字符列数**算，不是模块数：renderQR 返回的宽度包含四周静默区。
+	// 曾经把 41（模块数）当成列数上限传进去，而实际需要 45 列，于是渲染一直
+	// 失败、二维码被静默跳过——用户看到的就是"没有二维码"。
+	//
+	// 地址太长或栏太窄时逐档降低版本上限（宁可码小一点，也不能因为差一两列
+	// 就完全没有码）。53 列对应 v5，37 列对应 v3，29 列对应 v1。
+	qrWidth := inner - 3
+	if qrWidth < 0 {
+		qrWidth = 0
+	}
+	var qr []string
+	var qrErr error
+	for _, cap := range []int{53, 45, 37, 29} {
+		if cap > qrWidth {
+			continue
+		}
+		if qr, qrErr = renderQR(url, cap); qrErr == nil && len(qr) > 0 {
+			break
+		}
+	}
+	switch {
+	case len(qr) > 0:
 		for _, l := range qr {
+			// 缩进 3 列，与上下的说明文字对齐。
 			add(a.st.Text.Render(truncate("   "+l, inner)), "   "+l)
 		}
 		add(a.st.Muted.Render(truncate("   （扫码后点 Subscribe 即可）", inner)), "   （扫码后点 Subscribe 即可）")
-	} else {
-		add(a.st.Muted.Render(truncate("   （二维码生成失败，请手动输入上面的地址）", inner)),
-			"   （二维码生成失败，请手动输入上面的地址）")
+	case qrErr != nil:
+		add(a.st.Muted.Render(truncate("   （这一栏放不下二维码："+qrErr.Error()+"）", inner)),
+			"   （这一栏放不下二维码："+qrErr.Error()+"）")
+		add(a.st.Muted.Render(truncate("   把终端拉宽一些再进来，或用上面的地址手动订阅。", inner)),
+			"   把终端拉宽一些再进来，或用上面的地址手动订阅。")
 	}
 	add("", "")
 

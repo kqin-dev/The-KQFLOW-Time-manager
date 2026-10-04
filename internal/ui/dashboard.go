@@ -84,43 +84,131 @@ func (a *App) View() string {
 	}
 }
 
-// overlayNotifyGlow 把流光提示叠在中间栏的第一行内容上。
+// overlayNotifyGlow 把流光提示铺在整个中间栏上。
 //
-// 只替换一行、只动中间栏：需求要求「足够醒目又没有很强的割裂感」，整屏反色会
-// 盖掉进度条与计时，左右面板的边框也会被切出断口（本项目踩过这个坑）。
+// 用户实机反馈「流光太微弱了，我忽略了其实大部分地方是没有字符的空白」。
+// 所以不再只替换一行，而是：
+//   - 每一行都按进度画一条移动的渐变光带（在空白处也能看见）；
+//   - 中间栏的内容（选项、字条等）仍保留，只是被光带"扫过"时提亮；
+//   - 左右面板一个像素都不动。
 //
-// 这里的列位置一律按**显示宽度**算（conventions 第 1 条）：中文占两列，
-// 用 rune 下标切会把汉字劈成两半、也会算错左右栏的边界。
+// 列位置一律按**显示宽度**算（conventions 第 1 条）：中文占两列，用 rune 下标
+// 切会把汉字劈成两半、也会算错左右栏边界。
 func (a *App) overlayNotifyGlow(base string) string {
-	leftW, centerW, _, _ := a.columnLayout()
+	leftW, centerW, _, bodyH := a.columnLayout()
 	inner := centerW - a.st.Panel.GetHorizontalFrameSize()
-	line := a.notifyFrame(a.notifyProgress(a.clock.Now()), inner)
-	if strings.TrimSpace(line) == "" {
+	if inner < 8 || bodyH < 4 {
 		return base
 	}
 
 	lines := strings.Split(base, "\n")
-	// 第 0 行是页头，第 1 行是面板上边框，第 2 行是面板第一行内容。
-	const row = 2
-	if len(lines) <= row {
+	// 中间栏内容区：从第 2 行（第 1 行是面板上边框）起，共 bodyH 行。
+	start := 2
+	end := start + bodyH
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if start >= end {
 		return base
 	}
 
-	// 替换中间栏内容区那一段列范围。`leftW + 1` 是中间栏左边框，再 +1 是内边距。
-	plain := stripANSI(lines[row])
-	start := leftW + 2
-	end := start + inner
-	patched := replaceColumns(plain, line, start, end)
-	// 长度必须不变，否则整行宽度会变、把三栏挤歪。
-	if lipgloss.Width(patched) != lipgloss.Width(plain) {
-		return base
+	progress := a.notifyProgress(a.clock.Now())
+
+	// 内容列的起点：左栏宽度 + 中间栏左边框 + 内边距。
+	col := leftW + 2
+	for y := start; y < end; y++ {
+		plain := stripANSI(lines[y])
+		if lipgloss.Width(plain) < col {
+			continue
+		}
+		// 每一行错开一点相位，光带看起来是斜着扫过去的。
+		rowPhase := float64(y-start) / float64(max(1, end-start))
+		band := a.notifyBand(progress, rowPhase, inner)
+		patched := replaceColumns(plain, band, col, col+inner)
+		if lipgloss.Width(patched) != lipgloss.Width(plain) {
+			continue
+		}
+		lines[y] = patched
 	}
-	lines[row] = patched
 	return strings.Join(lines, "\n")
 }
 
-// replaceColumns 把 s 里显示列区间 [start, end) 的内容替换成 fill，
-// 并按原区间的显示宽度补齐或截断，保证整串宽度不变。
+// notifyColors 返回当前时段的底色与强调色。
+func (a *App) notifyColors() (lipgloss.Color, lipgloss.Color) {
+	if a.notifyState == nil {
+		return a.st.Theme.Primary, a.st.Theme.Success
+	}
+	switch a.notifyState.kind {
+	case model.SegmentKindBreak:
+		return a.st.Theme.Warning, a.st.Theme.Secondary
+	case "other":
+		return a.st.Theme.Secondary, a.st.Theme.Primary
+	default:
+		return a.st.Theme.Primary, a.st.Theme.Success
+	}
+}
+
+// notifyBand 生成一行宽 width 的光带。
+//
+// preset 决定形态：
+//   - aurora：一条斜向扫过的亮带；
+//   - wipe：一条竖直的亮带从左扫到右；
+//   - pulse：整行明暗呼吸。
+//
+// phase 是行偏移（0..1），用来制造斜向错位。
+func (a *App) notifyBand(progress, phase float64, width int) string {
+	preset := a.cfg.EffectiveNotifyGlow()
+	if preset == "" || width <= 0 {
+		return ""
+	}
+	base, accent := a.notifyColors()
+	// 淡入淡出：两端各占 25%。
+	fade := 1.0
+	switch {
+	case progress < 0.25:
+		fade = progress / 0.25
+	case progress > 0.75:
+		fade = (1 - progress) / 0.25
+	}
+	fade = quantizeFade(fade)
+
+	if preset == "pulse" {
+		// 整行呼吸：用淡色字符铺满，空白处也能看见明暗变化。
+		return a.fadeStyle(base, fade*0.55).Render(strings.Repeat("·", width))
+	}
+
+	// 光带中心位置（含行偏移带来的斜向）。progress=0 时在左端，=1 时到右端。
+	pos := int((progress + phase*0.35) * float64(width-1))
+	hot := a.fadeStyle(accent, fade)
+	mid := a.fadeStyle(base, fade*0.8)
+	dim := a.fadeStyle(base, fade*0.3)
+
+	var b strings.Builder
+	for x := 0; x < width; x++ {
+		d := x - pos
+		if d < 0 {
+			d = -d
+		}
+		switch {
+		case d <= 2:
+			b.WriteString(hot.Render("█"))
+		case d <= 6:
+			b.WriteString(mid.Render("▓"))
+		case d <= 11:
+			b.WriteString(dim.Render("▒"))
+		default:
+			// 远处也留一层极淡的底纹：用户说空白太多，全空就看不见特效。
+			b.WriteString(dim.Render("░"))
+		}
+	}
+	return b.String()
+}
+
+// replaceColumns 把 s 里显示列区间 [start, end) 的内容替换成 fill。
+//
+// fill 必须**自带正确的显示宽度**（由调用方保证），这里不做截断：fill 里可能带
+// ANSI 转义，按显示宽度切它会切坏转义序列（conventions 第 1 条：带样式的字符串
+// 不能直接量宽度，也不能直接切片）。宽度不符时原样返回，宁可这次不画也不画坏。
 func replaceColumns(s, fill string, start, end int) string {
 	if start < 0 {
 		start = 0
@@ -128,13 +216,11 @@ func replaceColumns(s, fill string, start, end int) string {
 	if end < start {
 		end = start
 	}
-	// 目标宽度：原区间在 s 里实际占用的列数（可能因为宽字符略有出入）。
 	target := lipgloss.Width(displayRange(s, start, end))
-
-	head := takeColumns(s, start)
-	tail := dropColumns(s, end)
-	middle := fitColumns(fill, target)
-	return head + middle + tail
+	if lipgloss.Width(fill) != target {
+		return s
+	}
+	return takeColumns(s, start) + fill + dropColumns(s, end)
 }
 
 // takeColumns 取 s 里前 n 个显示列的内容。
@@ -176,6 +262,8 @@ func displayRange(s string, start, end int) string {
 }
 
 // fitColumns 把 s 调整为正好 width 个显示列：短了补空格，长了按列截断。
+//
+// 只用于**纯文本**（无 ANSI）；带样式的字符串不能这样切。
 func fitColumns(s string, width int) string {
 	if width <= 0 {
 		return ""
@@ -188,6 +276,17 @@ func fitColumns(s string, width int) string {
 		return s + strings.Repeat(" ", width-got)
 	}
 	return truncateCells(s, width)
+}
+
+// notifyBanner 返回流光期间显示在中间栏顶部的时段提示文本（纯文本，无样式）。
+//
+// 光带本身只有颜色，没有文字；用户在空白处看到光带但不知道"换到什么时段了"，
+// 所以顶部补一句。
+func (a *App) notifyBanner(width int) string {
+	if a.notifyState == nil {
+		return ""
+	}
+	return truncate("◈ "+a.notifyState.toName+" 即将开始", width)
 }
 
 // stripANSI 去掉 ANSI 转义序列，用于按显示宽度处理带样式的行。
@@ -256,6 +355,16 @@ func (a *App) viewTooSmall() string {
 // 看板与中间栏内容（二级菜单、输入框、二级页）共用这一份计算，
 // 保证它们永远落在中间栏里，不会盖住左右两侧的边框。
 func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
+	// 手机推送说明页要在中间栏里放二维码，需要更宽的版面（见 ntfyHelpContent）。
+	//
+	// 这里是「两栏排版」：左栏照常显示 TODAY TODO，中间栏吃掉整个右栏的宽度，
+	// 不再渲染 GOAL。这是本项目唯一一处不按三栏排版的地方，理由具体且有限：
+	// 二维码的最小可用宽度（v2 起就要 37 列）在 110 列终端下会被三栏均分挤到
+	// 44 列，正好放不下；而让用户在手机上装完 App 再回来把终端拉宽是最差的体验。
+	if a.ntfyHelp {
+		return a.twoColumnLayout()
+	}
+
 	header := a.renderHeader()
 	footer := a.renderFooter()
 	bodyH = a.height - lipgloss.Height(header) - lipgloss.Height(footer)
@@ -301,6 +410,34 @@ func (a *App) columnLayout() (leftW, centerW, rightW, bodyH int) {
 		rightW = max(0, a.width-leftW-centerW)
 	}
 	return leftW, centerW, rightW, bodyH
+}
+
+// twoColumnLayout 是手机推送说明页用的两栏排版：左栏照常，中间栏吃到右栏。
+//
+// 这样中间栏宽度在 110 列终端下从 46 变成 76，二维码（v3 需 45 列）就能放下。
+// 只影响说明页，看板与其它二级页仍是标准三栏。
+func (a *App) twoColumnLayout() (leftW, centerW, rightW, bodyH int) {
+	header := a.renderHeader()
+	footer := a.renderFooter()
+	bodyH = a.height - lipgloss.Height(header) - lipgloss.Height(footer)
+	if bodyH < 6 {
+		bodyH = 6
+	}
+
+	leftW = 34
+	if a.width < 110 {
+		leftW = 28
+	}
+	if a.width < 90 {
+		leftW = 24
+	}
+	const minCenterWidth = 40
+	centerW = a.width - leftW
+	if centerW < minCenterWidth && leftW > 18 {
+		leftW = max(18, a.width-minCenterWidth)
+		centerW = a.width - leftW
+	}
+	return leftW, centerW, 0, bodyH
 }
 
 // renderDashboard 组装主看板：左 TODO、中选项、右 GOAL、下进度条（见需求 5）。

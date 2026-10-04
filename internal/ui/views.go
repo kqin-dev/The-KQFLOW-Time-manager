@@ -394,7 +394,28 @@ func (a *App) settingsLines() (styled, plain []string) {
 	add("", "")
 
 	for i, item := range settingItems {
-		value := item.Value(a)
+		value := ""
+		if item.Value != nil {
+			value = item.Value(a)
+		}
+		// 多行项：标签一行，内容按行展开（用于地址 + 声明这种必须完整展示的内容）。
+		if item.Lines != nil {
+			text := truncate("▸ "+item.Label, inner)
+			if a.settingsCursor != i {
+				text = truncate("  "+item.Label, inner)
+			}
+			addSettingRow(&styled, &plain, a, i, item, text, inner)
+			for _, l := range item.Lines(a) {
+				if strings.TrimSpace(l) == "" {
+					continue
+				}
+				for _, wl := range wrapBalanced(l, max(8, inner-4)) {
+					sub := truncate("    "+wl, inner)
+					add(a.st.Muted.Render(sub), sub)
+				}
+			}
+			continue
+		}
 		marker := "  "
 		if i == a.settingsCursor {
 			marker = "▸ "

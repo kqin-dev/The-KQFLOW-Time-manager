@@ -60,6 +60,21 @@ var qrAlignCenters = [][]int{
 	{6, 28, 50}, // v10
 }
 
+// qrQuietZone 是静默区宽度（模块数）。
+//
+// **标准要求 4 个模块**，这不是可选的：静默区不足时手机摄像头无法可靠地定位
+// 三个定位图案。用户实机扫码失败后复查发现这里曾经只留了 1 个模块。
+const qrQuietZone = 4
+
+// qrModuleChars 是每个模块横向占用的字符数。
+//
+// **必须是 1**。终端字符大致是「宽 1 : 高 2」，而一个字符行通过半块字符能表示
+// **两个**模块行。所以「横向 1 个字符 + 纵向半行」才是 1:1 的物理方形。
+//
+// 曾经设成 2（以为要"补上"高度），结果横向 2 字符 + 纵向半行 = 4:1 —— 二维码
+// 在终端里被拉成两倍宽，手机完全识别不出是二维码。这正是用户实机反馈的根因。
+const qrModuleChars = 1
+
 // QRMaxBytes 报告本编码器能容纳的最大字节数。
 func qrMaxBytes() int {
 	last := qrVersionsL[len(qrVersionsL)-1]
@@ -71,47 +86,101 @@ func qrDataCapacity(v qrECBlock) int {
 	return v.group1Blocks*v.group1Data + v.group2Blocks*(v.group1Data+1)
 }
 
+// qrRenderWidth 返回把模块数 n 画出来需要的字符列数（含静默区）。
+//
+// 与 renderQR 里的 contentWidth 必须是同一个算式：静默边距 + [静默区 → 模块区
+// → 静默区] + 静默边距 = (n + 4*静默区) 个模块。
+func qrRenderWidth(n int) int {
+	return (n + 4*qrQuietZone) * qrModuleChars
+}
+
+// qrRenderHeight 返回把模块数 n 画出来需要的字符行数（含静默区）。
+//
+// 内容部分从模块行 −静默区 开始、每次吃掉两个模块行，共 (n+2*静默区+1)/2 行
+// （模块行数为奇数时最后多出半行）；上下再各加 qrRenderQuietTop/Bottom 行
+// 纯空白。三者必须与 renderQR 里的循环完全一致，否则测试会拿错误的行数断言。
+func qrRenderHeight(n int) int {
+	return (n+2*qrQuietZone+1)/2 + qrRenderQuietTop() + qrRenderQuietBottom()
+}
+
+// qrRenderQuietTop 返回顶部静默占用的字符行数。
+func qrRenderQuietTop() int { return 2 }
+
+// qrRenderQuietBottom 返回底部静默占用的字符行数。
+func qrRenderQuietBottom() int { return 2 }
+
 // renderQR 把文本编码成二维码，用半块字符画出来。
 //
-// 一个字符表示竖向两个模块（▀ ▄ █ 空格），所以行数只有模块数的一半，
-// 在终端里不至于占满一屏。
+// 布局（这是能在终端里被扫出来的关键）：
+//   - 每个模块横向 1 个字符（见 qrModuleChars）。
+//   - 每个字符行表示纵向 2 个模块（上半个用 ▀，下半个用 ▄，两个都深用 █）。
+//     两者合起来才让模块在终端里是方的。
+//   - 四周留够 4 个模块的静默区（标准要求，不是可选项）。
+//
+// maxWidth 是可用字符列数；放不下时返回错误，由调用方回退成「手输地址」。
 func renderQR(text string, maxWidth int) ([]string, error) {
 	matrix, err := qrEncode([]byte(text))
 	if err != nil {
 		return nil, err
 	}
 	n := len(matrix)
-	if maxWidth > 0 && n > maxWidth {
-		// 太宽就画不下了；如实报错，由调用方回退成「手输地址」。
-		return nil, fmt.Errorf("二维码宽度 %d 超过可用列数 %d", n, maxWidth)
+	width := qrRenderWidth(n)
+	if maxWidth > 0 && width > maxWidth {
+		return nil, fmt.Errorf("二维码需要 %d 列，可用 %d 列", width, maxWidth)
 	}
 
-	// 半块输出：每行合并两个模块行，并在左右各留一格静默区（标准要求 4 格，
-	// 但终端里给 1 格就足够扫码，还能省列宽）。
-	quiet := 1
+	quietCols := qrQuietZone * qrModuleChars
+	blank := strings.Repeat(" ", quietCols)
+	quietRows := qrRenderQuietTop()
+	// 内容行宽度必须与 qrRenderWidth 用同一个算式，否则空白行与内容行宽度不一致。
+	//
+	// 一行的组成是：静默边距 + [静默区 → 模块区 → 静默区] + 静默边距。
+	// 中括号里的范围已经是 n + 2*静默区 个模块，两侧还要各再留 qrQuietZone 个
+	// 模块的边距，所以总宽是 (n + 4*静默区) * 每模块字符数。
+	// 曾经写成 (n + 2*静默区) * 每模块字符数，结果静默行 82 列、内容行 98 列，
+	// 二维码在终端里左右被裁掉——这正是手机认不出来的原因之一。
+	contentWidth := (n + 4*qrQuietZone) * qrModuleChars
+
+	// 取模块值：越界（静默区）一律视为浅色。
+	dark := func(y, x int) bool {
+		if y < 0 || y >= n || x < 0 || x >= n {
+			return false
+		}
+		return matrix[y][x]
+	}
+
 	var out []string
-	for y := 0; y < n; y += 2 {
+	// 顶部静默区：整行空白，宽度与内容行一致。
+	for i := 0; i < quietRows; i++ {
+		out = append(out, strings.Repeat(" ", contentWidth))
+	}
+	// 内容：两行模块合成一行字符。
+	for top := -qrQuietZone; top < n+qrQuietZone; top += 2 {
 		var b strings.Builder
-		b.WriteString(strings.Repeat(" ", quiet))
-		for x := 0; x < n; x++ {
-			top := matrix[y][x]
-			bottom := false
-			if y+1 < n {
-				bottom = matrix[y+1][x]
-			}
+		b.WriteString(blank)
+		for x := -qrQuietZone; x < n+qrQuietZone; x++ {
+			up := dark(top, x)
+			down := dark(top+1, x)
+			ch := " "
 			switch {
-			case top && bottom:
-				b.WriteString("█")
-			case top && !bottom:
-				b.WriteString("▀")
-			case !top && bottom:
-				b.WriteString("▄")
-			default:
-				b.WriteString(" ")
+			case up && down:
+				ch = "█"
+			case up:
+				ch = "▀"
+			case down:
+				ch = "▄"
+			}
+			// 横向重复：保证模块是方的。
+			for i := 0; i < qrModuleChars; i++ {
+				b.WriteString(ch)
 			}
 		}
-		b.WriteString(strings.Repeat(" ", quiet))
+		b.WriteString(blank)
 		out = append(out, b.String())
+	}
+	// 底部静默区。
+	for i := 0; i < qrRenderQuietBottom(); i++ {
+		out = append(out, strings.Repeat(" ", contentWidth))
 	}
 	return out, nil
 }

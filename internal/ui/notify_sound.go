@@ -201,7 +201,50 @@ func encodeWAV(samples []float64) []byte {
 	return b.Bytes()
 }
 
-// builtinSoundFile 把合成结果写到临时文件并返回路径。
+// builtinSoundDir 返回一个**确实可写**的目录来放合成音频。
+//
+// 用户实机报过 `mkdir C:\Users\...\Temp\kqflow-sounds: Access is denied`：某些
+// 受限环境（沙箱、受管终端、只读配置文件系统）里 %TEMP% 不可写。所以这里按
+// 「用户自己的目录优先」逐个候选试建，第一个能写进去的才用。
+//
+// 顺序的考虑：LOCALAPPDATA 是用户自己的可写区域，最稳；接着 APPDATA 与用户
+// 主目录；再退回 %TEMP%；最后是可执行文件同级（便携版场景下那里也可写）。
+func builtinSoundDir() (string, error) {
+	for _, dir := range builtinSoundDirCandidates() {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			continue
+		}
+		// 目录存在不代表能写（可能是只读目录），实际写一个探针文件确认。
+		probe := filepath.Join(dir, ".write-test")
+		if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+			continue
+		}
+		_ = os.Remove(probe)
+		return dir, nil
+	}
+	return "", fmt.Errorf("没有可写的目录（试过 %d 个候选位置）", len(builtinSoundDirCandidates()))
+}
+
+// builtinSoundDirCandidates 返回候选目录，按优先级排列。
+func builtinSoundDirCandidates() []string {
+	var out []string
+	if v := os.Getenv("LOCALAPPDATA"); v != "" {
+		out = append(out, filepath.Join(v, "KQFLOW", "sounds"))
+	}
+	if v := os.Getenv("APPDATA"); v != "" {
+		out = append(out, filepath.Join(v, "KQFLOW", "sounds"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		out = append(out, filepath.Join(home, ".kqflow", "sounds"))
+	}
+	out = append(out, filepath.Join(os.TempDir(), "kqflow-sounds"))
+	if exe, err := os.Executable(); err == nil {
+		out = append(out, filepath.Join(filepath.Dir(exe), ".kqflow-sounds"))
+	}
+	return out
+}
+
+// builtinSoundFile 把合成结果写到可写目录并返回路径。
 //
 // 同一预设复用同一个文件（内容固定），避免每次切换时段都重新合成 + 写盘。
 func builtinSoundFile(name string) (string, error) {
@@ -209,9 +252,9 @@ func builtinSoundFile(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(os.TempDir(), "kqflow-sounds")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+	dir, err := builtinSoundDir()
+	if err != nil {
+		return "", fmt.Errorf("找不到可写的目录存放提示音: %w", err)
 	}
 	path := filepath.Join(dir, fmt.Sprintf("%s-%d.wav", name, soundSampleRate))
 	// 已经生成过且大小一致就直接用。
@@ -219,10 +262,23 @@ func builtinSoundFile(name string) (string, error) {
 		return path, nil
 	}
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		return "", err
+		return "", fmt.Errorf("写入提示音文件失败: %w", err)
 	}
 	return path, nil
 }
 
 // soundTimeout 限制播放命令的最长存活时间，避免留下卡住的进程。
+//
+// 只在文档与将来可能的等待逻辑里用得到；播放本身是脱离进程的，不等它。
 const soundTimeout = 4 * time.Second
+
+// SoundDirForUser 返回提示音实际写入的目录，供设置页展示与排查。
+//
+// 用户报过 %TEMP% 不可写的问题，把实际位置显示出来能省掉一次猜测。
+func SoundDirForUser() string {
+	dir, err := builtinSoundDir()
+	if err != nil {
+		return ""
+	}
+	return dir
+}

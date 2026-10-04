@@ -526,6 +526,11 @@ type settingItem struct {
 	Label string
 	// Value 返回当前值的展示文本。
 	Value func(a *App) string
+	// Lines 让一项占多行（每行一条），用于需要完整展示的内容。
+	//
+	// 手机推送那一组就必须用：用户明确要求「看到了地址就要看到声明」，
+	// 而声明很长，塞进一行的值里会被截断。
+	Lines func(a *App) []string
 	// Edit 在用户选中并确认时打开输入框；为 nil 表示只读展示。
 	Edit func(a *App)
 }
@@ -599,22 +604,43 @@ var settingItems = []settingItem{
 			if !a.cfg.NtfyEnabled {
 				return "关"
 			}
-			if strings.TrimSpace(a.cfg.NtfyTopic) == "" {
-				return "开（尚未生成频道）"
-			}
-			return "开 · " + a.cfg.NtfyTopic
+			return "开"
 		},
 		Edit: (*App).toggleNtfy,
 	},
 	{
-		Label: "提醒 · 复制手机订阅地址",
+		// 地址与声明放在**同一层**：用户看到地址的同时必须看到风险提示，
+		// 不能等他自己点进下一级才发现（用户明确要求）。
+		Label: "提醒 · 手机订阅地址（可扫下面的码）",
+		Lines: func(a *App) []string {
+			if !a.cfg.NtfyReady() {
+				return []string{"先打开上一项，程序会生成随机频道"}
+			}
+			return []string{a.cfg.NtfyURL(), "（扫码用：对本项按 enter 打开二维码页）"}
+		},
+		Edit: (*App).showNtfyHelp,
+	},
+	{
+		Label: "提醒 · 手机推送风险提示",
+		Lines: func(a *App) []string {
+			if !a.cfg.NtfyReady() {
+				return nil
+			}
+			return []string{config.NotifyDisclaimer}
+		},
+	},
+	{
+		Label: "提醒 · 重新生成手机频道",
 		Value: func(a *App) string {
 			if !a.cfg.NtfyReady() {
 				return "先打开手机推送"
 			}
-			return a.cfg.NtfyURL()
+			if config.NtfyTopicIsWeak(a.cfg.NtfyTopic) {
+				return "当前频道偏弱，建议重新生成"
+			}
+			return "换一个频道（手机需重新订阅）"
 		},
-		Edit: (*App).showNtfyHelp,
+		Edit: (*App).regenerateNtfyTopic,
 	},
 	{
 		Label: "配置文件",

@@ -131,6 +131,37 @@ func TestQRVersionTables(t *testing.T) {
 	}
 }
 
+// TestQRRoundTrip 是本文件里最重要的一条：编码 → 矩阵 → 解码 → 原文 必须闭环。
+//
+// 背景：用户实机扫码时「连识别都识别不出来是二维码」。靠「结构看着对」是验不出
+// 这类问题的，所以补了这个解码器，让闭环成立——闭环成立意味着矩阵在数学上就是
+// 一个合法二维码，剩下的只可能是终端渲染或摄像头的问题。
+func TestQRRoundTrip(t *testing.T) {
+	texts := []string{
+		"https://ntfy.sh/JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXPJBSWY3D", // 真实订阅地址量级
+		"A",
+		"https://ntfy.sh/short",
+		"0123456789abcdefghijklmnopqrstuvwxyz",
+		strings.Repeat("X", 60),
+		strings.Repeat("Y", 120),
+	}
+	for _, text := range texts {
+		matrix, err := qrEncode([]byte(text))
+		if err != nil {
+			t.Errorf("编码 %d 字节失败: %v", len(text), err)
+			continue
+		}
+		got, err := qrDecode(matrix)
+		if err != nil {
+			t.Errorf("%d 字节解码失败: %v", len(text), err)
+			continue
+		}
+		if string(got) != text {
+			t.Errorf("往返不一致：\n原文 %q\n解出 %q", text, string(got))
+		}
+	}
+}
+
 // TestQREncodeStructure 验证编码结果的尺寸与固定图案。
 //
 // 注意：**本环境无法真机扫码**。这里只能验结构（尺寸、定位图案、定时图案、
@@ -288,27 +319,58 @@ func TestQREncodeVersionSelection(t *testing.T) {
 	}
 }
 
-// TestRenderQRHalfBlocks 验证半块字符渲染的行数与宽度。
+// TestRenderQRHalfBlocks 验证终端渲染的几何：静默区、方形模块、半块字符。
+//
+// 这几条是用户实机扫不出来之后补的。之前的渲染有两个致命问题：
+//   - 每模块横向只占 1 个字符、纵向占半行 → 画出来是 1:2 的瘦长条，不像二维码；
+//   - 静默区只留 1 个模块（标准要求 4 个）→ 摄像头无法可靠定位。
 func TestRenderQRHalfBlocks(t *testing.T) {
-	out, err := renderQR(qrTestURL, 60)
+	out, err := renderQR(qrTestURL, 200)
 	if err != nil {
 		t.Fatalf("渲染失败: %v", err)
 	}
-	if len(out) == 0 {
-		t.Fatal("渲染结果为空")
-	}
-	// 半块输出：行数约为模块数的一半。
 	m, _ := qrEncode([]byte(qrTestURL))
-	if want := (len(m) + 1) / 2; len(out) != want {
-		t.Errorf("行数应为 %d，实际 %d", want, len(out))
+	n := len(m)
+
+	if len(out) != qrRenderHeight(n) {
+		t.Errorf("行数应为 %d，实际 %d", qrRenderHeight(n), len(out))
 	}
-	// 每行宽度一致（含静默区）。
-	w := displayWidth(out[0])
+	quietTop := qrRenderQuietTop()
+	quietBottom := qrRenderQuietBottom()
+	contentRows := out[quietTop : len(out)-quietBottom]
+	if len(contentRows) == 0 {
+		t.Fatal("没有内容行")
+	}
+	// 内容行宽度一致；静默行也是同宽（整行空白）。
+	w := qrRenderWidth(n)
 	for i, l := range out {
 		if displayWidth(l) != w {
-			t.Errorf("第 %d 行宽度 %d 与首行 %d 不一致", i, displayWidth(l), w)
+			t.Errorf("n=%d version=%d 第 %d 行宽度 %d 应为 %d", n, (n-17)/4, i, displayWidth(l), w)
 		}
 	}
+	// 顶部静默行是纯空白；内容行与内容行之间不可能全空（否则二维码没画出来）。
+	for i := 0; i < quietTop; i++ {
+		if strings.TrimSpace(out[i]) != "" {
+			t.Errorf("第 %d 行应是静默区，实际 %q", i, out[i])
+		}
+	}
+	// 底部静默区同理。
+	for i := len(out) - quietBottom; i < len(out); i++ {
+		if strings.TrimSpace(out[i]) != "" {
+			t.Errorf("第 %d 行应是静默区，实际 %q", i, out[i])
+		}
+	}
+	// 左右静默区列必须是空白。
+	quietCols := qrQuietZone * qrModuleChars
+	for _, l := range contentRows {
+		if strings.TrimSpace(l[:quietCols]) != "" {
+			t.Errorf("左侧静默区不干净：%q", l[:quietCols])
+		}
+		if strings.TrimSpace(l[len(l)-quietCols:]) != "" {
+			t.Errorf("右侧静默区不干净：%q", l[len(l)-quietCols:])
+		}
+	}
+
 	// 只使用半块字符与空格。
 	for _, l := range out {
 		for _, r := range l {
@@ -320,8 +382,40 @@ func TestRenderQRHalfBlocks(t *testing.T) {
 		}
 	}
 
+	// 定位图案必须真的画出来了：内容区第一行是模块行 −4/−3，其中模块行 −4 是
+	// 静默（全浅）、−3 是模块行 1 —— 而模块行 0 的定位图案外圈应当是深色。
+	// 更稳的判据：内容前几行里必须出现深色块，且出现在靠左的位置。
+	found := false
+	for _, l := range contentRows[:3] {
+		if strings.ContainsAny(l, "█▀▄") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("内容区前几行应包含定位图案的深色模块")
+	}
+
 	// 超出可用宽度时要如实报错，让调用方回退成「手输地址」。
-	if _, err := renderQR(qrTestURL, 5); err == nil {
+	if _, err := renderQR(qrTestURL, 10); err == nil {
 		t.Error("宽度不足时应报错")
+	}
+}
+
+// TestQRRenderGeometryIsSquare 验证画出来的二维码接近正方形。
+//
+// 终端字符高约为宽的两倍，所以「横向 2 字符 + 纵向半块合并」才得到 1:1 的
+// 物理形状。用字符数比对时应当满足 宽 ≈ 2×高。
+func TestQRRenderGeometryIsSquare(t *testing.T) {
+	out, err := renderQR(qrTestURL, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := displayWidth(out[0])
+	h := len(out)
+	// 物理宽高比 ≈ w / (2h)，应落在 0.9~1.1 之间。
+	ratio := float64(w) / float64(2*h)
+	if ratio < 0.9 || ratio > 1.1 {
+		t.Errorf("物理形状应接近正方形（宽 %d 列，高 %d 行，比值 %.2f）", w, h, ratio)
 	}
 }
