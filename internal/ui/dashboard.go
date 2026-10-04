@@ -27,6 +27,10 @@ func (a *App) View() string {
 		return a.viewTooSmall()
 	}
 
+	// 结束计时的确认同样只占中间栏，计时指示与进度条保持可见。
+	if a.stopAsk && a.timer != nil {
+		return clipBlock(a.renderCenterBox(a.stopConfirmContent()), a.width, a.height)
+	}
 	// 选择框优先级最高：它常常是“在编辑器之上”弹出的确认（例如
 	// 随手记没保存就问“保存还是丢弃”），必须盖住下面的输入框，
 	// 否则用户看不到这个提问。
@@ -789,7 +793,7 @@ func (a *App) renderPlanBar(plan model.Plan, elapsed time.Duration, width int) s
 			n = 1
 		}
 		style := a.st.BarFocus
-		if seg.Kind == "break" {
+		if seg.Kind == model.SegmentKindBreak {
 			style = a.st.BarBreak
 		}
 		for i := 0; i < n; i++ {
@@ -863,6 +867,9 @@ func dayRangeLabel(start, end time.Time, cut time.Duration) string {
 }
 
 // renderHints 渲染按键提示。
+//
+// 计时进行中大部分看板按键都不再生效（见已知 bug 1），所以提示行要跟着
+// 换成计时真正可用的那几个键——否则用户会照着提示按，却发现什么都没发生。
 func (a *App) renderHints() string {
 	pairs := [][2]string{
 		{"tab", "切换栏"},
@@ -873,6 +880,22 @@ func (a *App) renderHints() string {
 		{"r", "继承昨日"},
 		{"?", "帮助"},
 		{"q", "退出"},
+	}
+	if a.stopAsk {
+		pairs = [][2]string{
+			{"enter", "结束并归档"},
+			{"其它", "继续计时"},
+		}
+	} else if a.timer != nil {
+		// 计时中只保留 p 菜单这一个计时入口：空格与回车是终端里最容易
+		// 误触的两个键，而且它们在计时中仍要保持看板语义（勾选 / 子任务）。
+		pairs = [][2]string{
+			{"p", "计时菜单"},
+			{"space", "勾选"},
+			{"enter", "子任务"},
+			{"N/?", "随手记/帮助"},
+			{"q", "退出"},
+		}
 	}
 	var parts []string
 	for _, p := range pairs {

@@ -117,6 +117,23 @@ func TestNoViewOverflowsTerminal(t *testing.T) {
 			assertNoOverflow(t, "退出确认", app.View(), w, h)
 			app.pick = nil
 
+			// 浮层：计时结束确认（见已知 bug 1）。计时进行中的状态也要覆盖。
+			app.beginTimer(model.Plan{Kind: model.TimerCountUp, Segments: []model.Segment{
+				{Name: "自由专注", Kind: model.SegmentKindFocus},
+			}}, "")
+			app.askStopTimer()
+			assertNoOverflow(t, "计时结束确认", app.View(), w, h)
+			app.stopAsk = false
+
+			// 浮层：计时中打开的计时菜单。
+			app.openTimerMenu()
+			assertNoOverflow(t, "计时中菜单", app.View(), w, h)
+			app.pick = nil
+
+			// 计时进行中的看板本身（进度条与提示都要装得下）。
+			assertNoOverflow(t, "计时中的看板", app.View(), w, h)
+			app.timer = nil
+
 			// 浮层：庆祝特效。
 			app.celebrate = &celebrateState{started: time.Now()}
 			assertNoOverflow(t, "庆祝特效", app.View(), w, h)
