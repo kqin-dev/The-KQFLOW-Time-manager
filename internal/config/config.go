@@ -65,6 +65,12 @@ type Config struct {
 	CountdownMin int `json:"countdown_minutes,omitempty"`
 	// Quotes 是用户自定义的随机字条；为空时使用内置字条（见需求 9）。
 	Quotes []string `json:"quotes,omitempty"`
+	// CustomLabels 是用户自己新增的标签名（见 label.go）。
+	//
+	// 只存「用户新造的」那些：内置预设写死在代码里，条目上正在用的标签从
+	// 条目本身收集。这样标签库不会随着使用不断膨胀，也不会出现
+	// 「标签库里有、但哪个条目都没用」的悬空项。
+	CustomLabels []string `json:"custom_labels,omitempty"`
 	// ShowNote 决定是否在看板上展示当日随手记的前几行。
 	ShowNote bool `json:"show_note,omitempty"`
 	// Timezone 为空时使用系统本地时区。
@@ -146,6 +152,47 @@ func (c *Config) CountdownMinutes() int {
 // QuotesText 把自定义字条拼成多行文本，供设置页编辑。
 func (c *Config) QuotesText() string {
 	return strings.Join(c.Quotes, "\n")
+}
+
+// CustomLabelList 返回清洗过的自定义标签（去空、去重、按原顺序）。
+func (c *Config) CustomLabelList() []string {
+	if len(c.CustomLabels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(c.CustomLabels))
+	seen := make(map[string]bool, len(c.CustomLabels))
+	for _, raw := range c.CustomLabels {
+		name := strings.TrimSpace(strings.Join(strings.Fields(raw), " "))
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// AddCustomLabel 把一个标签记进自定义标签库；已存在或为空则不动。
+func (c *Config) AddCustomLabel(name string) bool {
+	name = strings.TrimSpace(strings.Join(strings.Fields(name), " "))
+	if name == "" || HasString(c.CustomLabelList(), name) {
+		return false
+	}
+	c.CustomLabels = append(c.CustomLabelList(), name)
+	return true
+}
+
+// HasString 报告切片里是否含有某个字符串。
+func HasString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func minutes(v, fallback int) time.Duration {

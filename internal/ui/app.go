@@ -29,6 +29,8 @@ const (
 	ViewHelp
 	// ViewCarry 是“继承昨日”的确认页。
 	ViewCarry
+	// ViewLabels 是给当前条目打标签的页面（见需求 1）。
+	ViewLabels
 )
 
 // Focus 标记当前获得键盘焦点的区域。
@@ -111,6 +113,8 @@ type App struct {
 	pageScroll int
 	// settingsCursor 是设置页当前选中的项。
 	settingsCursor int
+	// labelView 是标签编辑页的状态（见需求 1）。
+	labelView labelViewState
 
 	toast     string
 	toastKind toastKind
@@ -366,6 +370,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.view == ViewHelp {
 		return a.handleHelpKey(key)
 	}
+	if a.view == ViewLabels {
+		return a.handleLabelKey(key)
+	}
 
 	switch key {
 	case "ctrl+c":
@@ -409,6 +416,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.startDelete()
 	case "t":
 		a.startAddTask()
+	case "l":
+		// 小写 l 给当前条目打标签（大写 L 是勾选父条目，两者区分开）。
+		a.openLabels()
 	case "r":
 		return a.askCarry()
 	case "1":

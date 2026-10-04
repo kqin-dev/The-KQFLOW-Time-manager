@@ -107,6 +107,18 @@ func TestNoViewOverflowsTerminal(t *testing.T) {
 			assertNoOverflow(t, "继承确认页", app.View(), w, h)
 			app.view = ViewDashboard
 
+			// 浮层：标签页（见需求 1）。一条带很多标签的长标题最容易撑破边框。
+			app.openLabels()
+			if app.labelView.active {
+				assertNoOverflow(t, "标签页", app.View(), w, h)
+				// 满载标签时也要装得下。
+				app.labelView.target.SetItemLabels([]string{
+					"一个相当长的自定义标签名字", "星星", "紧急", "爱心",
+				})
+				assertNoOverflow(t, "标签页（满载）", app.View(), w, h)
+			}
+			app.closeLabels()
+
 			// 浮层：计时菜单（第二级菜单，含方向键选择）。
 			app.startTimer()
 			assertNoOverflow(t, "计时菜单", app.View(), w, h)

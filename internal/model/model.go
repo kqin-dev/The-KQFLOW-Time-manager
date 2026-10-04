@@ -75,6 +75,8 @@ type Todo struct {
 	OrigDay   string    `json:"orig_day"`
 	// CarriedFrom 记录该条目是从哪一日继承过来的（空表示当日新建）。
 	CarriedFrom string `json:"carried_from,omitempty"`
+	// Labels 是用户给这条待办打的标签（见 label.go）。
+	Labels []string `json:"labels,omitempty"`
 	// Notes 保留给用户补充说明。
 	Notes string `json:"notes,omitempty"`
 }
@@ -171,7 +173,9 @@ type Goal struct {
 	Created time.Time  `json:"created_at"`
 	// ArchivedDay 在目标被勾选后由日界线逻辑填入，表示归档到哪一天（见需求 10）。
 	ArchivedDay string `json:"archived_day,omitempty"`
-	Notes       string `json:"notes,omitempty"`
+	// Labels 是用户给这个目标打的标签（见 label.go）。
+	Labels []string `json:"labels,omitempty"`
+	Notes  string   `json:"notes,omitempty"`
 }
 
 // NewGoal 创建一个新目标。
@@ -456,6 +460,11 @@ func (d *DayData) PruneOrphans() bool {
 				t.Tasks[i].Title = cleaned
 				changed = true
 			}
+		}
+		// 标签：清控制字符、去重、截断（老数据或手改文件里可能不干净）。
+		if cleaned := NormalizeLabels(t.Labels); !sameLabels(cleaned, t.Labels) {
+			t.Labels = cleaned
+			changed = true
 		}
 	}
 	for _, t := range d.Fixed {

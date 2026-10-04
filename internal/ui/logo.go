@@ -25,14 +25,14 @@ var LogoLines = []string{
 
 // LogoCompactLines 是中等宽度（44 列以内）用的紧凑版本，宽度 25。
 var LogoCompactLines = []string{
-	`█▄▀ █▀▀ █▀▀ █   █▀▄ █ █`,
-	`█ █ ▀▀█ █▀▀ █   █▀▄ █▄█`,
+	`█▄▀ █▀█ █▀▀ █   █▀█ █ █`,
+	`█ █ ▀▀▄ █▀▀ █▄▄ █▄█ █▀█`,
 }
 
 // LogoMiniLines 是中间栏很窄时的最小版本，宽度 17。
 var LogoMiniLines = []string{
-	`█▄▀ █▀▀ █▀▀ █ █▀▄`,
-	`█ █ ▀▀█ █▀▀ █ █▄▀`,
+	`█▄▀ █▀█ █▀▀ █ █▀▄`,
+	`█ █ ▀▀▄ █▀▀ █ █▄▀`,
 }
 
 // logoMargin 是字模两侧要留出的空白列数（每侧）。

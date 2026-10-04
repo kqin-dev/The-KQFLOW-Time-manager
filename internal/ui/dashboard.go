@@ -59,6 +59,8 @@ func (a *App) View() string {
 		return clipBlock(a.renderCenterBox(a.pageContent(styled, plain, -1)), a.width, a.height)
 	case ViewCarry:
 		return clipBlock(a.renderCenterBox(a.carryContent()), a.width, a.height)
+	case ViewLabels:
+		return clipBlock(a.renderCenterBox(a.labelsContent()), a.width, a.height)
 	default:
 		base := a.renderDashboard()
 		// 计时结束时响一声，提醒正在别处工作的用户。
@@ -399,6 +401,9 @@ func (a *App) renderTodoRow(item *model.Todo, selected bool, width int) string {
 	if total > 0 {
 		label += fmt.Sprintf(" (%d/%d)", done, total)
 	}
+	if len(item.Labels) > 0 {
+		label += " " + labelsInline(item.Labels)
+	}
 	if item.GoalTag != "" {
 		label += " " + item.GoalTag
 	}
@@ -459,6 +464,10 @@ func (a *App) renderGoalPanel(width, height int) string {
 		done, total := g.Progress()
 		if total > 0 {
 			label += fmt.Sprintf(" (%d/%d)", done, total)
+		}
+		// 标签贴在标题后面，和 TODO 栏保持一致。
+		if len(g.Labels) > 0 {
+			label += " " + labelsInline(g.Labels)
 		}
 		// 标记出归档到当天的目标，它们已经不在 goals.json 里。
 		if g.ArchivedDay != "" {
@@ -877,6 +886,7 @@ func (a *App) renderHints() string {
 		{"space", "勾选"},
 		{"a", "添加"},
 		{"t", "子任务"},
+		{"l", "标签"},
 		{"r", "继承昨日"},
 		{"?", "帮助"},
 		{"q", "退出"},

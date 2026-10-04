@@ -106,6 +106,8 @@ kqflow-data/
 - **数据版本保护已经实现**（`internal/store/dataversion.go` 的 `CheckDataVersion`，
   由 `cmd/kqf` 在 `store.Open` **之前**调用）。保守策略：只要发现数据来自更新的
   版本，就拒绝启动并列出文件名与版本号，请用户升级程序或把文件移走。
+  **`schema_version` 与程序版本号是两套独立的编号，命名规则见
+  [release.md](release.md) 第 0 节**——那是判断兼容性的证据，不是程序版本。
   两个要点：
   - **存在却读不出内容的文件同样拒绝启动**。认不出内容就无法保证它不是新版本
     的数据，而本项目是整份 JSON 读进来再整份写回，写回就等于抹掉不认识的字段。
@@ -120,6 +122,16 @@ kqflow-data/
 
 - `Todo`：`ID` / `Title` / `Kind`(fixed|floating) / `Status` / `Tasks` / `Day` / 时间戳。
   状态有 todo / doing / done 三态，`SyncFromTasks` 由子任务反推父条目状态。
+- **标签（Labels）有两个同名的东西，别混**（见 `internal/model/label.go`）：
+  - `Todo.Labels` / `Goal.Labels`：**用户**起的记号（星星 / 紧急 / 自定义），
+    `[]string`，可以增删。这是需求 1 的「标签」。
+  - `Goal.Tag`：**程序**算出的标题指纹（`#a1b2c3`），用于继承时避免同名混淆，
+    用户改不了。
+  标签没有全局标签库：可用标签 = 内置预设（`labelPresets`）+ 配置里的
+  `custom_labels`（只存用户新造的）+ 所有条目上已用过的，去重后得到。
+  这样标签库不会随使用膨胀，也不会出现「库里有用不上的悬空项」。
+  单个条目上限 `MaxLabelsPerItem`，单个标签长度上限 `MaxLabelRunes`，
+  入库前一律走 `LabelName` 清洗（读入时由 `PruneOrphans` 自愈）。
 - `Task`：子任务，有 `Status` 与 `DoneAt`。
 - `Goal`：长期目标；`ArchivedDay` 非空表示它归档在某一天（存在日数据里），
   为空表示它活跃在 `goals.json` 里。

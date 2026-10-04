@@ -608,6 +608,7 @@ func helpRows(compact bool) []helpRow {
 		{Key: "A", Desc: "添加 GOAL"},
 		{Key: "e", Desc: "重命名选中条目"},
 		{Key: "t", Desc: "为选中条目添加子任务"},
+		{Key: "l", Desc: "给选中条目打标签（星星 / 紧急 / 自定义…）"},
 		{Key: "d", Desc: "删除选中条目（会先确认）"},
 		{Key: "r", Desc: "从昨日继承（固定 / 未完成 / 两者）"},
 		{Key: "N", Desc: "打开随手记（多行编辑器，按日保存）"},
