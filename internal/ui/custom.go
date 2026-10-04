@@ -42,7 +42,13 @@ func (a *App) defaultCustomPlan() model.Plan {
 }
 
 // openCustom 打开自定义时段编辑器。
+//
+// 计时进行中同样拒绝：这个编辑器最终也是通向 beginTimer 的一条路，
+// 在这里就拦住，用户才不会白编排一套方案之后才发现开不了。
 func (a *App) openCustom() {
+	if a.refuseSecondTimer() {
+		return
+	}
 	a.custom = &customState{plan: a.defaultCustomPlan()}
 }
 

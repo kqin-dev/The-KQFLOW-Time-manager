@@ -998,6 +998,12 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		if a.pendingPlan == nil {
 			return a, nil
 		}
+		// 兜底：正常路径上 beginTimer 之前的入口已经拒绝过了，这里再确认一次，
+		// 免得哪天真出现“方案被清空却没开始计时”。
+		if a.refuseSecondTimer() {
+			a.pendingPlan = nil
+			return a, nil
+		}
 		plan := *a.pendingPlan
 		a.pendingPlan = nil
 		a.beginTimer(plan, todoID)

@@ -401,9 +401,12 @@ func stripControlChars(s string, keepNewline bool) string {
 // ---------- 计时 ----------
 
 // startTimer 让用户选择计时模式与所属 TODO（见需求 16、17）。
+//
+// 计时进行中直接拒绝：早期这里只弹了一句 toast 就继续打开菜单，用户选完
+// 方式与归属后 a.timer 被覆盖，旧计时的时长静默丢失。
 func (a *App) startTimer() {
-	if a.timer != nil {
-		a.setToast("已有计时在进行，按 enter 打开计时菜单", toastWarn)
+	if a.refuseSecondTimer() {
+		return
 	}
 	a.pick = &pickState{
 		title: "选择计时方式",
@@ -419,6 +422,9 @@ func (a *App) startTimer() {
 
 // chooseTimerTodo 让用户为本次计时选择归属的 TODO（见需求 17）。
 func (a *App) chooseTimerTodo(plan model.Plan) {
+	if a.refuseSecondTimer() {
+		return
+	}
 	items := make([]pickItem, 0, len(a.data.All())+1)
 	for _, t := range a.data.All() {
 		label := t.Title
@@ -460,13 +466,36 @@ func segDur(p model.Plan, idx int) time.Duration {
 }
 
 // beginTimer 真正开始计时。
+//
+// 这是创建计时的唯一出口：计时进行中一律拒绝，而不是覆盖 a.timer。
+// 覆盖会让旧计时连同它的时长一起静默消失（既没归档也没提示），
+// 与「计时中退出，时长白记」是同一类事故。
 func (a *App) beginTimer(plan model.Plan, todoID string) {
+	if a.refuseSecondTimer() {
+		return
+	}
 	var todo *model.Todo
 	if todoID != "" {
 		todo = a.data.Find(todoID)
 	}
 	a.timer = newTimer(plan, todo, a.clock.Now())
 	a.setToast(fmt.Sprintf("开始%s", describePlan(plan)), toastInfo)
+}
+
+// refuseSecondTimer 在已有计时在进行时拦下“再开一个计时”的请求。
+//
+// 返回 true 表示已经拒绝、调用方必须中止。提示必须同时给出出路，
+// 否则用户只会觉得“按了没反应”。
+//
+// 为什么是“拒绝”而不是“自动把旧计时归档后再开新的”：归档是一次写入，
+// 也是对用户数据的一次定性（旧计时算完成还是中断、算在哪个时段），
+// 这类动作在本项目一律要用户明确确认，不能由一个顺手的操作代为决定。
+func (a *App) refuseSecondTimer() bool {
+	if a.timer == nil {
+		return false
+	}
+	a.setToast("已有计时在进行，按 p 打开计时菜单结束它", toastWarn)
+	return true
 }
 
 // pomodoroPlan 依据配置的段数构造番茄钟方案（见需求 16）。

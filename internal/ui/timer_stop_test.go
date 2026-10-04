@@ -346,6 +346,118 @@ func TestTimerKeysReachOtherFeatures(t *testing.T) {
 	}
 }
 
+// TestCanStartNewTimerAfterEnding 验证拒绝第二次计时不会把用户永久锁死：
+// 结束当前计时之后，必须能正常开始新的一次。
+func TestCanStartNewTimerAfterEnding(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	app, s, _ := newTestApp(t, at)
+	startCountUpTimer(t, app)
+
+	now := at
+	mutableClock(t, app, &now)
+	now = at.Add(15 * time.Minute)
+
+	// 计时中被拒绝。
+	app.startTimer()
+	if app.pick != nil {
+		t.Fatal("计时中不应打开计时方式菜单")
+	}
+	if app.timer == nil {
+		t.Fatal("计时不应消失")
+	}
+
+	// 结束计时后必须能开始新的。
+	stopTimerViaMenu(t, app)
+	if app.timer != nil {
+		t.Fatal("结束后计时应已清空")
+	}
+	startCountUpTimer(t, app)
+	if app.timer == nil {
+		t.Fatal("结束后应能开始新的计时")
+	}
+	if app.timer == nil || app.timer.plan.Kind != model.TimerCountUp {
+		t.Errorf("新计时应为正计时，实际 %v", app.timer.plan.Kind)
+	}
+	// 旧计时已归档，新计时尚未归档。
+	saved, err := s.Day("2026-10-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Archive.Sessions) != 1 {
+		t.Fatalf("应只有旧计时被归档，实际 %d 条", len(saved.Archive.Sessions))
+	}
+	if got := saved.Archive.Sessions[0].Elapsed; got != 15*time.Minute {
+		t.Errorf("旧计时归档时长应为 15m，实际 %v", got)
+	}
+}
+
+// TestSecondTimerIsRefusedWhileRunning 逐个走查“启动计时”的入口，确认计时
+// 进行中没有任何一条路能悄悄顶掉正在进行的计时。
+//
+// 早期 startTimer() 只弹了一句 toast 就继续打开菜单，用户选完方式与归属后
+// a.timer 被直接覆盖——旧计时既没归档也没提示，时长静默丢失。
+func TestSecondTimerIsRefusedWhileRunning(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+
+	cases := []struct {
+		name string
+		send func(app *App)
+	}{
+		{"中间栏计时菜单", func(app *App) { app.startTimer() }},
+		{"菜单项 timer", func(app *App) { app.activateMenuItem(1) }},
+		{"计时方式：番茄钟", func(app *App) { app.runAction("timer_pomodoro") }},
+		{"计时方式：倒计时", func(app *App) { app.runAction("timer_countdown") }},
+		{"计时方式：正计时", func(app *App) { app.runAction("timer_countup") }},
+		{"计时方式：自定义", func(app *App) { app.runAction("timer_custom") }},
+		{"菜单直接开始专注", func(app *App) { app.runAction("start_focus") }},
+		{"beginTimer 直接调用", func(app *App) {
+			app.beginTimer(model.Plan{Kind: model.TimerCountDown}, "")
+		}},
+	}
+
+	for _, c := range cases {
+		app, s, _ := newTestApp(t, at)
+		startCountUpTimer(t, app)
+		first := app.timer
+		if first == nil {
+			t.Fatalf("%s：第一个计时未启动", c.name)
+		}
+
+		now := at
+		mutableClock(t, app, &now)
+		now = at.Add(15 * time.Minute)
+
+		c.send(app)
+
+		// 正在进行的计时必须原封不动地留着。
+		if app.timer == nil {
+			t.Errorf("%s：正在进行的计时不应消失", c.name)
+			continue
+		}
+		if app.timer != first {
+			t.Errorf("%s：计时被新方案顶掉了（旧计时会静默丢时长）", c.name)
+		}
+		// 不能留下半开的启动流程。
+		if app.pick != nil {
+			t.Errorf("%s：不应打开计时方式/归属的选择框", c.name)
+		}
+		if app.pendingPlan != nil {
+			t.Errorf("%s：不应留下待确认的计时方案", c.name)
+		}
+		if app.custom != nil {
+			t.Errorf("%s：不应打开自定义时段编辑器", c.name)
+		}
+		// 必须告诉用户为什么没开始，以及怎么结束当前的计时。
+		if app.toast == "" {
+			t.Errorf("%s：应给出提示说明当前已有计时", c.name)
+		}
+		// 归档里不该凭空多出记录。
+		if saved, err := s.Day("2026-10-03"); err == nil && saved != nil && len(saved.Archive.Sessions) > 0 {
+			t.Errorf("%s：不应产生归档记录，实际 %d 条", c.name, len(saved.Archive.Sessions))
+		}
+	}
+}
+
 // stopTimerViaMenu 走完整的用户路径结束计时：p → 结束计时并归档 → 确认。
 //
 // 计时中不再有直接的结束键（空格与回车都还给看板），所以测试也必须
