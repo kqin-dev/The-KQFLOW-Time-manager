@@ -77,6 +77,11 @@ type Todo struct {
 	CarriedFrom string `json:"carried_from,omitempty"`
 	// Labels 是用户给这条待办打的标签（见 label.go）。
 	Labels []string `json:"labels,omitempty"`
+	// Due 是这条待办的 DDL，格式 “HH:MM”（只到分，见 ddl.go）。
+	//
+	// 待办每天都会重置，所以它的 DDL 没有日期部分：18:30 指当天 18:30，
+	// 过了就表示「今天已经超时」。
+	Due string `json:"due,omitempty"`
 	// Notes 保留给用户补充说明。
 	Notes string `json:"notes,omitempty"`
 }
@@ -175,7 +180,12 @@ type Goal struct {
 	ArchivedDay string `json:"archived_day,omitempty"`
 	// Labels 是用户给这个目标打的标签（见 label.go）。
 	Labels []string `json:"labels,omitempty"`
-	Notes  string   `json:"notes,omitempty"`
+	// Due 是这个目标的 DDL，格式 “YYYY-MM-DD”（只到天，见 ddl.go）。
+	//
+	// 目标没有「每天重置」的概念，所以它的 DDL 带日期：2026-10-31 表示
+	// 到这一天结束（逻辑日结束）为止。
+	Due   string `json:"due,omitempty"`
+	Notes string `json:"notes,omitempty"`
 }
 
 // NewGoal 创建一个新目标。
@@ -464,6 +474,14 @@ func (d *DayData) PruneOrphans() bool {
 		// 标签：清控制字符、去重、截断（老数据或手改文件里可能不干净）。
 		if cleaned := NormalizeLabels(t.Labels); !sameLabels(cleaned, t.Labels) {
 			t.Labels = cleaned
+			changed = true
+		}
+		// DDL：清掉控制字符与首尾空白。
+		//
+		// 格式非法的 DDL 刻意**保留原样**、只在展示时当作「没有 DDL」：
+		// 静默改写用户手打的内容（例如把 “25:00” 抹掉）比留着更让人困惑。
+		if cleaned := Sanitize(t.Due, false); cleaned != t.Due {
+			t.Due = cleaned
 			changed = true
 		}
 	}

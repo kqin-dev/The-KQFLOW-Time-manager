@@ -31,6 +31,8 @@ const (
 	ViewCarry
 	// ViewLabels 是给当前条目打标签的页面（见需求 1）。
 	ViewLabels
+	// ViewDdl 是给当前条目设截止时间的页面（见需求 4）。
+	ViewDdl
 )
 
 // Focus 标记当前获得键盘焦点的区域。
@@ -115,6 +117,8 @@ type App struct {
 	settingsCursor int
 	// labelView 是标签编辑页的状态（见需求 1）。
 	labelView labelViewState
+	// ddlView 是截止时间设置页的状态（见需求 4）。
+	ddlView ddlViewState
 
 	toast     string
 	toastKind toastKind
@@ -373,6 +377,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.view == ViewLabels {
 		return a.handleLabelKey(key)
 	}
+	if a.view == ViewDdl {
+		return a.handleDdlKey(key)
+	}
 
 	switch key {
 	case "ctrl+c":
@@ -419,6 +426,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "l":
 		// 小写 l 给当前条目打标签（大写 L 是勾选父条目，两者区分开）。
 		a.openLabels()
+	case "D":
+		// 大写 D 设截止时间（小写 d 是删除，两者区分开）。
+		a.openDdl()
 	case "r":
 		return a.askCarry()
 	case "1":

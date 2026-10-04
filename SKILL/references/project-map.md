@@ -139,6 +139,12 @@ kqflow-data/
   这样条目被删后历史仍可读）。`SegmentKind` 区分 focus / break / other，
   记录的是**结束时**所在的那一段；`Focus` 才是这次计时真正的专注时长
   （按段累计，跨段方案也正确）。
+- **DDL（截止时间）的粒度按条目类型分开**（见 `internal/model/ddl.go`）：
+  `Todo.Due` 是 `"HH:MM"`（待办每天重置，18:30 天然指「今天 18:30」）；
+  `Goal.Due` 是 `"YYYY-MM-DD"`（目标不随天重置，指「到该逻辑日结束为止」）。
+  存字符串而不是时间戳，是为了数据文件可读、可手改。
+  算到期时刻时会经过日界线：**日界线只决定「算哪个逻辑日」，不能加到钟点上**
+  （这个 bug 被测试抓到过——日界线 04:00 时 18:30 曾被算成 22:30）。
 - `Activity`：按名字聚合的累计投入，用于「今日最投入的条目」。
 - `DayData.PruneOrphans()`：数据自愈入口，读入时调用。它会把指向已删除条目的
   `todo_ref` 清空、把确实由这些孤儿记录产生的 `activity` 项删掉
@@ -150,8 +156,10 @@ kqflow-data/
 
 | 想改什么 | 从哪里入手 |
 | --- | --- |
-| 看板三栏宽度 / 高度分配 | `columnLayout()`（唯一来源） |
+| 看板三栏宽度 / 高度分配 | `columnLayout()`（唯一来源）；左栏是「固定 / 临时 / 汇总」，右栏是「GOAL / DDL / 汇总」，两边高度分配对称 |
 | 按键 | `handleKey` 的路由 + `handleEditorKey` / `handlePickKey` / `handleSettingsKey` |
+| 标签 | `labels.go`（页面 + 渲染）、`model/label.go`（数据与清洗） |
+| DDL / 截止时间 | `ddl.go`（页面 + 排序）、`model/ddl.go`（粒度与到期计算） |
 | 菜单项 | `menuItems` |
 | 设置项 | `settingItems` |
 | 二级页内容 | `helpLines` / `settingsLines` / `historyLines` / `carryContent` |

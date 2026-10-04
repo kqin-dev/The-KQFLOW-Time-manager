@@ -119,6 +119,20 @@ func TestNoViewOverflowsTerminal(t *testing.T) {
 			}
 			app.closeLabels()
 
+			// 浮层：DDL 设置页（见需求 4）。
+			if entries := app.dueEntries(); len(entries) == 0 {
+				// 没有设 DDL 的条目时页面会被拒绝打开，先给一条设上。
+				app.data.Floating = append(app.data.Floating, model.NewTodo(
+					"一个名字相当长的待办用来试探 DDL 页宽度", model.KindFloating, "2026-10-03", at))
+				app.data.Floating[len(app.data.Floating)-1].SetDue("23:59")
+				app.focus = FocusFloating
+			}
+			app.openDdl()
+			if app.ddlView.active {
+				assertNoOverflow(t, "DDL 设置页", app.View(), w, h)
+			}
+			app.closeDdl()
+
 			// 浮层：计时菜单（第二级菜单，含方向键选择）。
 			app.startTimer()
 			assertNoOverflow(t, "计时菜单", app.View(), w, h)
