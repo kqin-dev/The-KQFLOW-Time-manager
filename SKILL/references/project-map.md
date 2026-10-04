@@ -96,10 +96,17 @@ kqflow-data/
 
 - **`archive.sessions` 是专注时长的唯一来源**，不要在别处再存一份。
   只有 `ended` 不为空的记录才计入总计（未结束的计时不算）。
+  专注时长读 `Session.Focus`（`*time.Duration`，按段累计）；老数据为 `nil`
+  时退回旧口径（休息不算、其余都算），见 `Session.FocusDur` / `HasBreakdown`。
+  `FocusRecord` 是早期遗留类型，统计口径已不再依赖它。
 - **`activity` 按条目名聚合**，不是按 ID。所以重命名条目会产生新的 key；
   删条目后由 `DayData.PruneOrphans()` 在读入时清理悬空项。
 - **写入一律原子**（临时文件 + rename），写前备份。恢复逻辑从 `backup/` 找同月文件。
 - 数据文件是给用户看和手改的，**保持可读、稳定**；改字段名必须能读老文件。
+- **`schema_version` 目前只是占位**：字段读得到、写得进，但**没有任何校验**，
+  未来版本的数据结构也不会被识别或拒绝——`SaveDay` 会直接按当前版本回写。
+  要做「打开未来版本数据时不启动」这类保护，得从零实现（产品需求里提过：
+  发现数据来自更新版本时应提示并拒绝启动，避免旧程序破坏新数据）。
 
 ## 数据结构要点
 
@@ -109,7 +116,9 @@ kqflow-data/
 - `Goal`：长期目标；`ArchivedDay` 非空表示它归档在某一天（存在日数据里），
   为空表示它活跃在 `goals.json` 里。
 - `Session`：一次计时。`TodoRef` 是条目 ID，`TodoName` 是当时的名字（冗余保存，
-  这样条目被删后历史仍可读）。`SegmentKind` 区分 focus / break。
+  这样条目被删后历史仍可读）。`SegmentKind` 区分 focus / break / other，
+  记录的是**结束时**所在的那一段；`Focus` 才是这次计时真正的专注时长
+  （按段累计，跨段方案也正确）。
 - `Activity`：按名字聚合的累计投入，用于「今日最投入的条目」。
 - `DayData.PruneOrphans()`：数据自愈入口，读入时调用。它会把指向已删除条目的
   `todo_ref` 清空、把确实由这些孤儿记录产生的 `activity` 项删掉

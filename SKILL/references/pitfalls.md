@@ -33,6 +33,16 @@
 | `activity` 变 nil 后 panic | 清理时把 map 置成 nil，别处直接往里写 | 保持非 nil 空 map（`omitempty` 同样不序列化） |
 | 日界线永远解析失败 | 用 `fmt.Sscanf("%d:%d:%d")` 解析 `HH:MM` | 手工按 `:` 切分 |
 | 月备份恢复找不到文件 | 备份前缀与恢复用的 glob 不是同一个 stem | 统一用月份 stem |
+| 自定义专注「有记录但不计入当日专注」 | 归档只记「结束那一刻所在段」的类型；自定义方案是跨段的，结束在休息段时整段专注被算成休息 | 归档时**按段累计**专注时长（`Plan.FocusUpTo`）存进 `Session.Focus`；只有明确标成 `focus` 的段计入专注 |
+| 正计时进度条显示「第 1 段 」且段名空白 | `Plan{Kind: TimerCountUp}` 一个段都没给 | 正计时也要有一段（`自由专注`）；只按 `Kind` 判断类型的代码遇到空方案会静默算错 |
+
+### 统计口径会变时，必须给老数据留退路
+
+`FocusTotal()` 早期只判断 `segment_kind == "break"`，其余都算专注。改成
+「只有 `focus` 算专注」之后，历史数字会跟着变。做法是给新字段用**指针**
+（`Focus *time.Duration`）：老数据是 `nil` → 退回旧口径；新数据一律写入，
+于是「专注 0 秒」也被如实记成 0 而不是缺省。改任何统计口径前先问一句
+「用户已有的历史数字会不会变」，变了就要留这条退路。
 
 ## 按键与交互
 
@@ -44,6 +54,15 @@
 | 三选一里按 `n` 把内容丢了 | 小选择框沿用了 `y`/`n` 快捷键 | 两个以上选项时禁用 `y`/`n`（`pickState.small`） |
 | 单行输入框里打不出 `q` | 关闭保护误伤了单行输入 | 只对多行输入生效 |
 | 鼠标一开就没法复制中文 | 接管鼠标后终端不能选中文本 | 默认不接管鼠标 |
+
+### 同一个动作被写在两处，就会「按一下就触发」
+
+`enter` 曾经同时挂在计时分支和看板 `switch` 的 `enter` 分支上：两边都调
+`stopTimer`。于是用户在计时中按回车想进子任务，直接把整段专注清掉了。
+**同一动作只允许有一个入口**；顺带也要检查「这个键在看板上本来是什么语义」——
+`space`（勾选完成）和 `enter`（进入子任务）在计时中被借走，就等于计时期间
+这两个功能不可用。计时这类**活跃状态**最终收成了单一入口：`p` 菜单。
+（`esc` 与 `enter` 只在确认框里作为「确认 / 取消」使用，那是明确的状态，不是看板按键。）
 
 ### 关于输入法：不要写成「必须粘贴」
 
@@ -102,10 +121,32 @@
   花括号常量（例如 olddata 那种占位写法）写在注释里同样会被解析。
 - **Pascal Script 没有 `WizardSelectTask`**：只能读（`WizardSelectedTasks`），不能程序化勾选任务。
 - **函数必须先声明后使用**：辅助函数放到调用者前面。
+- **`git clone` 在本机沙箱下会取不到 TLS 凭据**：报
+  `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS (0x8009030E)`。
+  这不是网络问题（`Test-NetConnection github.com 443` 是通的，走不走代理都一样报），
+  而是 git 默认的 `http.sslBackend=schannel` 在本机拿不到凭据。换用 openssl 即可：
+  ```powershell
+  git -c http.sslBackend=openssl clone <url> <dir>
+  git -C <dir> config http.sslBackend openssl   # 只写进本仓库，别动全局配置
+  ```
+  写进**仓库本地**配置就够了，后续 fetch/push 都正常，也不会影响用户其它仓库。
 - **`git push` 在受限沙箱下会失败**（凭据助手需要创建进程管道）。需要推送时
   用一次性放宽权限执行。用户已授权推送本仓库。
+- **读 Go 源码不要用 PowerShell 的 `Get-Content`**：它按控制台代码页解码，
+  会把 UTF-8 中文显示成「鍖?version 淇濆瓨…」这种乱码。**文件本身是好的**，
+  别据此判断编码坏了、更别去「修」它。用能按 UTF-8 读的工具（编辑器工具/`read`）。
+  写入侧的同类坑见上面 `Set-Content` 那条。
 - **不要用 `Start-Process` 跑 `kqf.exe` 做验证**：TUI 没有真控制台会挂住并留下僵死进程。
   验证安装包用 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`。
+- **只做离屏验证、却不给可执行文件，用户没法做实机测试**：本环境跑不了 TUI
+  （见上一条），所以涉及交互的改动必须**编译一个 exe 交给用户**，否则「已完成」
+  只是纸面上的。编译方式与打包一致（注意注入版本号，别让测试构建冒充正式版本）：
+  ```powershell
+  go build -trimpath -ldflags "-s -w -X github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version.Version=2.0.1-dev.1" -o kqf.exe ./cmd/kqf
+  ```
+  `version.go` 里的正式版本号**不要动**——版本号只发版时改；`-dev.N` 后缀让用户
+  一眼能确认跑的是哪次改动，也不会和已发布版本混淆。产物名保持 `kqf.exe`
+  （`data_dir` 默认按可执行文件同级解析，改名会让预览图与说明书对不上）。
 - **沙箱会拦住安装器的注册表/进程操作，导致 PATH 类改动无法在本机验证**：
   `HKCU\Environment` 在受限模式下不可写，安装器会以退出码 4 失败（连日志都不产生）；
   放宽权限后能写注册表，但安装器子进程又会遇到工作区不可写的问题。
