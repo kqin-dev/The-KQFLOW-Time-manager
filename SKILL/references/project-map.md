@@ -117,6 +117,10 @@ kqflow-data/
     两个包各留一个版本常量是因为 `model` 不依赖任何内部包、`config` 引用它会绕成环。
     注意 `config.Load` 对「损坏」仍然是退回默认值不阻断启动，只对「来自更新版本」
     拒绝——这两种情况必须区别对待。
+  - **开发期一律不动 `schema_version`**（用户明确要求）：开发版没有真实用户、
+    数据随时可弃，每加字段就升版只会让「旧开发版打不开新数据」反复阻塞调试。
+    只有**对外发布稳定版**、且变化会让更早的**已发布**版本读错时才升。
+    详见 [release.md](release.md) 第 0 节。
 
 ## 数据结构要点
 
@@ -152,6 +156,26 @@ kqflow-data/
   **`ClonePlan` 必须用**：`Segments` 是切片，直接赋值会让「当模板改」改到收藏
   原件（这一点有专门的测试）。动作串用**下标**（`saved_start:0`）而不是方案名，
   因为方案名是用户随便起的、可能含冒号等字符。
+- **时段切换提醒**（见需求 3）的调度中心是 `internal/ui/notify.go`：
+  跨过时段边界（`timerState.lastSeg` 变化）时同时触发三档提醒，各自可关
+  （配置为空 / `none` 即关闭，默认全关）：
+  - 流光 `notifyFrame` → 只叠在**中间栏第一行**（`overlayNotifyGlow`），
+    左右面板边框一个像素不动。列位置一律按显示宽度算。
+  - 提示音 `notify_sound*.go` → **代码合成** WAV（没有可自由分发的素材），
+    Windows 走 PowerShell SoundPlayer，`cmd /c start /b` 完全脱离本进程；
+    其它平台是空操作并如实报错。合成结果写 `<temp>/kqflow-sounds/`。
+  - 手机推送 `notify_ntfy.go` → POST 到 `<server>/<topic>`，标题放 `X-Title`。
+    **纯单向、失败就算**（不重试不排队）。
+- **ntfy 频道名由程序生成**（`config.GenerateNtfyTopic`，crypto/rand + base32，
+  32 字节熵）：ntfy 频道默认**全网公开**，谁猜到名字都能收、也能发，所以
+  不把安全防线寄托在用户的安全意识上。生成一次就固化在配置里（每次换频道会
+  让手机订阅失效）。用户自己填的名字会被 `NtfyTopicIsWeak` 判定并警告。
+  `config.NotifyDisclaimer` 是必须原样展示的风险说明（第三方关系、不加密、
+  不要泄露、不承担责任），措辞合规见 bug.md 注意 2 / 用户要求。
+- **二维码是自己实现的**（`internal/ui/qr.go`，字节模式 + L 级 + 版本 1-10 +
+  8 种掩码按罚分择优）。理由是只为「手机扫码订阅一个地址」引一个完整 QR 库
+  不成比例。`qr_test.go` 用标准里写死的格式信息位串做了独立校验，但
+  **「真机扫得出来」本环境无法验证**，改动这里后请让用户用手机实扫一次。
 - `Activity`：按名字聚合的累计投入，用于「今日最投入的条目」。
 - `DayData.PruneOrphans()`：数据自愈入口，读入时调用。它会把指向已删除条目的
   `todo_ref` 清空、把确实由这些孤儿记录产生的 `activity` 项删掉
@@ -168,6 +192,7 @@ kqflow-data/
 | 标签 | `labels.go`（页面 + 渲染）、`model/label.go`（数据与清洗） |
 | DDL / 截止时间 | `ddl.go`（页面 + 排序）、`model/ddl.go`（粒度与到期计算） |
 | 收藏的专注方案 | `savedplans.go`（菜单 + 三种动作）、`model/plan.go`（校验与克隆） |
+| 时段切换提醒 | `notify.go`（调度 + 流光）、`notify_sound*.go`（合成音频）、`notify_ntfy.go`（推送）、`qr.go`（二维码） |
 | 菜单项 | `menuItems` |
 | 设置项 | `settingItems` |
 | 二级页内容 | `helpLines` / `settingsLines` / `historyLines` / `carryContent` |

@@ -5,6 +5,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,6 +80,31 @@ type Config struct {
 	// 放在配置里而不是日数据里：它是「偏好」而不是「当天记录」，与日界线无关，
 	// 也不该随某一天的数据被清理。
 	SavedPlans []model.Plan `json:"saved_plans,omitempty"`
+
+	// ---------- 时段切换提醒（见需求 3） ----------
+	//
+	// 三种提醒按「注意力距离」覆盖三个场景：人在屏幕前（流光）、人在设备附近
+	// 但没看屏幕（提示音）、人离开设备只带了手机（ntfy 推送）。
+	// 每一项都能关掉，默认全关——需要装 App、需要联网的功能不该默认打开。
+
+	// NotifyGlow 是流光特效的预设名；空或 "none" 表示关闭。
+	NotifyGlow string `json:"notify_glow,omitempty"`
+	// NotifySound 是提示音的预设名；空或 "none" 表示关闭。
+	// "bell" 只用终端响铃（不需要任何音频能力），其余是内置合成音。
+	NotifySound string `json:"notify_sound,omitempty"`
+	// NtfyTopic 是用户订阅的 ntfy.sh 频道名。
+	//
+	// ntfy.sh 的频道默认是**全网公开**的：知道名字的人都能收到、也能发。
+	// 所以这里只应该放高熵随机串（见 EffectiveNtfyTopic），不要放 "myphone"
+	// 这种猜得到的名字。
+	NtfyTopic string `json:"ntfy_topic,omitempty"`
+	// NtfyServer 是 ntfy 服务地址；留空表示用官方 https://ntfy.sh。
+	NtfyServer string `json:"ntfy_server,omitempty"`
+	// NtfyEnabled 是推送总开关。
+	//
+	// 与「填了 Topic」分开：需求明确要求「可以填了但是关掉」。
+	NtfyEnabled bool `json:"ntfy_enabled,omitempty"`
+
 	// ShowNote 决定是否在看板上展示当日随手记的前几行。
 	ShowNote bool `json:"show_note,omitempty"`
 	// Timezone 为空时使用系统本地时区。
@@ -284,6 +311,121 @@ func (c *Config) RemoveSavedPlan(label string) bool {
 		c.SavedPlans = out
 	}
 	return removed
+}
+
+// ---------- 时段切换提醒（见需求 3） ----------
+
+// NtfyDefaultServer 是官方 ntfy 服务地址。
+const NtfyDefaultServer = "https://ntfy.sh"
+
+// NtfyTopicLength 是自动生成频道名的长度（字节）。32 字节 = 256 位熵。
+//
+// ntfy.sh 的频道是全网公开的：谁猜到名字谁就能收到、也能往里发。用户自己起的
+// 名字（"myphone"、"kqflow"）基本必然被猜到，所以由程序生成高熵随机名，
+// 不把安全防线寄托在用户的安全意识上。
+const NtfyTopicLength = 32
+
+// GenerateNtfyTopic 生成一个高熵频道名。
+//
+// 用 crypto/rand（不是 math/rand）：这个名字是唯一的访问凭据，必须不可预测。
+// 返回的是 URL 安全的 base32（去掉容易看错的填充与易混字符），既够短也够随机。
+func GenerateNtfyTopic() (string, error) {
+	buf := make([]byte, NtfyTopicLength)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("生成随机频道名失败: %w", err)
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf), nil
+}
+
+// EffectiveNtfyTopic 返回生效的频道名：用户填过就用用户的，没填过就自动生成一个
+// 并写回配置（固化下来，不能每次专注都换频道——否则用户的手机订阅就失效了）。
+//
+// 返回的第二个值表示本次是否新生成并写入了配置，调用方据此决定要不要落盘。
+func (c *Config) EffectiveNtfyTopic() (string, bool) {
+	if t := strings.TrimSpace(c.NtfyTopic); t != "" {
+		return t, false
+	}
+	generated, err := GenerateNtfyTopic()
+	if err != nil {
+		return "", false
+	}
+	c.NtfyTopic = generated
+	return generated, true
+}
+
+// NtfyURL 返回该频道的订阅地址。
+func (c *Config) NtfyURL() string {
+	topic := strings.TrimSpace(c.NtfyTopic)
+	if topic == "" {
+		return ""
+	}
+	return c.NtfyServerURL() + "/" + topic
+}
+
+// NtfyServerURL 返回服务地址（末尾不带 /）。
+func (c *Config) NtfyServerURL() string {
+	server := strings.TrimSpace(c.NtfyServer)
+	if server == "" {
+		return NtfyDefaultServer
+	}
+	return strings.TrimRight(server, "/")
+}
+
+// NtfyTopicIsWeak 报告频道名是否弱到有明显被猜中的风险。
+//
+// 判据刻意宽松（只拦明显危险的）：太短、纯字母数字且很短、或与项目/常见词同名。
+// 警告而不阻止——用户有权自己决定，但程序有义务把风险讲清楚。
+func NtfyTopicIsWeak(topic string) bool {
+	t := strings.TrimSpace(topic)
+	if t == "" {
+		return true
+	}
+	// 高熵名字按长度就能排除：32 字节 base32 是 52 个字符。
+	if len(t) >= 20 {
+		return false
+	}
+	lower := strings.ToLower(t)
+	for _, weak := range []string{
+		"kqflow", "kqf", "test", "demo", "phone", "myphone", "me",
+		"abc", "123", "topic", "channel", "push", "notice", "alert",
+	} {
+		if lower == weak || strings.Contains(lower, weak) {
+			return true
+		}
+	}
+	return true
+}
+
+// NotifyDisclaimer 是向用户展示的风险提示。
+//
+// 需求（注意 2）要求：引导用户使用 ntfy.sh 时注意措辞，不要被误解为附属软件；
+// 用户也要求把「频道不加密、不要泄露、不要轻信收到的奇怪消息」讲清楚。
+const NotifyDisclaimer = "ntfy.sh 是独立的第三方开源推送服务，KQFLOW 与它没有隶属或合作关系，" +
+	"只是把消息发到你指定的地址。ntfy 的频道默认不加密、且全网可读：" +
+	"知道频道名的人都能收到消息、也能往里发。请不要把这个频道名告诉陌生人；" +
+	"收到来源不明的消息不要轻信。由此造成的任何损失，KQFLOW 不承担责任。"
+
+// EffectiveNotifyGlow 返回生效的流光预设（空表示关闭）。
+func (c *Config) EffectiveNotifyGlow() string {
+	v := strings.TrimSpace(c.NotifyGlow)
+	if v == "" || v == "none" {
+		return ""
+	}
+	return v
+}
+
+// EffectiveNotifySound 返回生效的提示音预设（空表示关闭）。
+func (c *Config) EffectiveNotifySound() string {
+	v := strings.TrimSpace(c.NotifySound)
+	if v == "" || v == "none" {
+		return ""
+	}
+	return v
+}
+
+// NtfyReady 报告推送是否已就绪（开了开关且频道名非空）。
+func (c *Config) NtfyReady() bool {
+	return c.NtfyEnabled && strings.TrimSpace(c.NtfyTopic) != ""
 }
 
 func minutes(v, fallback int) time.Duration {

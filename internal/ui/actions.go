@@ -582,6 +582,40 @@ var settingItems = []settingItem{
 		Label: "数据目录",
 		Value: func(a *App) string { return a.store.Root() },
 	},
+	// ---------- 时段切换提醒（见需求 3） ----------
+	{
+		Label: "提醒 · 流光（人在屏幕前）",
+		Value: func(a *App) string { return notifyPresetLabel(notifyGlowPresets, a.cfg.NotifyGlow) },
+		Edit:  (*App).cycleNotifyGlow,
+	},
+	{
+		Label: "提醒 · 提示音（人在设备附近）",
+		Value: func(a *App) string { return notifyPresetLabel(notifySoundPresets, a.cfg.NotifySound) },
+		Edit:  (*App).cycleNotifySound,
+	},
+	{
+		Label: "提醒 · 手机推送 ntfy（离机）",
+		Value: func(a *App) string {
+			if !a.cfg.NtfyEnabled {
+				return "关"
+			}
+			if strings.TrimSpace(a.cfg.NtfyTopic) == "" {
+				return "开（尚未生成频道）"
+			}
+			return "开 · " + a.cfg.NtfyTopic
+		},
+		Edit: (*App).toggleNtfy,
+	},
+	{
+		Label: "提醒 · 复制手机订阅地址",
+		Value: func(a *App) string {
+			if !a.cfg.NtfyReady() {
+				return "先打开手机推送"
+			}
+			return a.cfg.NtfyURL()
+		},
+		Edit: (*App).showNtfyHelp,
+	},
 	{
 		Label: "配置文件",
 		Value: func(a *App) string { return a.pathsForSave().ConfigFile },
@@ -605,7 +639,7 @@ func (a *App) handleSettingsKey(key string) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		a.settingsCursor = len(settingItems) - 1
 	case "enter", "e", " ":
-		a.activateSetting()
+		return a.activateSetting()
 	case "ctrl+c":
 		a.quitting = true
 		return a, tea.Quit
@@ -613,17 +647,30 @@ func (a *App) handleSettingsKey(key string) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// hearingCmd 是「刚才那次设置变更顺带要执行的一次性命令」。
+//
+// 只在需要试听的设置项上用（例如刚选好提示音就放一遍），一次性消费。
+// 不这么做就得把 settingItem.Edit 的签名改成返回 tea.Cmd，那会牵动十几个
+// 已有的设置项实现，不值得。
+func (a *App) takeHearingCmd() tea.Cmd {
+	cmd := a.hearingCmd
+	a.hearingCmd = nil
+	return cmd
+}
+
 // activateSetting 打开当前选中设置的输入框。
-func (a *App) activateSetting() {
+func (a *App) activateSetting() (tea.Model, tea.Cmd) {
 	if a.settingsCursor < 0 || a.settingsCursor >= len(settingItems) {
-		return
+		return a, nil
 	}
 	item := settingItems[a.settingsCursor]
 	if item.Edit == nil {
 		a.setToast("这一项是只读的", toastInfo)
-		return
+		return a, nil
 	}
 	item.Edit(a)
+	// 设置项可能顺手要求播放一次提示音（试听）。
+	return a, a.takeHearingCmd()
 }
 
 // editCutoff 编辑日界线。

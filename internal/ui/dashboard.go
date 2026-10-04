@@ -32,6 +32,12 @@ func (a *App) View() string {
 	if a.stopAsk && a.timer != nil {
 		return clipBlock(a.renderCenterBox(a.stopConfirmContent()), a.width, a.height)
 	}
+	// 手机推送说明页（见需求 3）：盖住中间栏、左右面板保持可见。
+	// 走 pageContent 以便裁剪与滚动——说明文字加二维码比中间栏高是常态。
+	if a.ntfyHelp {
+		styled, plain := a.ntfyHelpContent()
+		return clipBlock(a.renderCenterBox(a.pageContent(styled, plain, -1)), a.width, a.height)
+	}
 	// 选择框优先级最高：它常常是“在编辑器之上”弹出的确认（例如
 	// 随手记没保存就问“保存还是丢弃”），必须盖住下面的输入框，
 	// 否则用户看不到这个提问。
@@ -70,8 +76,138 @@ func (a *App) View() string {
 		if a.timer != nil && a.timer.consumeBell() {
 			base = "\a" + base
 		}
+		// 时段切换的流光提示（见需求 3）：覆盖在中间栏顶部一行，不动左右面板。
+		if a.notifyState != nil && !a.notifyDone(a.clock.Now()) {
+			base = a.overlayNotifyGlow(base)
+		}
 		return base
 	}
+}
+
+// overlayNotifyGlow 把流光提示叠在中间栏的第一行内容上。
+//
+// 只替换一行、只动中间栏：需求要求「足够醒目又没有很强的割裂感」，整屏反色会
+// 盖掉进度条与计时，左右面板的边框也会被切出断口（本项目踩过这个坑）。
+//
+// 这里的列位置一律按**显示宽度**算（conventions 第 1 条）：中文占两列，
+// 用 rune 下标切会把汉字劈成两半、也会算错左右栏的边界。
+func (a *App) overlayNotifyGlow(base string) string {
+	leftW, centerW, _, _ := a.columnLayout()
+	inner := centerW - a.st.Panel.GetHorizontalFrameSize()
+	line := a.notifyFrame(a.notifyProgress(a.clock.Now()), inner)
+	if strings.TrimSpace(line) == "" {
+		return base
+	}
+
+	lines := strings.Split(base, "\n")
+	// 第 0 行是页头，第 1 行是面板上边框，第 2 行是面板第一行内容。
+	const row = 2
+	if len(lines) <= row {
+		return base
+	}
+
+	// 替换中间栏内容区那一段列范围。`leftW + 1` 是中间栏左边框，再 +1 是内边距。
+	plain := stripANSI(lines[row])
+	start := leftW + 2
+	end := start + inner
+	patched := replaceColumns(plain, line, start, end)
+	// 长度必须不变，否则整行宽度会变、把三栏挤歪。
+	if lipgloss.Width(patched) != lipgloss.Width(plain) {
+		return base
+	}
+	lines[row] = patched
+	return strings.Join(lines, "\n")
+}
+
+// replaceColumns 把 s 里显示列区间 [start, end) 的内容替换成 fill，
+// 并按原区间的显示宽度补齐或截断，保证整串宽度不变。
+func replaceColumns(s, fill string, start, end int) string {
+	if start < 0 {
+		start = 0
+	}
+	if end < start {
+		end = start
+	}
+	// 目标宽度：原区间在 s 里实际占用的列数（可能因为宽字符略有出入）。
+	target := lipgloss.Width(displayRange(s, start, end))
+
+	head := takeColumns(s, start)
+	tail := dropColumns(s, end)
+	middle := fitColumns(fill, target)
+	return head + middle + tail
+}
+
+// takeColumns 取 s 里前 n 个显示列的内容。
+func takeColumns(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > n {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String()
+}
+
+// dropColumns 丢掉 s 里前 n 个显示列的内容。
+func dropColumns(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	w := 0
+	for i, r := range s {
+		if w >= n {
+			return s[i:]
+		}
+		w += lipgloss.Width(string(r))
+	}
+	return ""
+}
+
+// displayRange 取 s 里第 [start, end) 个显示列的内容。
+func displayRange(s string, start, end int) string {
+	return takeColumns(dropColumns(s, start), end-start)
+}
+
+// fitColumns 把 s 调整为正好 width 个显示列：短了补空格，长了按列截断。
+func fitColumns(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	got := lipgloss.Width(s)
+	if got == width {
+		return s
+	}
+	if got < width {
+		return s + strings.Repeat(" ", width-got)
+	}
+	return truncateCells(s, width)
+}
+
+// stripANSI 去掉 ANSI 转义序列，用于按显示宽度处理带样式的行。
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for _, r := range s {
+		switch {
+		case inEscape:
+			// CSI 序列以字母结尾（如 m）。
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEscape = false
+			}
+		case r == 0x1b:
+			inEscape = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // settingsCursorRow 返回设置页当前选中项在内容行里的下标。

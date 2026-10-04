@@ -119,6 +119,12 @@ type App struct {
 	labelView labelViewState
 	// ddlView 是截止时间设置页的状态（见需求 4）。
 	ddlView ddlViewState
+	// notifyState 是时段切换提醒的播放状态（见需求 3）。
+	notifyState *notifyState
+	// hearingCmd 是设置页里「选完就试听」这类一次性命令（见 activateSetting）。
+	hearingCmd tea.Cmd
+	// ntfyHelp 为真时显示「手机推送怎么用」的说明页（见需求 3）。
+	ntfyHelp bool
 
 	toast     string
 	toastKind toastKind
@@ -293,11 +299,49 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// 计时状态在动画帧里推进，保证进度条平滑动起来。
 		if a.timer != nil {
-			if cmd := a.timer.tick(a.clock.Now()); cmd != nil {
+			now := a.clock.Now()
+			// 时段切换提醒（见需求 3）：跨过时段边界时触发流光 / 提示音 / 推送。
+			if n := a.checkSegmentChange(now); n != nil {
+				a.notifyState = n
+				cmds := []tea.Cmd{animCmd()}
+				if sc := a.notifySoundCmd(); sc != nil {
+					cmds = append(cmds, sc)
+				}
+				if n.pushCmd != nil {
+					cmds = append(cmds, n.pushCmd)
+				}
+				return a, tea.Batch(cmds...)
+			}
+			if cmd := a.timer.tick(now); cmd != nil {
 				return a, tea.Batch(animCmd(), cmd)
 			}
 		}
+		// 流光播完就收掉。
+		if a.notifyState != nil && a.notifyDone(a.clock.Now()) {
+			a.notifyState = nil
+		}
 		return a, animCmd()
+
+	case bellMsg:
+		// 让下一帧输出响铃字符（终端响铃预设）。
+		if a.timer != nil {
+			a.timer.bell = true
+		}
+		return a, nil
+
+	case soundPlayedMsg:
+		// 播放失败只提示一次，不影响计时。
+		if m.err != nil {
+			a.setToast("提示音播放失败："+m.err.Error(), toastWarn)
+		}
+		return a, nil
+
+	case ntfyPushedMsg:
+		// 纯单向推送，失败就算了（用户明确要求不重试）。
+		if m.err != nil {
+			a.setToast("手机推送失败（不影响计时）："+m.err.Error(), toastWarn)
+		}
+		return a, nil
 
 	case savedMsg:
 		if m.err != nil {
@@ -327,6 +371,12 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.celebrate != nil && key != "ctrl+c" {
 		a.celebrate = nil
 		return a, nil
+	}
+
+	// 手机推送说明页是叠在设置页之上的浮层，必须最先处理按键：它打开时
+	// view 仍是 ViewSettings，放在设置页判断之后就会永远轮不到它。
+	if a.ntfyHelp {
+		return a.handleNtfyHelpKey(key)
 	}
 
 	// 结束计时的确认优先于一切：计时中几乎所有按键都可能是误触，
