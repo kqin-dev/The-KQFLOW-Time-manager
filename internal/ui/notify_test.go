@@ -150,8 +150,8 @@ func TestNotifySoundIsOnOffBell(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("开启后应有响铃命令")
 	}
-	if _, ok := cmd().(bellMsg); !ok {
-		t.Error("提示音应为终端响铃（bellMsg）")
+	if _, ok := cmd().(bellOnceMsg); !ok {
+		t.Error("提示音应为终端响铃（bellOnceMsg）")
 	}
 
 	// 关掉就没了。

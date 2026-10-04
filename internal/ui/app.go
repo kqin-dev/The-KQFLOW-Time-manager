@@ -297,30 +297,41 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.NextQuote()
 			a.quoteAt = now
 		}
+		// 响铃标记要在这里清掉，而不是等渲染。
+		//
+		// 用户实测报过：「一直呆在设置页面，貌似就不会播放提示音」。原因是响铃
+		// 原来只在看板的渲染路径里 `consumeBell()` 输出 `\a`，停在设置页时那段
+		// 根本不执行，标记就一直是"待响"状态。这里改成动画帧统一处理：
+		// **不管用户停在哪个页面，提示音都会响**。
+		//
+		// 注意不能早返回：跨段与 tick 都会 return，若在那里直接返回就会把响铃
+		// 命令丢掉。所以先把所有命令攒进 cmds，最后统一 Batch。
+		var cmds []tea.Cmd
+		if a.timer != nil && a.timer.consumeBell() {
+			cmds = append(cmds, bellOnce())
+		}
 		// 计时状态在动画帧里推进，保证进度条平滑动起来。
 		if a.timer != nil {
 			now := a.clock.Now()
 			// 时段切换提醒（见需求 3）：跨过时段边界时触发流光 / 提示音 / 推送。
 			if n := a.checkSegmentChange(now); n != nil {
 				a.notifyState = n
-				cmds := []tea.Cmd{animCmd()}
 				if sc := a.notifySoundCmd(); sc != nil {
 					cmds = append(cmds, sc)
 				}
 				if n.pushCmd != nil {
 					cmds = append(cmds, n.pushCmd)
 				}
-				return a, tea.Batch(cmds...)
-			}
-			if cmd := a.timer.tick(now); cmd != nil {
-				return a, tea.Batch(animCmd(), cmd)
+			} else if cmd := a.timer.tick(now); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 		// 流光播完就收掉。
 		if a.notifyState != nil && a.notifyDone(a.clock.Now()) {
 			a.notifyState = nil
 		}
-		return a, animCmd()
+		cmds = append(cmds, animCmd())
+		return a, tea.Batch(cmds...)
 
 	case bellMsg:
 		// 让下一帧输出响铃字符（提示音就是终端响铃，见 notify.go）。
@@ -328,6 +339,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.timer.bell = true
 		}
 		return a, nil
+
+	case bellOnceMsg:
+		// 立刻响一次铃（不依赖计时器状态）：提示音测试与"没有计时也要响"的场景用。
+		return a, bellOnce()
 
 	case ntfyPushedMsg:
 		// 纯单向推送，失败就算了（用户明确要求不重试）。

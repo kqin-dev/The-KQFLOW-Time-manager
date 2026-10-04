@@ -51,6 +51,131 @@ func TestSettingsDisclaimerIsComplete(t *testing.T) {
 	}
 }
 
+// TestDisclaimerCompleteInBothViews 把**两个页面都渲染一遍**，逐个窗口尺寸
+// 检查声明是否逐字完整、每行是否都不超过面板内宽。
+//
+// 用户连续两次报「风险提示显示不全」，说明只测一个页面/一种尺寸不够：
+// 设置页直接把声明铺在列表里，说明页在 pageContent 里滚动，两条路径都要验。
+// 判据用「去掉所有空白后逐字包含」，这样任何丢字、错位都会被抓到。
+func TestDisclaimerCompleteInBothViews(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+	squash := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	want := squash(config.NotifyDisclaimer)
+
+	sizes := [][2]int{{60, 20}, {80, 24}, {90, 30}, {100, 36}, {110, 40}, {120, 44}, {140, 48}, {160, 50}}
+	for _, size := range sizes {
+		app, _, _ := newTestApp(t, at)
+		app.width, app.height = size[0], size[1]
+		app.cfg.NtfyTopic = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXPJBSWY3D"
+		app.cfg.NtfyEnabled = true
+
+		// --- 设置页：逐行检查（pageContent 的 plain 即渲染出来的行）---
+		app.view = ViewSettings
+		styled, plain := app.settingsLines()
+		_ = styled
+		inner := app.contentWidth()
+		for i, l := range plain {
+			if w := lipgloss.Width(l); w > inner {
+				t.Errorf("%dx%d 设置页第 %d 行宽 %d 超内宽 %d：%q",
+					size[0], size[1], i, w, inner, l)
+			}
+		}
+		if got := squash(strings.Join(plain, "")); !strings.Contains(got, want) {
+			t.Errorf("%dx%d 设置页的声明不完整\n期望：%s\n实际：%s", size[0], size[1], want, got)
+		}
+
+		// --- 说明页：它走 pageContent，会被滚动裁剪，所以要滚一遍找 ---
+		app.view = ViewSettings
+		app.ntfyHelp = true
+		app.pageScroll = 0
+		var all []string
+		for i := 0; i < 60; i++ {
+			hs, hp := app.ntfyHelpContent()
+			_ = hs
+			total := len(hp)
+			_, _, _, bodyH := app.columnLayout()
+			avail := bodyH - a4(app)
+			if avail < 1 {
+				avail = 1
+			}
+			start := app.pageScroll
+			end := start + avail
+			if end > total {
+				end = total
+			}
+			if start < total {
+				all = append(all, hp[start:end]...)
+			}
+			// 每一行都要在可见宽度内。
+			for j := 0; j < total; j++ {
+				if w := lipgloss.Width(hp[j]); w > app.contentWidth() {
+					t.Errorf("%dx%d 说明页第 %d 行宽 %d 超内宽 %d：%q",
+						size[0], size[1], j, w, app.contentWidth(), hp[j])
+				}
+			}
+			before := app.pageScroll
+			app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+			if app.pageScroll == before {
+				break
+			}
+		}
+		if got := squash(strings.Join(all, "")); !strings.Contains(got, want) {
+			t.Errorf("%dx%d 说明页的声明不完整\n期望：%s\n实际：%s", size[0], size[1], want, got)
+		}
+		app.ntfyHelp = false
+	}
+}
+
+// a4 返回面板边框占用的垂直尺寸（与 pageContent 的算法保持一致）。
+func a4(a *App) int { return a.st.Panel.GetVerticalFrameSize() }
+
+// TestBellRingsOnAnyView 验证提示音在**任何页面**都会响。
+//
+// 用户实测报过两件事：「测试时流光和频道都正常，但没有播放提示音」（其实实际
+// 使用时能响）以及「一直呆在设置页面貌似就不会播放提示音」。根因是响铃原来只在
+// 看板的渲染路径里输出 `\a`，停在设置页时那段根本不执行。已改成在 Update 的
+// 动画帧里统一处理。
+func TestBellRingsOnAnyView(t *testing.T) {
+	at := time.Date(2026, 10, 3, 9, 0, 0, 0, time.Local)
+
+	for _, view := range []View{ViewDashboard, ViewSettings, ViewHistory, ViewHelp} {
+		app, _, _ := newTestApp(t, at)
+		app.view = view
+		app.cfg.NotifySound = true
+
+		// 走计时器状态这条路：设铃标记，动画帧应当消费它并输出响铃。
+		plan := model.Plan{Kind: model.TimerCountUp, Segments: []model.Segment{
+			{Name: "自由专注", Kind: model.SegmentKindFocus},
+		}}
+		app.beginTimer(plan, "")
+		app.timer.bell = true
+
+		_, cmd := app.Update(animMsg{})
+		if app.timer.consumeBell() {
+			t.Errorf("view=%v：铃标记应已被消费（否则永远不会响）", view)
+		}
+		if cmd == nil {
+			t.Errorf("view=%v：应返回命令", view)
+		}
+	}
+
+	// 没有计时器时（例如设置页里点测试）也要能响。
+	app, _, _ := newTestApp(t, at)
+	app.view = ViewSettings
+	app.cfg.NotifySound = true
+	cmd := app.notifySoundCmd()
+	if cmd == nil {
+		t.Fatal("没有计时器时也应能响")
+	}
+	if _, ok := cmd().(bellOnceMsg); !ok {
+		t.Error("应产生 bellOnceMsg")
+	}
+	// bellOnceMsg 交给 Update 后应再产出一条响铃命令。
+	if _, cmd2 := app.Update(bellOnceMsg{}); cmd2 == nil {
+		t.Error("bellOnceMsg 应触发一次响铃")
+	}
+}
+
 // TestAutoArchiveOnFinish 验证「专注结束自动归档」这个选项的两条路径。
 //
 // 默认关：走完后停住等确认（时长不会被自动定成"完成"）。
@@ -170,6 +295,7 @@ func TestDemoNotify(t *testing.T) {
 	t.Run("只开流光：报告另外两项未开", func(t *testing.T) {
 		app, _, _ := newTestApp(t, at)
 		app.cfg.NotifyGlow = true
+		app.view = ViewSettings
 		app.demoNotify()
 		if app.notifyState == nil {
 			t.Fatal("应产生提醒状态（流光）")
@@ -185,6 +311,17 @@ func TestDemoNotify(t *testing.T) {
 		}
 		if !strings.Contains(app.toast, "手机推送（未开）") {
 			t.Errorf("应说明手机推送未开，实际 %q", app.toast)
+		}
+		// 关键：必须切回看板，否则流光（只做在 LOGO 上）根本看不见。
+		if app.view != ViewDashboard {
+			t.Errorf("测试后应切回看板，实际 view=%v", app.view)
+		}
+		if app.ntfyHelp {
+			t.Error("测试后不该还停在说明页")
+		}
+		// 切回看板后 LOGO 上应真的出现流光记号。
+		if !strings.Contains(stripANSI(app.View()), "◈") {
+			t.Error("切回看板后应能看到 LOGO 流光")
 		}
 	})
 

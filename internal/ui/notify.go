@@ -165,19 +165,30 @@ func (a *App) notifyLogo(avail int) string {
 // notifySoundCmd 返回播放提示音的命令。
 //
 // 只保留"终端响铃"：用户实测程序合成的几种音频在本机都放不出声（分别试过
-// PowerShell SoundPlayer 与脱离进程的播放），而系统响铃好听且可用。所以这个
-// 开关不再需要预设列表——要么响，要么不响。
+// PowerShell SoundPlayer 与脱离进程的播放），而系统响铃好听且可用。
 //
-// 响铃不直接写在这里，而是发一个消息让下一帧输出 `\a`：响铃属于渲染副作用，
-// 不该在 Update 里直接动界面状态。
+// 用 bellOnce 而不是设 a.timer.bell：提示音要在**任何页面**都能响，而
+// a.timer.bell 那条路依赖渲染看板（用户报过"停在设置页就不响"）。这样也不要求
+// 一定有正在进行的计时（设置页的测试按钮就没有）。
 func (a *App) notifySoundCmd() tea.Cmd {
 	if a.cfg == nil || !a.cfg.NotifySound {
 		return nil
 	}
-	return func() tea.Msg { return bellMsg{} }
+	return bellOnce()
 }
 
-// bellMsg 让下一帧输出响铃字符。
+// bellOnce 返回一个"立刻响一次铃"的命令。
+//
+// 响铃通过消息回传而不是在 Update 里直接写状态：响铃属于副作用，交给
+// tea 的消息循环处理，测试里也能明确断言。
+func bellOnce() tea.Cmd {
+	return func() tea.Msg { return bellOnceMsg{} }
+}
+
+// bellOnceMsg 让下一帧输出响铃字符。
+type bellOnceMsg struct{}
+
+// bellMsg 让计时器的下一帧响铃（计时器状态路径用）。
 type bellMsg struct{}
 
 // ---------- 推送文案 ----------
@@ -219,36 +230,53 @@ func (a *App) ntfyHelpContent() (styled, plain []string) {
 	}
 	add(a.st.ModalTitle.Render(truncate("手机推送 / ntfy.sh", inner)), "手机推送 / ntfy.sh")
 	add("", "")
-	add(a.st.Text.Render(truncate("1. 手机安装 ntfy App（应用商店搜 ntfy）", inner)),
-		"1. 手机安装 ntfy App（应用商店搜 ntfy）")
-	add(a.st.Text.Render(truncate("2. 在 App 里点 Subscribe to topic，把下面这个地址的", inner)),
-		"2. 在 App 里点 Subscribe to topic，把下面这个地址的")
-	add(a.st.Text.Render(truncate("   最后一段（/ 后面那串）填进 topic，或直接用地址订阅。", inner)),
-		"   最后一段（/ 后面那串）填进 topic，或直接用地址订阅。")
-	add("", "")
 
-	// 地址：分行给出，便于终端里选中复制。
-	add(a.st.Muted.Render(truncate("订阅地址（可选中复制）：", inner)), "订阅地址（可选中复制）：")
-	for _, l := range wrapBalanced(url, max(8, inner-2)) {
-		add(a.st.Accent.Bold(true).Render(truncate("   "+l, inner)), "   "+l)
+	// 所有说明文字都要按内宽折行。
+	//
+	// 用户两次报「显示不全」，根因就在这类"看起来不长"的固定文本上：在窄终端里
+	// 它们会超过内宽，被终端自己折行，折走的部分看起来就是丢了字。所以这里一律
+	// 走 wrap，不许直接 add 长句。
+	for _, l := range wrap("1. 手机安装 ntfy App（应用商店搜 ntfy）", inner) {
+		add(a.st.Text.Render(l), l)
+	}
+	for _, l := range wrap("2. 在 App 里点 Subscribe to topic，把下面的频道名或地址填进去。", inner) {
+		add(a.st.Text.Render(l), l)
 	}
 	add("", "")
-	add(a.st.Muted.Render(truncate("频道名（topic）：", inner)), "频道名（topic）：")
-	add(a.st.Accent.Render(truncate("   "+a.cfg.NtfyTopic, inner)), "   "+a.cfg.NtfyTopic)
+
+	// 地址与频道名：分行给出，便于终端里选中复制。
+	for _, l := range wrap("订阅地址（可选中复制）：", inner) {
+		add(a.st.Muted.Render(l), l)
+	}
+	for _, l := range wrap(url, inner) {
+		add(a.st.Accent.Bold(true).Render(l), l)
+	}
+	add("", "")
+	for _, l := range wrap("频道名（topic）：", inner) {
+		add(a.st.Muted.Render(l), l)
+	}
+	for _, l := range wrap(a.cfg.NtfyTopic, inner) {
+		add(a.st.Accent.Render(l), l)
+	}
 	add("", "")
 
 	if config.NtfyTopicIsWeak(a.cfg.NtfyTopic) {
-		add(a.st.Warn.Render(truncate("⚠ 当前频道名偏短，容易被猜到，建议在设置里重新生成", inner)),
-			"⚠ 当前频道名偏短，容易被猜到，建议在设置里重新生成")
+		for _, l := range wrap("⚠ 当前频道名偏短，容易被猜到，建议在设置里重新生成", inner) {
+			add(a.st.Warn.Render(l), l)
+		}
 		add("", "")
 	}
 
-	add(a.st.Muted.Render(truncate("风险提示：", inner)), "风险提示：")
-	for _, l := range wrapBalanced(config.NotifyDisclaimer, max(8, inner)) {
-		add(a.st.Muted.Render(truncate(l, inner)), l)
+	for _, l := range wrap("风险提示：", inner) {
+		add(a.st.Muted.Render(l), l)
+	}
+	for _, l := range wrap(config.NotifyDisclaimer, inner) {
+		add(a.st.Muted.Render(l), l)
 	}
 	add("", "")
-	add(a.st.Muted.Render(truncate("j/k 滚动 · esc / q 返回", inner)), "j/k 滚动 · esc / q 返回")
+	for _, l := range wrap("j/k 滚动 · esc / q 返回", inner) {
+		add(a.st.Muted.Render(l), l)
+	}
 	return styled, plain
 }
 
@@ -428,6 +456,10 @@ func (a *App) demoNotify() {
 	}
 
 	a.setToast("测试："+strings.Join(ran, " · "), toastInfo)
+	// 立刻切回看板：流光只做在 LOGO 上，而 LOGO 只在看板上。
+	// 用户明确要求——不切回去的话，在设置页点测试根本看不见流光。
+	a.view = ViewDashboard
+	a.ntfyHelp = false
 	// 命令通过 hearingCmd 交给设置页的按键处理回传（与试听同一机制）。
 	a.hearingCmd = tea.Batch(cmds...)
 }

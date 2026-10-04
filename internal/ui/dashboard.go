@@ -71,12 +71,9 @@ func (a *App) View() string {
 	case ViewDdl:
 		return clipBlock(a.renderCenterBox(a.ddlContent()), a.width, a.height)
 	default:
-		base := a.renderDashboard()
-		// 计时结束时响一声，提醒正在别处工作的用户。
-		if a.timer != nil && a.timer.consumeBell() {
-			base = "\a" + base
-		}
-		return base
+		// 响铃已经改成在 Update 的动画帧里统一处理（见 App.Update 的 animMsg），
+		// 不再依赖看板的渲染路径——否则用户停在设置页时提示音不会响。
+		return a.renderDashboard()
 	}
 }
 

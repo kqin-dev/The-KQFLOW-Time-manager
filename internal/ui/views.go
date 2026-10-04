@@ -412,14 +412,14 @@ func (a *App) settingsLines() (styled, plain []string) {
 				if strings.TrimSpace(l) == "" {
 					continue
 				}
-				// 缩进 4 列后必须仍然放得下：折行宽度取 inner-4，再逐行截断兜底。
-				// 用贪心的 wrap（不是 wrapBalanced）：这里要的是"一行尽可能多装、
-				// 一定装得下"，均衡折行反而可能让某行更短、看起来像少了字。
-				// 用户报过"风险提示显示不全"——长中文一旦超出内宽就会被终端折行，
-				// 折行的后半段看起来就像丢了内容。
-				for _, wl := range wrap(l, max(8, inner-4)) {
-					sub := truncate("    "+wl, inner)
-					add(a.st.Muted.Render(sub), sub)
+				// 长内容按**内宽本身**折行，不再加缩进。
+				//
+				// 这里刻意避开"缩进 + 按 inner-N 折行"的组合：用户连续两次报
+				// 「风险提示显示不全」，而那个组合一旦缩进宽度与折行宽度不一致，
+				// 超出的部分就会被终端自己折行、看起来就是丢了字。现在折行宽度
+				// 与可用宽度是同一个数，结构上不可能超出；主次靠样式区分。
+				for _, wl := range wrap(l, inner) {
+					add(a.st.Muted.Render(wl), wl)
 				}
 			}
 			continue
