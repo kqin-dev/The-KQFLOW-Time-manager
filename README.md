@@ -54,7 +54,7 @@ cd The-KQFLOW-Time-manager
 go build -trimpath -ldflags "-s -w" -o kqf.exe ./cmd/kqf
 ```
 
-需要 **Go 1.24 或更高版本**。项目只依赖 [Bubble Tea](https://github.com/charmbracelet/bubbletea) 与 [Lipgloss](https://github.com/charmbracelet/lipgloss)，构建产物是纯静态单文件（约 4.3 MB）。
+需要 **Go 1.24 或更高版本**。项目只依赖 [Bubble Tea](https://github.com/charmbracelet/bubbletea) 与 [Lipgloss](https://github.com/charmbracelet/lipgloss)，构建产物是纯静态单文件（Windows amd64、Go 1.26 实测约 7.9 MB；同一份 exe 打成的安装包约 4.5 MB）。
 
 自己打安装包见 [setup/](setup/)：
 

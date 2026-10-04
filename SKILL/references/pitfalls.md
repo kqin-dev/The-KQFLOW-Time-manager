@@ -175,8 +175,21 @@
   代码页解码、写入再编码一次，中文注释全变成 `鐩存帴`，而且注释尾部的换行被
   吃掉、把下一行 `func` 吞进注释里，报出 `expected declaration, found t` 这种
   指向别处的语法错误。**要改源码就用编辑器工具，别绕 PowerShell。**
-- **PowerShell 脚本要带 UTF-8 BOM**：Windows PowerShell 会把无 BOM 的 UTF-8 当 ANSI 读，
-  中文注释直接变成语法错误。
+- **PowerShell 脚本要带 UTF-8 BOM**：Windows PowerShell 会把无 BOM 的 UTF-8 当 ANSI
+  读，中文注释直接变成语法错误。**编辑工具会悄悄吃掉 BOM**——本仓库的
+  `setup/build-installer.ps1` 与 `setup/publish-release.ps1` 都是带 BOM 的，
+  用编辑工具改完 .ps1 后必须重新确认 BOM 还在：
+  ```powershell
+  $b=[System.IO.File]::ReadAllBytes($p); $b[0] -eq 239 -and $b[1] -eq 187 -and $b[2] -eq 191
+  ```
+  丢 BOM 的症状很有迷惑性：报的是 `Missing closing '}' in statement block`，
+  行号指向一个**完全正确**的 `try/finally` 块——因为中文注释被 GBK 解出来的字节
+  序列吃掉了后面的引号。别去改那段代码，先查 BOM。
+  恢复方式（保持 LF 换行不变）：
+  ```powershell
+  $t=[System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))
+  [System.IO.File]::WriteAllText($p,$t,(New-Object System.Text.UTF8Encoding($true)))
+  ```
 - **Inno Setup 的 `.iss` 也要带 BOM**，否则中文字符串会让 Pascal 编译器报出
   莫名其妙的语法错误（报错行号还在别处）。
 - **`.iss` 里不能在注释中写花括号常量**（例如 `{usertemp}`）：预处理器照样会去解析它，

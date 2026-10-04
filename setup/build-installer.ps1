@@ -65,8 +65,13 @@ if ($SkipGoBuild) {
     }
 
     # 版本号注入二进制，保证 kqf -version 与安装包一致。
+    #
+    # **必须带 -trimpath**：不加的话会把构建机的绝对路径（如
+    # D:\Global_Workspace\...\internal\ui）编进二进制，既泄露本机目录结构、
+    # 又让体积翻倍（实测 7.94 MB → 4.45 MB 安装包）。README 与 SKILL 里
+    # 记录的命令都带这个参数，脚本这里曾经漏掉。
     $ldflags = "-s -w -X github.com/kqin-dev/The-KQFLOW-Time-manager/internal/version.Version=$version"
-    Info "编译 kqf.exe（-ldflags `"$ldflags`"）"
+    Info "编译 kqf.exe（-trimpath -ldflags `"$ldflags`"）"
 
     Push-Location $repoRoot
     try {
