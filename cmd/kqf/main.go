@@ -66,6 +66,13 @@ func run() error {
 	}
 	cfg = loaded
 
+	// 数据版本保护（见 bug.md 注意 1）：数据来自更新的版本时拒绝启动，
+	// 而不是按当前结构读进来再整份写回——那会把新版本的字段直接抹掉。
+	// 必须排在 store.Open 之前：Open 会建目录，而发现未来版本后不该留下痕迹。
+	if err := store.CheckDataVersion(paths.Root); err != nil {
+		return err
+	}
+
 	st, err := store.Open(paths.Root)
 	if err != nil {
 		return err

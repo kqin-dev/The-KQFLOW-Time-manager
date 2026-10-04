@@ -19,6 +19,37 @@ import (
 // FileName 是配置文件名。
 const FileName = "config.json"
 
+// ConfigSchemaVersion 是本程序支持的配置文件版本。
+//
+// 与 model.SchemaVersion 分开：配置文件与日数据文件是两套独立的格式，
+// 将来也可能各自演进。这里不能引用 model（model 不依赖任何内部包，
+// config 引用它会绕成环），所以各留一个常量。
+const ConfigSchemaVersion = 1
+
+// IncompatibleConfigError 报告配置文件来自更新的版本。
+//
+// 这种情况必须拒绝启动，不能像「配置损坏」那样静默退回默认值：默认值一旦
+// 被写回，用户在新版本里做的设置就永久丢了，而且没有任何提示。
+type IncompatibleConfigError struct {
+	Path    string
+	Current int
+	Found   int
+}
+
+func (e *IncompatibleConfigError) Error() string {
+	return fmt.Sprintf(
+		"配置文件来自更新的版本：%s（schema_version=%d，本程序支持 ≤ %d）。\n"+
+			"请升级到最新版本的程序后再启动；\n"+
+			"若确实要用旧程序打开，请先把这个文件移出数据目录（另存备份），再重新启动。",
+		e.Path, e.Found, e.Current)
+}
+
+// IsIncompatibleConfig 报告错误是否属于「配置来自更新版本」。
+func IsIncompatibleConfig(err error) bool {
+	var target *IncompatibleConfigError
+	return errors.As(err, &target)
+}
+
 // Config 是 KQFLOW 的全部可配置项。
 type Config struct {
 	SchemaVersion int `json:"schema_version"`
@@ -247,14 +278,24 @@ func Load(p *Paths) (*Config, error) {
 		// 配置损坏时退回默认值，绝不因此阻断启动。
 		return Default(), nil
 	}
+	// 但「来自更新版本」不是损坏，必须拒绝：下面的 normalize/Save 会把这份
+	// 配置按当前版本整份写回，新版本的设置会静默消失。
+	if cfg.SchemaVersion > ConfigSchemaVersion {
+		return nil, &IncompatibleConfigError{
+			Path:    p.ConfigFile,
+			Current: ConfigSchemaVersion,
+			Found:   cfg.SchemaVersion,
+		}
+	}
 	normalize(cfg)
 	return cfg, nil
 }
 
 // Save 原子地写出配置。
 func Save(p *Paths, cfg *Config) error {
-	if cfg.SchemaVersion == 0 {
-		cfg.SchemaVersion = 1
+	// 永不把配置降级：宁可保留原版本号，也不让旧程序抹掉新版本写的设置。
+	if cfg.SchemaVersion < ConfigSchemaVersion {
+		cfg.SchemaVersion = ConfigSchemaVersion
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

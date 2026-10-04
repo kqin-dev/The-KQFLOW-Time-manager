@@ -44,6 +44,22 @@
 于是「专注 0 秒」也被如实记成 0 而不是缺省。改任何统计口径前先问一句
 「用户已有的历史数字会不会变」，变了就要留这条退路。
 
+### 校验数据的代码，不能对「读不懂」睁一只眼闭一只眼
+
+数据版本保护第一版把「文件解析失败」当成跳过，理由是「那不是版本问题」。
+实机验证时被抓出来：Windows PowerShell 的 `Set-Content -Encoding utf8`
+会写出**带 UTF-8 BOM** 的文件，BOM 让 `json.Unmarshal` 直接失败——一个
+`schema_version=99` 的日数据文件就这样被放过去，程序照常启动并开始写数据，
+守卫形同虚设。
+
+教训：**校验器遇到读不懂的输入时，默认应该是「拦住」而不是「放行」**，
+除非能证明它是无害的。这里只有两种情况可以放行：文件不存在（首次启动）、
+空文件（没有结构可言）。其余一律阻断并说明原因。
+
+顺带一条环境坑：用 PowerShell 造测试数据时，`Set-Content -Encoding utf8`
+（Windows PowerShell 5.1）写出的不是纯 UTF-8，会带 BOM。要造 JSON 测试数据
+就用编辑器工具写，或用 `[System.IO.File]::WriteAllText($p, $json, UTF8Encoding($false))`。
+
 ## 按键与交互
 
 | 现象 | 根因 | 正确做法 |
@@ -88,6 +104,11 @@
   ```
 - **不要把 PowerShell 的 `Set-Content` / `-replace` 用在 Go 源码上**：
   会破坏 UTF-8（曾经把两个文件弄坏、只能整份重写）。用编辑器工具写文件。
+  **这条被同一个坑连续咬过两次**：第一次是把中文注释写坏；第二次是
+  `(Get-Content $f -Raw) -replace 'a','b' | Set-Content $f`——读取按控制台
+  代码页解码、写入再编码一次，中文注释全变成 `鐩存帴`，而且注释尾部的换行被
+  吃掉、把下一行 `func` 吞进注释里，报出 `expected declaration, found t` 这种
+  指向别处的语法错误。**要改源码就用编辑器工具，别绕 PowerShell。**
 - **PowerShell 脚本要带 UTF-8 BOM**：Windows PowerShell 会把无 BOM 的 UTF-8 当 ANSI 读，
   中文注释直接变成语法错误。
 - **Inno Setup 的 `.iss` 也要带 BOM**，否则中文字符串会让 Pascal 编译器报出
