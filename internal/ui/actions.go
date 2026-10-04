@@ -415,6 +415,7 @@ func (a *App) startTimer() {
 			{Label: "倒计时", Action: "timer_countdown"},
 			{Label: "正计时（不设终点）", Action: "timer_countup"},
 			{Label: "自定义时段", Action: "timer_custom"},
+			{Label: fmt.Sprintf("收藏的方案（%d）", len(a.savedPlans())), Action: "timer_saved"},
 			{Label: "取消", Action: "cancel"},
 		},
 	}

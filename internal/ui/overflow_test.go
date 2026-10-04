@@ -138,6 +138,23 @@ func TestNoViewOverflowsTerminal(t *testing.T) {
 			assertNoOverflow(t, "计时菜单", app.View(), w, h)
 			app.pick = nil
 
+			// 浮层：收藏的方案菜单（见需求 2）。方案名可能很长，专门造一个。
+			app.cfg.AddSavedPlan(model.Plan{
+				Kind:  model.TimerCustom,
+				Label: "一个相当长的方案名字用来试探菜单宽度",
+				Segments: []model.Segment{
+					{Name: "深度工作", Kind: model.SegmentKindFocus, Dur: 50 * time.Minute},
+					{Name: "休息", Kind: model.SegmentKindBreak, Dur: 10 * time.Minute},
+				},
+			})
+			app.openSavedPlans()
+			assertNoOverflow(t, "收藏的方案菜单", app.View(), w, h)
+			app.pick = nil
+			app.openSavedPlanManager()
+			assertNoOverflow(t, "收藏管理菜单", app.View(), w, h)
+			app.pick = nil
+			app.cfg.SavedPlans = nil
+
 			// 浮层：退出确认。
 			app.askQuit()
 			assertNoOverflow(t, "退出确认", app.View(), w, h)

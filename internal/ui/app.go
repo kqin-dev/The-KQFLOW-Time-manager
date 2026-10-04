@@ -1029,6 +1029,11 @@ func (a *App) runAction(action string) (tea.Model, tea.Cmd) {
 		a.beginTimer(plan, todoID)
 		return a, nil
 	}
+
+	// 收藏的自定义方案（见需求 2）：动作串较多，单独收在一处。
+	if m, cmd, handled := a.savedPlanActions(action); handled {
+		return m, cmd
+	}
 	return a, nil
 }
 

@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
 // FileName 是配置文件名。
@@ -71,6 +73,11 @@ type Config struct {
 	// 条目本身收集。这样标签库不会随着使用不断膨胀，也不会出现
 	// 「标签库里有、但哪个条目都没用」的悬空项。
 	CustomLabels []string `json:"custom_labels,omitempty"`
+	// SavedPlans 是用户收藏的自定义专注方案（见需求 2）。
+	//
+	// 放在配置里而不是日数据里：它是「偏好」而不是「当天记录」，与日界线无关，
+	// 也不该随某一天的数据被清理。
+	SavedPlans []model.Plan `json:"saved_plans,omitempty"`
 	// ShowNote 决定是否在看板上展示当日随手记的前几行。
 	ShowNote bool `json:"show_note,omitempty"`
 	// Timezone 为空时使用系统本地时区。
@@ -193,6 +200,90 @@ func HasString(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// SavedPlanList 返回校验过、去重后的收藏方案。
+//
+// 手改过的配置里可能有非法方案（段时长为 0、没名字等），这里连带标签一起去掉，
+// 免得脏数据一路进到计时逻辑里。同名视为同一套方案，只保留最后一个——用户在
+// 编辑器里用同一个名字再存一次，意图显然是「覆盖」。
+func (c *Config) SavedPlanList() []model.Plan {
+	if len(c.SavedPlans) == 0 {
+		return nil
+	}
+	// 先从后往前扫，同名只留最后出现的那个。
+	out := make([]model.Plan, 0, len(c.SavedPlans))
+	seen := make(map[string]bool, len(c.SavedPlans))
+	for i := len(c.SavedPlans) - 1; i >= 0; i-- {
+		p := c.SavedPlans[i]
+		if !model.PlanValid(p) {
+			continue
+		}
+		label := model.NormalizePlanLabel(p.Label)
+		if label == "" {
+			label = model.AutoPlanLabel(p)
+		}
+		if seen[label] {
+			continue
+		}
+		seen[label] = true
+		stored := model.ClonePlan(p)
+		stored.Label = label
+		out = append(out, stored)
+	}
+	// 反转回原始顺序，用户看到的顺序与保存顺序一致。
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// AddSavedPlan 收藏一套方案；同名视为覆盖，返回最终使用的名字。
+//
+// 非法方案返回空串表示拒绝。
+func (c *Config) AddSavedPlan(p model.Plan) string {
+	if !model.PlanValid(p) {
+		return ""
+	}
+	label := model.NormalizePlanLabel(p.Label)
+	if label == "" {
+		label = model.AutoPlanLabel(p)
+	}
+	stored := model.ClonePlan(p)
+	stored.Label = label
+
+	list := c.SavedPlanList()
+	replaced := false
+	for i := range list {
+		if list[i].Label == label {
+			list[i] = stored
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		list = append(list, stored)
+	}
+	c.SavedPlans = list
+	return label
+}
+
+// RemoveSavedPlan 按名字删除一套收藏方案，返回是否删掉了。
+func (c *Config) RemoveSavedPlan(label string) bool {
+	list := c.SavedPlanList()
+	out := make([]model.Plan, 0, len(list))
+	removed := false
+	for _, p := range list {
+		if p.Label == label {
+			removed = true
+			continue
+		}
+		out = append(out, p)
+	}
+	if removed {
+		c.SavedPlans = out
+	}
+	return removed
 }
 
 func minutes(v, fallback int) time.Duration {

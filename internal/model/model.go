@@ -258,6 +258,9 @@ type Plan struct {
 	Segments []Segment `json:"segments"`
 	// Cycle 表示番茄钟的轮数，仅用于展示。
 	Cycle int `json:"cycle,omitempty"`
+	// Label 是用户给这套方案起的名字，只在「收藏的方案」里有值（见需求 2）。
+	// 新建计时时为空，不影响计时逻辑。
+	Label string `json:"label,omitempty"`
 }
 
 // Total 返回全时段总时长；正计时返回 0，表示没有终点。

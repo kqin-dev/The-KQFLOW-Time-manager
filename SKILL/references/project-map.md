@@ -145,6 +145,13 @@ kqflow-data/
   存字符串而不是时间戳，是为了数据文件可读、可手改。
   算到期时刻时会经过日界线：**日界线只决定「算哪个逻辑日」，不能加到钟点上**
   （这个 bug 被测试抓到过——日界线 04:00 时 18:30 曾被算成 22:30）。
+- **收藏的自定义专注方案**（见需求 2）存在**配置**里（`config.saved_plans`），
+  不是日数据：它是「偏好」，与日界线无关，也不该随某天数据被清理。
+  实现上「一套收藏」就是一个带了 `Plan.Label` 的 `Plan`，没有另造类型；
+  相关工具在 `internal/model/plan.go`（校验、自动命名、`ClonePlan`）。
+  **`ClonePlan` 必须用**：`Segments` 是切片，直接赋值会让「当模板改」改到收藏
+  原件（这一点有专门的测试）。动作串用**下标**（`saved_start:0`）而不是方案名，
+  因为方案名是用户随便起的、可能含冒号等字符。
 - `Activity`：按名字聚合的累计投入，用于「今日最投入的条目」。
 - `DayData.PruneOrphans()`：数据自愈入口，读入时调用。它会把指向已删除条目的
   `todo_ref` 清空、把确实由这些孤儿记录产生的 `activity` 项删掉
@@ -160,6 +167,7 @@ kqflow-data/
 | 按键 | `handleKey` 的路由 + `handleEditorKey` / `handlePickKey` / `handleSettingsKey` |
 | 标签 | `labels.go`（页面 + 渲染）、`model/label.go`（数据与清洗） |
 | DDL / 截止时间 | `ddl.go`（页面 + 排序）、`model/ddl.go`（粒度与到期计算） |
+| 收藏的专注方案 | `savedplans.go`（菜单 + 三种动作）、`model/plan.go`（校验与克隆） |
 | 菜单项 | `menuItems` |
 | 设置项 | `settingItems` |
 | 二级页内容 | `helpLines` / `settingsLines` / `historyLines` / `carryContent` |
