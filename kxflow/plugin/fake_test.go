@@ -201,10 +201,19 @@ func (a *fakeAssembled) Dispose()            { a.disposed = true }
 type fakeKernel struct {
 	fakeComp
 	boardOptions []BoardOption
+	dashboard    View
 }
 
 func (k *fakeKernel) PowerBy() string             { return "Power by KXFLOW" }
 func (k *fakeKernel) BoardOptions() []BoardOption { return k.boardOptions }
+
+// Dashboard 返回底层视图；未显式给出时用一个固定的假视图。
+func (k *fakeKernel) Dashboard() View {
+	if k.dashboard == nil {
+		k.dashboard = &TestView{ViewName: "看板", Lines: []string{"KQFLOW", "Power by KXFLOW"}}
+	}
+	return k.dashboard
+}
 
 // ---------- 构造辅助 ----------
 

@@ -194,6 +194,17 @@ func (m *Manager) Placements(vc ViewConfig) (Placed, []Manifest, []PlacementIssu
 				Detail: "配置里指定了这个磁贴，但它所属的包没有装载；请检查包是否被关闭或缺少依赖"})
 			continue
 		}
+		if isDock(a) && !vc.DockVisible {
+			// 配置指向停靠区，但停靠区被关掉了。这是**正常的组合**，不是矛盾：
+			// 用户关掉停靠区就是想让它别占地方，"视图配置里仍留着那个位置"
+			// 是常见状态（关掉再打开时还能回到原处）。因此这里静默不安置，
+			// 但**不把它当成错误**报出来干扰用户。
+			//
+			// 关键是它到此为止：绝不能接着走下面的自动安置把它塞进侧栏——
+			// 一个为停靠区设计的磁贴被塞进侧栏，它的排版假设全是错的。
+			used[pid] = true
+			continue
+		}
 		if used[pid] {
 			issues = append(issues, PlacementIssue{Anchor: a, Slot: pid,
 				Detail: "这个磁贴已被放到别的槽位，同一个磁贴只能占一个槽位"})
@@ -221,11 +232,7 @@ func (m *Manager) Placements(vc ViewConfig) (Placed, []Manifest, []PlacementIssu
 
 	var unplaced []Manifest
 	for _, t := range rest {
-		if !vc.DockVisible && isDock(t.Manifest.Slots.Anchor) {
-			unplaced = append(unplaced, t.Manifest)
-			continue
-		}
-		if a, ok := m.findAnchor(t, out); ok {
+		if a, ok := m.findAnchor(t, out, vc.DockVisible); ok {
 			out.Slots[a] = t.Manifest.ID
 			used[t.Manifest.ID] = true
 			continue
@@ -235,15 +242,32 @@ func (m *Manager) Placements(vc ViewConfig) (Placed, []Manifest, []PlacementIssu
 	return out, unplaced, issues
 }
 
-// findAnchor 为磁贴找一个空槽：先看它自己声明的锚点，再按固定顺序找。
-func (m *Manager) findAnchor(t TileRef, placed Placed) (geometry.Anchor, bool) {
-	// 只认"真实槽位"：AnchorUnset 表示随便放，直接走下面的顺序分配。
+// findAnchor 为磁贴找一个空槽。
+//
+// 三条规则，顺序不能变：
+//
+//  1. 磁贴**明确声明了**要放哪（Anchor 是真实槽位）→ 就放那儿；那儿被占了、
+//     或那是被关掉的停靠区 → 进未安置列表，**不另找地方**。
+//     理由：一个专门声明"我要在停靠区"的磁贴，被塞到侧栏是错误的行为
+//     （它会以为自己在中栏，排版假设全不对）。用户的出路是打开停靠区
+//     或改视图配置。
+//  2. 磁贴只声明了优先级（AnchorUnset）→ 按固定顺序找第一个空槽。
+//  3. 停靠区被关掉时，找空槽要**跳过**停靠槽位——否则会出现
+//     "我把停靠区关了，东西却还在那儿"。
+func (m *Manager) findAnchor(t TileRef, placed Placed, dockVisible bool) (geometry.Anchor, bool) {
 	if want := t.Manifest.Slots.Anchor; want.IsSlot() {
+		if isDock(want) && !dockVisible {
+			return geometry.AnchorUnset, false
+		}
 		if placed.Slots[want] == "" {
 			return want, true
 		}
+		return geometry.AnchorUnset, false
 	}
 	for _, a := range geometry.AllAnchors {
+		if isDock(a) && !dockVisible {
+			continue
+		}
 		if placed.Slots[a] == "" {
 			return a, true
 		}

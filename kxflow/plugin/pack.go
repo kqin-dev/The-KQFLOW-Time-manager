@@ -151,6 +151,12 @@ type Kernel interface {
 	Component
 	// PowerBy 返回中栏要渲染的"Power by ..."字样。
 	PowerBy() string
+	// Dashboard 返回栈空时显示的底层视图（req.md 说的 Dashboard）。
+	//
+	// 注意它与内核**组件本身**是两样东西：组件是"渲染单位"，
+	// 而 Dashboard 是"舞台的底色"。合成一个会让"内核要不要占槽位"
+	// 变成一个说不清的问题——内核本来就不占槽位。
+	Dashboard() View
 	// BoardOptions 返回内核自带的全局看板选项（设置/帮助/历史/退出）。
 	//
 	// 它们是**内核自带**而不是"选项插件"：任何基于 KXFLOW 的产品都需要它们，

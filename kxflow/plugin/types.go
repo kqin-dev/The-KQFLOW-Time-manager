@@ -105,6 +105,12 @@ type RenderCtx struct {
 	Frame geometry.Rect
 	// State 描述本组件当前的活跃状态。
 	State ComponentState
+	// Focus 是 State == StateFocused 的便捷判断。
+	//
+	// 同时提供两者是因为它们用途不同：State 用于"整体外观该怎样"，
+	// Focus 用于"要不要画光标/高亮"。让调用方每次都写
+	// `ctx.State == StateFocused` 容易写错（漏一个等号就是静默失效）。
+	Focus bool
 	// Palette 由画布使用；组件需要自己上色时从这里取。
 	Palette canvas.Palette
 	// Selection 是引擎维护的当前选中上下文（只读）。

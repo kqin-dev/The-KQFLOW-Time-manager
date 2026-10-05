@@ -17,6 +17,7 @@ package canvas
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/kqin-dev/kxflow/geometry"
@@ -70,6 +71,12 @@ type DiagEvent struct {
 	Kind DiagKind
 	X, Y int
 	Msg  string
+	// Where 记录发起这次写入的调用点（形如 "chrome.(*FooterBar).drawHints"）。
+	//
+	// 为什么带上它：越界与覆盖是"画面上什么也看不见但结果错了"的那类问题，
+	// 光知道"哪个坐标被拒"还不够——必须知道**是谁**写的，否则排查只能靠猜。
+	// 这一条是被真实事故逼出来的（一次负坐标写入查了很久）。
+	Where string
 }
 
 // DiagKind 是诊断类别。
@@ -88,6 +95,12 @@ const (
 // 不设上限的话一个渲染死循环能把内存吃光。
 const diagEventLimit = 64
 
+// CallerInfo 为真时，诊断会额外记录发起写入的调用点。
+//
+// 它是**开发期开关**：取调用栈有开销，正式路径上关掉。
+// 与"把越界变成可观测事件"是同一个思路——排查不该靠猜。
+var CallerInfo = false
+
 func (d *Diagnostics) record(kind DiagKind, x, y int, msg string) {
 	switch kind {
 	case DiagOverflow:
@@ -100,7 +113,11 @@ func (d *Diagnostics) record(kind DiagKind, x, y int, msg string) {
 	if d == nil || len(d.Events) >= diagEventLimit {
 		return
 	}
-	d.Events = append(d.Events, DiagEvent{Kind: kind, X: x, Y: y, Msg: msg})
+	ev := DiagEvent{Kind: kind, X: x, Y: y, Msg: msg}
+	if CallerInfo {
+		ev.Where = callerOf(3)
+	}
+	d.Events = append(d.Events, ev)
 }
 
 // Clean 报告这次绘制没有任何异常。
@@ -520,4 +537,22 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// callerOf 返回第 skip 层调用者的简短函数名（形如 "chrome.(*FooterBar).drawHints"）。
+func callerOf(skip int) string {
+	pc, _, _, ok := runtime.Caller(skip)
+	if !ok {
+		return ""
+	}
+	fn := runtime.FuncForPC(pc)
+	if fn == nil {
+		return ""
+	}
+	name := fn.Name()
+	// 去掉模块路径，只留包名与函数名，便于阅读。
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
 }

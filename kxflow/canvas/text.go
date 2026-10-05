@@ -62,6 +62,11 @@ func Truncate(s string, width int) string {
 }
 
 // TruncateEllipsis 按显示宽度截断并追加省略号，结果不超过 width 列。
+//
+// **宽度不是正数时返回空串**。这一条是必须的：省略号本身占一列，
+// 若这里对 width<=0 仍返回 "…"，调用方就会把一个字符画到可用区之外
+// （实测表现为"越界写入发生在 x=-1..-5"，而画布上什么也看不见——
+// 最难查的那类问题）。宁可返回空串，也不返回一个放不下的字符。
 func TruncateEllipsis(s string, width int) string {
 	if width <= 0 {
 		return ""
