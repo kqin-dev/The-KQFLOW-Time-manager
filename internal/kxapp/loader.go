@@ -42,6 +42,7 @@ func (l *Loader) Packs() []plugin.Pack {
 		NewGoalPack(l.src, l.state),
 		NewDDLPack(l.src, l.state),
 		NewLabelPack(l.src, l.state),
+		NewTimerPack(l.src, l.state),
 		NewStatsPack(l.src, l.state),
 		NewNotePack(l.src, l.state),
 	}

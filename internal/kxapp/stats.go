@@ -192,7 +192,9 @@ func (p *notePack) Members() []plugin.Plugin {
 		mf: plugin.Manifest{
 			ID: NoteTileID, Name: "随手记", Kind: plugin.KindTile,
 			Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
-			Slots: plugin.SlotPreference{Anchor: geometry.AnchorCenterDockRight, Priority: 10},
+			// 中栏停靠区的另一个格子。停靠区最多 4 格（2×2），
+			// 目前有统计、计时、随手记三块，正好落在前三格。
+			Slots: plugin.SlotPreference{Anchor: geometry.AnchorCenterDockLeft, Priority: 10},
 		},
 		newComp: func(s svc.Services) plugin.Component {
 			return &noteTile{src: p.src, svc: s}

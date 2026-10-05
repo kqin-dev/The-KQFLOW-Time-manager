@@ -77,6 +77,12 @@ type Model struct {
 
 	// report 是装载报告，可供宿主展示（"为什么我的 DDL 没出现"）。
 	report plugin.LoadReport
+
+	// unplaced 是"装上了但没槽位可放"的磁贴；placementIssues 是视图配置
+	// 与实际情况对不上的地方。两者都要能被宿主读到——
+	// 否则用户看到的是"我明明有这个功能，界面上却没有"，且无从解释。
+	unplaced        []plugin.Manifest
+	placementIssues []plugin.PlacementIssue
 }
 
 type toastKind uint8
@@ -284,8 +290,12 @@ func (m *Model) relayout() {
 }
 
 // placeTiles 依据视图配置把已装载的磁贴安置到槽位。
+//
+// 放不下的磁贴会进 unplaced 列表，并由这里汇总成一条**警告**：
+// 槽位是有限资源（侧栏 2+2、停靠区 4），多出来的磁贴只能不显示。
+// 不提示的话用户会以为"这个包没装上"——而它其实装上了，只是没地方放。
 func (m *Model) placeTiles() {
-	placed, _, _ := m.manager.Placements(m.viewCfg)
+	placed, unplaced, issues := m.manager.Placements(m.viewCfg)
 	for _, a := range geometry.AllAnchors {
 		id := placed.IDAt(a)
 		if id == "" {
@@ -306,6 +316,49 @@ func (m *Model) placeTiles() {
 			// 真发生了就留下证据，而不是静默覆盖。
 			m.Toast("槽位冲突：" + a.String() + " 被重复占用")
 		}
+	}
+	m.unplaced = unplaced
+	m.placementIssues = issues
+}
+
+// Unplaced 返回没有槽位可放的磁贴（供宿主展示"为什么它没出现"）。
+func (m *Model) Unplaced() []plugin.Manifest { return m.unplaced }
+
+// PlacementIssues 返回视图配置与实际情况对不上的地方。
+func (m *Model) PlacementIssues() []plugin.PlacementIssue { return m.placementIssues }
+
+// Tick 是**周期性检查**：宿主每秒调一次，用来处理"与按键无关、
+// 随时间发生"的事情（目前是计时走完要响铃）。
+//
+// 为什么不能把它塞进磁贴的 Update：那种做法只有在**该磁贴恰好获得焦点**
+// 时才会被调用，于是"计时结束时用户正在看别的栏位"就不会响铃——
+// 而那恰恰是最需要提醒的时候（用户在干别的）。
+//
+// 引擎在这里只负责"把机会交给每个组件"，具体要不要动作由组件自己判断
+// （内核组件、统计磁贴都直接忽略）。
+func (m *Model) Tick(now time.Time) {
+	ctx := plugin.EventCtx{
+		Now:        now,
+		Selection:  m.selection,
+		StageDepth: m.stage.Depth(),
+	}
+	ev := plugin.Event{Kind: plugin.EventTick}
+	// 借调中的视图也算一份：它可能有自己的时间相关逻辑。
+	if top := m.stage.Top(); top != nil && m.stage.Borrowing() {
+		if act, close := top.Update(ctx, ev); close {
+			if origin, ok := m.stage.Pop(); ok {
+				m.focusBack(origin)
+			}
+		} else {
+			m.runAction(act)
+		}
+	}
+	for _, a := range m.registry.Anchors() {
+		slot, ok := m.registry.At(a)
+		if !ok || slot.Component == nil {
+			continue
+		}
+		m.runAction(slot.Component.Update(ctx, ev))
 	}
 }
 

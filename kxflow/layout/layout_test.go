@@ -332,7 +332,7 @@ func TestDockIsLowerHalfOfCenter(t *testing.T) {
 		t.Errorf("主控区与停靠区应上下相接：%d vs %d", sh1.Center.Stage.Y1(), sh1.Center.Dock.Y)
 	}
 
-	// 2 个磁贴：左右各半，高度相同。
+	// 2 个磁贴：左右各半。
 	two := base
 	two.DockTiles = 2
 	sh2 := Layout(geometry.Size{W: 120, H: 40}, two)
@@ -354,6 +354,42 @@ func TestDockIsLowerHalfOfCenter(t *testing.T) {
 	}
 	if a.Intersects(b) {
 		t.Errorf("停靠槽不该重叠：%v 与 %v", a, b)
+	}
+
+	// 4 个磁贴：2×2 四格，两两不重叠且正好铺满停靠区。
+	four := base
+	four.DockTiles = 4
+	sh4 := Layout(geometry.Size{W: 120, H: 40}, four)
+	var slots []geometry.Rect
+	for i := 0; i < DockSlots; i++ {
+		s := sh4.Center.Slot(i)
+		if s.Empty() {
+			t.Fatalf("4 个停靠磁贴时第 %d 格不该为空：%v", i, s)
+		}
+		slots = append(slots, s)
+	}
+	total := 0
+	for i, s := range slots {
+		total += s.W * s.H
+		for j := i + 1; j < len(slots); j++ {
+			if s.Intersects(slots[j]) {
+				t.Errorf("2×2 格子不该重叠：第 %d 格 %v 与第 %d 格 %v", i, s, j, slots[j])
+			}
+		}
+	}
+	if total != sh4.Center.Dock.W*sh4.Center.Dock.H {
+		t.Errorf("2×2 四格应正好铺满停靠区：格子总面积 %d，停靠区 %d",
+			total, sh4.Center.Dock.W*sh4.Center.Dock.H)
+	}
+
+	// 3 个磁贴也用 2×2 的同一套格子：这样加第 4 个时前三个**不跳位置**。
+	three := base
+	three.DockTiles = 3
+	sh3 := Layout(geometry.Size{W: 120, H: 40}, three)
+	for i := 0; i < DockSlots; i++ {
+		if got, want := sh3.Center.Slot(i), sh4.Center.Slot(i); got != want {
+			t.Errorf("3 个与 4 个磁贴时第 %d 格的切法应一致：%v vs %v", i, got, want)
+		}
 	}
 }
 

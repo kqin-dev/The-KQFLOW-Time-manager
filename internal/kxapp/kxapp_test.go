@@ -42,6 +42,58 @@ func TestAllPacksLoad(t *testing.T) {
 	}
 }
 
+// TestEveryPlacedTileIsVisible 断言"安置在地图上的磁贴都必须看得见"。
+//
+// 这条来自一次真实事故：计时磁贴原本声明了 AnchorLeftBottom，
+// 于是与"临时待办"抢同一个槽位——后者被挤成未安置，
+// **整份临时列表从界面上消失**了（测试当场抓到）。
+//
+// 槽位是有限资源，声明槽位偏好时会互相挤掉；这条测试保证"挤掉"这件事
+// 不会静默发生：要么磁贴出现在界面上，要么它就不在安置表里。
+func TestEveryPlacedTileIsVisible(t *testing.T) {
+	src := newMemSource(t, testNow())
+	// 造一份"每个包都有内容"的数据，避免空列表让标题恰好不出现。
+	src.addTodo("固定条目甲", model.KindFixed)
+	src.addTodo("临时条目乙", model.KindFloating)
+	src.addGoal("目标丙")
+	src.data.Note = "随手记丁"
+
+	l := NewLoader(src, src.Config())
+	m, _, rep := l.Build()
+	if len(rep.Rejected) != 0 {
+		t.Fatalf("装载不应有错误：\n%s", rep.Explain())
+	}
+	for _, size := range []struct{ w, h int }{{120, 40}, {140, 44}, {160, 50}} {
+		m.Resize(size.w, size.h)
+		out := m.View()
+
+		// 每个"已安置"的非内核磁贴，其标题都必须出现在画面上。
+		placed := m.Registry().Anchors()
+		if len(placed) == 0 {
+			t.Fatal("应当有已安置的磁贴")
+		}
+		for _, a := range placed {
+			slot, ok := m.Registry().At(a)
+			if !ok || slot.Component == nil {
+				continue
+			}
+			title := slot.Component.Title()
+			if title == "" {
+				continue
+			}
+			if !strings.Contains(out, title) {
+				t.Errorf("%dx%d：磁贴 %q（%v）已安置却看不见\n%s",
+					size.w, size.h, title, a, out)
+			}
+		}
+		// 未安置的磁贴应当被如实报告出来，而不是静默丢弃。
+		_, unplaced, _ := m.Manager().Placements(plugin.NewViewConfig())
+		for _, mf := range unplaced {
+			t.Logf("%dx%d：磁贴 %q 未安置（槽位不够）", size.w, size.h, mf.Name)
+		}
+	}
+}
+
 // TestRendersRealBusinessData 验证磁贴画的是真实业务数据。
 //
 // 引擎只认识"有个磁贴要画自己"，至于画什么由宿主决定——

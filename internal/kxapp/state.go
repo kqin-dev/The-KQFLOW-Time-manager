@@ -14,7 +14,7 @@ import (
 //     "同一个动作写在两处"正是这类问题的同族。
 //
 //   - 它刻意**不是**引擎的一部分。引擎只认识 Selection（谁被选中、
-//     支持哪些操作）；"光标在第几行""哪些条目能打标签"是 KQFLOW 的业务概念。
+//     支持哪些操作）；"光标在第几行""计时是否在跑"是 KQFLOW 的业务概念。
 //
 // 所有包共享同一个 *HostState 指针，由 Loader 在装配时注入。
 type HostState struct {
@@ -32,10 +32,21 @@ type HostState struct {
 	// 而 ID 在任何时候都能重新查到当前对象。
 	SelectedTodo string
 	SelectedGoal string
+
+	// Timer 是专注计时器（见 timer.go）。
+	//
+	// 它是**进程内状态**而不是落盘状态：计时中的会话不写盘，
+	// 只有结束时才把结果写进当天记录。这样"程序崩了"最多丢一次计时，
+	// 而不会在数据里留下一条永远没结束的会话。
+	Timer Timer
 }
 
 // NewHostState 创建初始状态。
-func NewHostState() *HostState { return &HostState{} }
+func NewHostState() *HostState {
+	st := &HostState{}
+	st.Timer.init()
+	return st
+}
 
 // fixedCursor / floatingCursor 是 TODO 包用的两个光标访问器。
 //

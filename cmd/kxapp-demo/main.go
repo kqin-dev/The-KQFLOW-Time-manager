@@ -197,6 +197,9 @@ func (a adapter) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.Resize(m.Width, m.Height)
 		return a, nil
 	case tickMsg:
+		// 每秒一次的周期检查：计时走完要响铃，这与"用户按了什么键"无关。
+		// 引擎只管把机会交给组件，具体动作由组件判断。
+		a.model.Tick(time.Now())
 		return a, tick()
 	case tea.KeyMsg:
 		ev := plugin.Event{Kind: plugin.EventKey, Key: m.String()}

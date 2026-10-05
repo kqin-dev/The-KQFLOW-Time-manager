@@ -71,8 +71,8 @@ type Lane struct {
 	// Dock 是中栏下方停靠区；Visible 为假时它是空矩形。
 	Dock        geometry.Rect
 	DockVisible bool
-	// DockSlots 是停靠区的两个槽位。
-	DockSlots [2]geometry.Rect
+	// DockSlots 是停靠区的格子（最多 4 格：1 条 / 左右 2 格 / 2×2 四格）。
+	DockSlots [DockSlots]geometry.Rect
 	// DockCount 是停靠区声明的磁贴数量。
 	DockCount int
 }
@@ -92,7 +92,7 @@ func (c Column) Slot(i int) geometry.Rect {
 
 // Slot 返回停靠区第 i 个槽位；越界返回空矩形（停靠区可以没有磁贴）。
 func (l Lane) Slot(i int) geometry.Rect {
-	if i != 0 && i != 1 {
+	if i < 0 || i >= DockSlots {
 		return geometry.Rect{X: l.Dock.X, Y: l.Dock.Y}
 	}
 	return l.DockSlots[i]
@@ -215,8 +215,55 @@ func newLane(r geometry.Rect, dockVisible bool, dockCount int) Lane {
 	}
 	l.Stage = stage
 	l.Dock = dock
-	l.DockSlots = splitEvenH(dock)
+	l.DockSlots = dockGrid(dock, dockCount)
 	return l
+}
+
+// DockSlots 是停靠区最多能放的磁贴数。
+//
+// 4 = 2×2：用户描述的规则里"0/1/2 个磁贴"是三种形态，
+// 而 3~4 个自然落在 2×2 的四格里。超过 4 个就放不下了——
+// 放不下的磁贴进"未安置"列表（不报错、不覆盖）。
+const DockSlots = 4
+
+// dockGrid 把停靠区切成 1 / 2 / 4 格。
+//
+// 规则（用户实机反馈 + 版面上的必然延伸）：
+//
+//	1 个 → 整条（长条，适合需要大空间的磁贴）
+//	2 个 → 下左 / 下右
+//	3~4 → 2×2 四格（左上 / 右上 / 左下 / 右下）
+//
+// 3 个时也切成四格而不用满三格：切法稳定（同一套格子），
+// 用户加了第 4 个磁贴时前三个**不会跳位置**——这比"3 个时正好铺满"
+// 重要得多。
+//
+// 装不下时判空，理由见 splitEven：绝不让格子互相重叠。
+func dockGrid(r geometry.Rect, count int) [4]geometry.Rect {
+	var empty [4]geometry.Rect
+	if count <= 0 || r.W < MinTileW || r.H < MinTileH {
+		return empty
+	}
+	if count == 1 {
+		return [4]geometry.Rect{r, {}, {}, {}}
+	}
+	halves := splitEvenH(r)
+	left, right := halves[0], halves[1]
+	if left.Empty() || right.Empty() {
+		return empty
+	}
+	if count == 2 {
+		return [4]geometry.Rect{left, right, {}, {}}
+	}
+	// 3~4 个：上下再切一刀，成为 2×2。
+	ls, rs := splitEven(left), splitEven(right)
+	lt, lb := ls[0], ls[1]
+	rt, rb := rs[0], rs[1]
+	if lt.Empty() || lb.Empty() || rt.Empty() || rb.Empty() {
+		// 叠不出四格（太矮）：退回"左右各半"，至少前两个看得见。
+		return [4]geometry.Rect{left, right, {}, {}}
+	}
+	return [4]geometry.Rect{lt, rt, lb, rb}
 }
 
 // splitEvenH 把矩形**左右**均分给两个槽位（停靠区用）。
