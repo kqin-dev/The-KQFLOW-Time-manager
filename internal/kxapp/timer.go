@@ -425,6 +425,36 @@ func (t *timerTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 	return plugin.Toast("已暂停")
 }
 
+// FooterProgress 让专注进度显示在**下栏的进度条**上。
+//
+// 用户反馈："专注还没有进度条。"下栏本来就有进度条能力
+// （chrome.FooterBar.HasProgress），只是没人往上填——这件事只有
+// 正在跑的计时磁贴知道，因此由它申报。
+//
+// 文字用"专注 12m / 25m"：进度条本身只表达比例，
+// 没有数字就说不清"还剩多久"，而后者才是用户真正要看的。
+func (t *timerTile) FooterProgress(ctx plugin.RenderCtx) (float64, string, bool) {
+	if !t.state.Timer.Running() {
+		return 0, "", false
+	}
+	now := ctx.Svc.Clock()
+	total := t.state.Timer.Plan().Total()
+	if total <= 0 {
+		return 0, "", false
+	}
+	elapsed := t.state.Timer.ElapsedFor(now)
+	progress := float64(elapsed) / float64(total)
+
+	label := "专注 " + clock.HumanDuration(elapsed) + " / " + clock.HumanDuration(total)
+	if t.state.Timer.Paused() {
+		label = "已暂停 · " + label
+	}
+	if t.state.Timer.Done(now) {
+		label = "已完成 · " + label
+	}
+	return progress, label, true
+}
+
 // FocusSelection 回报：计时磁贴没有"当前条目"（它管的是时间），
 // 返回零值把上一个磁贴的选中清掉。
 func (t *timerTile) FocusSelection(plugin.RenderCtx) plugin.Selection {

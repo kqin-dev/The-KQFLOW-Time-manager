@@ -3,6 +3,7 @@ package kxapp
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kqin-dev/kxflow/canvas"
 	"github.com/kqin-dev/kxflow/geometry"
@@ -197,6 +198,75 @@ func centerLine(s string, width int) string {
 // 内里的选中还留着上一条，按 l 就会作用在看不见的地方。
 func (k *kernel) FocusSelection(plugin.RenderCtx) plugin.Selection {
 	return plugin.Selection{}
+}
+
+// HeaderContent 提供上栏内容。
+//
+// 用户反馈"上栏和下栏用得不多"，根因就是这里没人提供内容。
+// 上栏该显示的都是**业务概念**（今天是哪天、完成多少、现在几点、
+// 昵称问候），因此只能由内核给——引擎只负责把它排版。
+//
+// 内容与 2.1.0 的 renderHeader 对齐（照它的源码抄，而不是自己发明）：
+//
+//	左：问候语（+昵称）  +  日期 · 星期 · 时刻 · 日界线
+//	右：今日专注时长
+//
+// 问候语与日界线都用 internal/clock 的现成实现：那两处都是
+// "算错了极难看出来"的逻辑（日界线尤其），只能有一份实现。
+func (k *kernel) HeaderContent(ctx plugin.RenderCtx) plugin.HeaderContent {
+	now := ctx.Svc.Clock()
+	cfg := k.src.Config()
+
+	cut := time.Duration(0)
+	loc := time.Local
+	if cfg != nil {
+		cut = cfg.Cutoff()
+		loc = cfg.Location()
+	}
+
+	// 问候语。Nickname 为空时不留"你好，"这种半句。
+	greeting := clock.Greeting(now, cut) + "！"
+	if cfg != nil {
+		if nick := strings.TrimSpace(DisplayTitle(cfg.Nickname)); nick != "" {
+			greeting = clock.Greeting(now, cut) + "，" + nick + "！"
+		}
+	}
+
+	// 日期段：日期 · 星期 · 时刻 · 日界线。
+	day := ""
+	if data := k.src.Day(); data != nil {
+		day = data.Day
+	}
+	weekCN := ""
+	if day != "" {
+		if wd, err := clock.Weekday(day, loc); err == nil {
+			weekCN = [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[wd]
+		}
+	}
+	dateParts := make([]string, 0, 4)
+	if day != "" {
+		dateParts = append(dateParts, day)
+	}
+	if weekCN != "" {
+		dateParts = append(dateParts, weekCN)
+	}
+	dateParts = append(dateParts, now.Format("15:04:05"))
+	if cfg != nil {
+		dateParts = append(dateParts, "日界线 "+clock.WallClock(cut))
+	}
+
+	left := greeting
+	if len(dateParts) > 0 {
+		left += "  " + strings.Join(dateParts, " · ")
+	}
+
+	// 右：今日专注时长（用户最关心的一项，窄终端下它优先保留）。
+	right := ""
+	if data := k.src.Day(); data != nil {
+		focus, _ := data.FocusTotal()
+		right = "今日专注 " + clock.HumanDuration(focus)
+	}
+	return plugin.HeaderContent{Left: left, Right: right}
 }
 
 // Render 让内核也能作为组件被渲染（中栏以外的场合不画东西）。

@@ -418,7 +418,8 @@ func (m *Model) View() string {
 	}
 	m.canvas.Clear()
 	m.registry.SetStates(m.focus, m.stage.Borrowing())
-	// 每帧重算下栏提示：它跟着光标与当前状态变（见 refreshHints）。
+	// 每帧重算下栏提示与上下栏内容：它们跟着光标与当前状态变。
+	m.refreshChrome()
 	m.refreshHints()
 
 	// 1) 上下栏。
@@ -583,6 +584,83 @@ func (m *Model) computeHints() []chrome.KeymapHint {
 // 它每次现算，不读渲染缓存：缓存只在 View() 时更新，
 // 而"按了键之后立刻问提示"必须拿到新的（那正是这个功能要保证的事）。
 func (m *Model) Hints() []chrome.KeymapHint { return m.computeHints() }
+
+// refreshChrome 刷新上下栏的内容。
+//
+// 两件事都是"引擎把通用位置让给插件去填"（用户反馈：上下栏用得不多）：
+//
+//	上栏 → 内核提供（今天是哪天、完成多少、现在几点：都是业务概念）
+//	下栏进度条 → **正在跑那件事的组件**提供（计时磁贴知道专注走到几分之几）
+//
+// 引擎仍然不认识"计时""待办"这些词：它只问接口、画文本、画进度条。
+func (m *Model) refreshChrome() {
+	// 上栏。
+	if k := m.manager.Kernel(); k != nil {
+		if hc, ok := plugin.HeaderContentOf(k, m.renderCtx()); ok {
+			m.header.Left = hc.Left
+			m.header.Right = hc.Right
+		}
+	}
+
+	// 下栏进度条：问所有已安置的组件，用第一个申报的。
+	//
+	// 只取第一个而不是画多条：下栏只有一行，多条进度条会互相挤掉；
+	// 而"同时有两件事在跑"本身是罕见情况（目前只有计时）。
+	if progress, text, ok := m.footerStatus(); ok {
+		m.footer.HasProgress = true
+		m.footer.Progress = progress
+		if text != "" {
+			m.footer.Text = text
+		}
+	} else {
+		m.footer.HasProgress = false
+		m.footer.Progress = 0
+		// 没有进行中的事：回到默认状态文本（"Power by …"）。
+		if k := m.manager.Kernel(); k != nil {
+			m.footer.Text = k.PowerBy()
+		}
+	}
+}
+
+// clamp01 把比值夹到 [0,1]。
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// FooterText 返回下栏左侧的当前文本（供测试与宿主查询）。
+//
+// 它与 Hints 一样是"现算"的出口：缓存只在 View() 时更新，
+// 而"改完状态立刻问界面"必须拿到新的。
+func (m *Model) FooterText() string {
+	// 复用 refreshChrome 的判定：有进度条用它的文字，否则用默认状态文本。
+	if _, text, ok := m.footerStatus(); ok {
+		return text
+	}
+	if k := m.manager.Kernel(); k != nil {
+		return k.PowerBy()
+	}
+	return m.footer.Text
+}
+
+// footerStatus 返回当前应当显示的进度条信息（没有则 ok 为假）。
+func (m *Model) footerStatus() (float64, string, bool) {
+	for _, a := range m.registry.Anchors() {
+		slot, ok := m.registry.At(a)
+		if !ok || slot.Component == nil {
+			continue
+		}
+		if progress, text, ok := plugin.FooterProgressOf(slot.Component, m.renderCtx()); ok {
+			return clamp01(progress), text, true
+		}
+	}
+	return 0, "", false
+}
 
 // CanvasClean 报告最近一帧没有越界、没有覆盖。
 //

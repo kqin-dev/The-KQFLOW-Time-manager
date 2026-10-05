@@ -285,6 +285,55 @@ func KeyHintsOf(c Component, ctx RenderCtx) []KeyHint {
 	return nil
 }
 
+// FooterStatus 是组件向下栏申报的"进行中任务"信息（进度条）。
+//
+// 为什么要有它（用户反馈："专注还没有进度条"）：进度条是下栏的通用能力，
+// 但"现在进行到哪一步"只有**正在跑那件事的组件**知道——
+// 计时磁贴知道专注走到几分之几，引擎不该去理解"什么是计时"。
+//
+// 实现必须是廉价且纯的（每帧都会问）。返回 ok 为假表示"我这会儿没什么
+// 在跑的"，引擎会去问下一个组件。
+type FooterStatus interface {
+	// FooterProgress 返回进度（0~1）与要显示的文字。
+	//
+	// 进度会被夹到 [0,1]；文字可以为空（只画进度条）。
+	FooterProgress(ctx RenderCtx) (progress float64, text string, ok bool)
+}
+
+// FooterProgressOf 取组件的下栏进度（未实现或无进度时 ok 为假）。
+func FooterProgressOf(c Component, ctx RenderCtx) (float64, string, bool) {
+	if s, ok := c.(FooterStatus); ok {
+		return s.FooterProgress(ctx)
+	}
+	return 0, "", false
+}
+
+// HeaderContent 是内核向下栏/上栏申报的文本内容。
+type HeaderContent struct {
+	// Left 是上栏左侧文本（日期、问候、当天概况）。
+	Left string
+	// Right 是上栏右侧文本（时间、状态）。留空表示不画。
+	Right string
+}
+
+// HeaderProvider 是可选能力：内核据此提供**上栏内容**。
+//
+// 为什么放在内核而不是引擎：上栏要显示的东西（今天是哪天、完成了多少、
+// 现在几点）都是**业务概念**，引擎只该负责"把一段文本画在上栏"。
+// 用户反馈"上栏和下栏用得不多"，根因就是这里没人提供内容。
+type HeaderProvider interface {
+	// HeaderContent 返回本帧的上栏内容。
+	HeaderContent(ctx RenderCtx) HeaderContent
+}
+
+// HeaderContentOf 取内核提供的上栏内容（未实现则返回零值）。
+func HeaderContentOf(k Kernel, ctx RenderCtx) (HeaderContent, bool) {
+	if h, ok := k.(HeaderProvider); ok {
+		return h.HeaderContent(ctx), true
+	}
+	return HeaderContent{}, false
+}
+
 // Event 是交给组件处理的事件。
 //
 // 定义成引擎自己的类型而不是直接用 bubbletea 的 KeyMsg：

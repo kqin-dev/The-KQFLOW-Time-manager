@@ -25,6 +25,17 @@ type HeaderBar struct {
 	// Separator 是面包屑之间的分隔串，默认 " · "。
 	Separator string
 
+	// Left / Right 是**插件直接提供**的整段内容（内核或磁贴填）。
+	//
+	// 与 Crumbs/Status 的关系：Left 非空时优先用它（它是"一整句话"，
+	// 例如"周五 · 你好，张三"），否则退回 Crumbs 拼出来的面包屑。
+	//
+	// 为什么要这个入口（用户反馈"上栏用得不多"）：面包屑只能表达
+	// "你在哪一层"，而真实产品要显示的是"今天几号、完成多少、几点"——
+	// 那些都是业务概念，只能由插件提供，引擎只负责排版。
+	Left  string
+	Right string
+
 	// leftExtras / rightExtras 是各包通过 Decorate* 追加的内容。
 	leftExtras  []string
 	rightExtras []string
@@ -54,7 +65,16 @@ func (h *HeaderBar) ResetExtras() {
 }
 
 // LeftText 返回左半部分的纯文本（测试与宽度计算用）。
+//
+// Left 非空时优先用它：那是插件给的"一整句话"，
+// 不该再被面包屑分隔符切开。
 func (h *HeaderBar) LeftText() string {
+	if h.Left != "" {
+		parts := make([]string, 0, len(h.leftExtras)+1)
+		parts = append(parts, h.leftExtras...)
+		parts = append(parts, h.Left)
+		return strings.Join(parts, "  ")
+	}
 	sep := h.Separator
 	if sep == "" {
 		sep = " · "
@@ -67,7 +87,10 @@ func (h *HeaderBar) LeftText() string {
 
 // RightText 返回右半部分的纯文本。
 func (h *HeaderBar) RightText() string {
-	parts := make([]string, 0, len(h.rightExtras)+1)
+	parts := make([]string, 0, len(h.rightExtras)+2)
+	if h.Right != "" {
+		parts = append(parts, h.Right)
+	}
 	if h.Status != "" {
 		parts = append(parts, h.Status)
 	}
