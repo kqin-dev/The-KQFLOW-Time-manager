@@ -48,6 +48,7 @@ func (l *Loader) Packs() []plugin.Pack {
 		NewNotePack(l.src, l.state),
 		NewSettingPack(l.src, l.state),
 		NewHistoryPack(l.src),
+		NewCarryPack(l.src, l.state),
 	}
 }
 

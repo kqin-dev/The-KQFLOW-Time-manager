@@ -11,6 +11,7 @@
 package kxapp
 
 import (
+	"errors"
 	"time"
 
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
@@ -43,6 +44,19 @@ type Source interface {
 	// 缺数据的日期会被跳过（不是每天都有记录），因此返回的条数
 	// 可能少于请求的天数——调用方不要假设它是等长的。
 	RecentDays(limit int) ([]*model.DayData, error)
+	// PrevDay 返回"昨日"的逻辑日（取最近一个**早于今天**且有数据的日子）。
+	//
+	// 返回空串表示没有可继承的昨日。
+	// 注意它不是"今天减一天"：日界线让"昨天"不等于"日期减一"，
+	// 而且用户可能几天没打开程序——那时最近的记录才是该继承的对象
+	//（与 2.1.0 的 prevDay 同一个口径）。
+	PrevDay() string
+	// Carry 把昨日的条目继承到今天，返回新增条数。
+	//
+	// mode 取 "fixed" / "floating" / "both"。去重与"只带未完成的临时条目"
+	// 这些规则都在 store 里（见 store.CarryFixed/CarryFloating），
+	// 这里只是把它暴露给引擎层——规则不能有两份实现。
+	Carry(mode string) (int, error)
 	// Save 把当前日数据写回存储。
 	Save() error
 	// SaveGoals 把活跃目标写回存储。
@@ -138,6 +152,55 @@ func (s *storeSource) RecentDays(limit int) ([]*model.DayData, error) {
 		out = append(out, data)
 	}
 	return out, nil
+}
+
+// PrevDay 返回最近一个早于今天的逻辑日（有数据的那种）。
+func (s *storeSource) PrevDay() string {
+	if s.data == nil {
+		return ""
+	}
+	// 取 30 天足够覆盖"几天没打开"的常见情况；再多翻下去意义也不大——
+	// 继承一个月前的东西通常不是用户想要的。
+	days, err := s.st.RecentDays(30)
+	if err != nil {
+		return ""
+	}
+	prev := ""
+	for _, d := range days {
+		if d < s.data.Day && d > prev {
+			prev = d
+		}
+	}
+	return prev
+}
+
+// Carry 把昨日的条目继承到今天。
+func (s *storeSource) Carry(mode string) (int, error) {
+	prev := s.PrevDay()
+	if prev == "" || s.data == nil {
+		return 0, errors.New("没有可继承的昨日数据")
+	}
+	added := 0
+	if mode == "fixed" || mode == "both" {
+		n, err := s.st.CarryFixed(prev, s.data.Day, s.Now())
+		if err != nil {
+			return added, err
+		}
+		added += n
+	}
+	if mode == "floating" || mode == "both" {
+		n, err := s.st.CarryFloating(prev, s.data.Day, s.Now())
+		if err != nil {
+			return added, err
+		}
+		added += n
+	}
+	// store 的 Carry* 会直接写盘，因此这里必须**重新载入**内存里的当天数据，
+	// 否则界面上看不到刚继承进来的条目（引擎持有的是旧切片）。
+	if err := s.Reload(); err != nil {
+		return added, err
+	}
+	return added, nil
 }
 
 func (s *storeSource) Save() error {

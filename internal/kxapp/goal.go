@@ -242,6 +242,16 @@ func (t *goalTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 	case "k", "up":
 		t.state.GoalCursor = MoveCursor(t.state.GoalCursor, -1, len(goals))
 		return t.selectCurrent()
+	case "g", "home":
+		// 跳到首项（与 2.1.0 的 g/Home 一致）。
+		t.state.GoalCursor = 0
+		return t.selectCurrent()
+	case "G", "end":
+		// 跳到末项。
+		if len(goals) > 0 {
+			t.state.GoalCursor = len(goals) - 1
+		}
+		return t.selectCurrent()
 	case " ", "enter":
 		return t.toggle(ctx, goals)
 	}

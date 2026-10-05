@@ -386,6 +386,7 @@ func (t *todoTile) KeyHints(plugin.RenderCtx) []plugin.KeyHint {
 		{Key: "j/k", Desc: "移动"},
 		{Key: "space", Desc: "勾选"},
 		{Key: "enter", Desc: "子任务"},
+		{Key: "g/G", Desc: "首/末"},
 		{Key: "l", Desc: "操作"},
 	}
 }
@@ -457,6 +458,16 @@ func (t *todoTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 		// esc 在列表模式下不做事：它属于"退回"语义，而列表就是最外层。
 		// 交给引擎（它会去关借调层或什么都不做）。
 		return plugin.None()
+	case "g", "home":
+		// 跳到首项（与 2.1.0 的 g/Home 一致）。
+		t.setCursor(0)
+		return t.selectCurrent()
+	case "G", "end":
+		// 跳到末项。列表可能很长，这是唯一"一次到末尾"的方式。
+		if len(items) > 0 {
+			t.setCursor(len(items) - 1)
+		}
+		return t.selectCurrent()
 	case "enter":
 		// enter 进入子任务模式（与 2.1.0 一致：enter 是"进入下级"）。
 		//

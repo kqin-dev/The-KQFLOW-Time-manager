@@ -1,6 +1,8 @@
 package kxapp
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +79,92 @@ func (m *memSource) SaveConfig() error {
 }
 
 func (m *memSource) Reload() error { return nil }
+
+// PrevDay 返回内存里最近一个早于今天的日子。
+func (m *memSource) PrevDay() string {
+	if m.data == nil {
+		return ""
+	}
+	prev := ""
+	for _, d := range m.extraDays {
+		if d != nil && d.Day < m.data.Day && d.Day > prev {
+			prev = d.Day
+		}
+	}
+	return prev
+}
+
+// Carry 模拟继承：把昨日条目复制到今天，规则与 store 保持一致
+// （固定项全带、临时项只带未完成的、同名不重复）。
+func (m *memSource) Carry(mode string) (int, error) {
+	prev := m.PrevDay()
+	if prev == "" || m.data == nil {
+		return 0, errors.New("没有可继承的昨日数据")
+	}
+	var prevData *model.DayData
+	for _, d := range m.extraDays {
+		if d != nil && d.Day == prev {
+			prevData = d
+			break
+		}
+	}
+	if prevData == nil {
+		return 0, errors.New("昨日没有数据")
+	}
+	added := 0
+	exists := func(list []*model.Todo) map[string]bool {
+		out := map[string]bool{}
+		for _, t := range list {
+			out[strings.ToLower(strings.TrimSpace(t.Title))] = true
+		}
+		return out
+	}
+	if mode == "fixed" || mode == "both" {
+		have := exists(m.data.Fixed)
+		for _, src := range prevData.Fixed {
+			key := strings.ToLower(strings.TrimSpace(src.Title))
+			if key == "" || have[key] {
+				continue
+			}
+			item := model.NewTodo(src.Title, model.KindFixed, m.data.Day, m.now)
+			item.CarriedFrom = prev
+			for _, task := range src.Tasks {
+				item.Tasks = append(item.Tasks, model.NewTask(task.Title))
+			}
+			m.data.Fixed = append(m.data.Fixed, item)
+			have[key] = true
+			added++
+		}
+	}
+	if mode == "floating" || mode == "both" {
+		have := exists(m.data.Floating)
+		for _, src := range prevData.Floating {
+			if src.Done {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(src.Title))
+			if key == "" || have[key] {
+				continue
+			}
+			item := model.NewTodo(src.Title, model.KindFloating, m.data.Day, m.now)
+			item.CarriedFrom = prev
+			for _, task := range src.Tasks {
+				if task.Done() {
+					continue
+				}
+				item.Tasks = append(item.Tasks, model.NewTask(task.Title))
+			}
+			m.data.Floating = append(m.data.Floating, item)
+			have[key] = true
+			added++
+		}
+	}
+	m.data.CarryAsked = true
+	if err := m.Save(); err != nil {
+		return added, err
+	}
+	return added, nil
+}
 
 // RecentDays 返回内存里的日数据，供历史页测试使用。
 //
