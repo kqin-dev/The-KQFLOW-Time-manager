@@ -87,10 +87,14 @@ type Todo struct {
 }
 
 // NewTodo 创建一个新的待办。
+//
+// 标题走 Sanitize（不只是 TrimSpace）：终端粘贴偶尔带进 NUL 等控制字符，
+// 它们会以 \u0000 的形式写进 JSON——看不见、又让数据文件变脆。
+// 详见 NewGoal 的说明（那是一次真实事故）。
 func NewTodo(title string, kind Kind, day string, now time.Time) *Todo {
 	return &Todo{
 		ID:        NewID("todo"),
-		Title:     strings.TrimSpace(title),
+		Title:     Sanitize(title, false),
 		Kind:      kind,
 		Status:    StatusTodo,
 		CreatedAt: now,
@@ -189,8 +193,18 @@ type Goal struct {
 }
 
 // NewGoal 创建一个新目标。
+//
+// ⚠️ 标题必须走 Sanitize，**不能只用 TrimSpace**。
+//
+// 这是一次真实事故：用户数据里出现了 `"title": "\u0000demo\u0000GOAL"`——
+// 标题里夹着 NUL 字节（终端粘贴带进去的），而 NUL 在终端里**完全不可见**，
+// 于是它一路躺在数据文件里，直到有代码去比较这个字符串才暴露出来
+// （实测是"选中目标时读出来的标题带 NUL"）。
+//
+// Sanitize 的注释里早就写明要拦这种情况，但构造函数当时没用它——
+// 规则写在 A 处、落实在 B 处，中间就漏了。
 func NewGoal(title string, now time.Time) *Goal {
-	title = strings.TrimSpace(title)
+	title = Sanitize(title, false)
 	return &Goal{
 		ID:      NewID("goal"),
 		Title:   title,

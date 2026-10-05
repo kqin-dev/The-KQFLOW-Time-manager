@@ -81,6 +81,40 @@ func (s SlotPreference) Validate() error {
 
 // Component 是"已经装配好、可以渲染与收事件"的组件。
 //
+// FocusReporter 是可选能力：组件在**获得焦点时**回报"我这儿默认选中的是谁"。
+//
+// 为什么必须有它（用户 2026-10-05 的反馈，一个真实的错位 bug）：
+//
+//	原话：我按下 TAB 按键后光标实际上指向了什么都不是，
+//	但是内部其实还指在旧的位置（因为 TAB 不更新光标位置，
+//	但是会影响渲染）这就导致明明我已经 TAB 到其他位置，
+//	实际上光标还是选着之前最后一个选项，
+//	并且 TAB 也不会自动选中磁贴中的第一个选项（但是观感和直觉是选中了）。
+//
+// 根因是"高亮"与"选中"是两套状态：高亮由焦点决定（渲染时算），
+// 选中由磁贴的 j/k 上报（按键时算）。只按 tab 不改选中，
+// 于是 l 会作用在**上一个磁贴的那一条**上——屏幕上完全看不出来。
+//
+// 因此焦点一变就必须重新问一次"你现在选中谁"：
+// 列表类磁贴返回光标所指的那一条（因此"自动选中第一条"是自然结果），
+// 没有可选项的磁贴返回零值 Selection（表示"这里没东西可选"）。
+type FocusReporter interface {
+	// FocusSelection 返回本组件在获得焦点时应上报的选中项。
+	//
+	// 实现必须是**廉价且纯**的：焦点每次变化都会调用它。
+	FocusSelection(ctx RenderCtx) Selection
+}
+
+// FocusSelectionOf 取组件在获得焦点时的默认选中（未实现则返回零值）。
+func FocusSelectionOf(c Component, ctx RenderCtx) (Selection, bool) {
+	if r, ok := c.(FocusReporter); ok {
+		return r.FocusSelection(ctx), true
+	}
+	return Selection{}, false
+}
+
+// Component 是"可渲染的东西"（磁贴、内核、视图内容都实现它）。
+//
 // Render 不返回值：内容只能画进 ctx.Canvas 的 ctx.Rect 里，
 // 而画布的裁剪区保证它**画不出去**（design §0.1 的第 3 条保证）。
 type Component interface {

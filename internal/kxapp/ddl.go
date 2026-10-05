@@ -210,6 +210,12 @@ func dueMark(s model.DueState) string {
 	}
 }
 
+// FocusSelection 回报"本磁贴获得焦点时选中了谁"：截止时间面板只展示，
+// 没有"当前条目"的概念，因此返回零值把上一个磁贴的选中清掉。
+func (t *ddlPanel) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	return plugin.Selection{}
+}
+
 // Update 面板本身不处理按键（它只是展示）。
 func (t *ddlPanel) Update(plugin.EventCtx, plugin.Event) plugin.Action { return plugin.None() }
 

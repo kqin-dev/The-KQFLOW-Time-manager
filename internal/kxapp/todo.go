@@ -186,6 +186,8 @@ func itemRows(t *model.Todo, rowW int) int {
 }
 
 // todoLine 生成一条待办的显示文本。
+//
+// 标题走 DisplayTitle：老数据里可能带不可见的控制字符（见其说明）。
 func todoLine(t *model.Todo) string {
 	mark := "○"
 	if t.Done {
@@ -193,7 +195,7 @@ func todoLine(t *model.Todo) string {
 	} else if t.Status == model.StatusDoing {
 		mark = "◐"
 	}
-	line := fmt.Sprintf("%s %s", mark, t.Title)
+	line := fmt.Sprintf("%s %s", mark, DisplayTitle(t.Title))
 	if d := t.Due; d != "" {
 		line += "  ⏰" + d
 	}
@@ -237,6 +239,26 @@ func (t *todoTile) KeyHints(plugin.RenderCtx) []plugin.KeyHint {
 	}
 }
 
+// FocusSelection 回报"本磁贴获得焦点时选中的是谁"——就是光标所指那一条。
+//
+// 光标初始为 0，因此 **tab 过来就等于选中了第一条**（用户直觉如此）。
+// 列表为空时返回零值 Selection，表示"这里没有东西可选"——
+// 此时按 l 只会看到通用选项，不会误作用到别的磁贴的条目上。
+func (t *todoTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	items := TodoList(t.src, t.kind)
+	cur := ClampCursor(t.cursorIndex(), len(items))
+	if cur >= len(items) {
+		t.state.selectTodo("")
+		return plugin.Selection{}
+	}
+	item := items[cur]
+	t.state.selectTodo(item.ID)
+	return plugin.Selection{
+		Kind: "todo", ID: item.ID, Title: DisplayTitle(item.Title),
+		Can: svc.Capability{CapItemDue, CapItemLabel},
+	}
+}
+
 // Update 处理按键：移动光标、勾选、上报选中。
 //
 // 选中始终 = **光标所在的那一条**。移动光标会重新上报，因此按 l 打开的
@@ -275,18 +297,7 @@ func (t *todoTile) toggle(ctx plugin.EventCtx, items []*model.Todo) plugin.Actio
 // 联动选项（设 DDL、打标签）据此出现或消失——**它们不需要认识本磁贴**，
 // 只认引擎广播的 Selection（design §5.2）。
 func (t *todoTile) selectCurrent() plugin.Action {
-	items := TodoList(t.src, t.kind)
-	cur := ClampCursor(t.cursorIndex(), len(items))
-	if cur >= len(items) {
-		t.state.selectTodo("")
-		return plugin.Select(plugin.Selection{})
-	}
-	item := items[cur]
-	t.state.selectTodo(item.ID)
-	return plugin.Select(plugin.Selection{
-		Kind: "todo", ID: item.ID, Title: item.Title,
-		Can: svc.Capability{CapItemDue, CapItemLabel},
-	})
+	return plugin.Select(t.FocusSelection(plugin.RenderCtx{}))
 }
 
 // scrollOffset 计算列表滚动偏移，保证光标可见（**按条目数**，用于单行列表）。

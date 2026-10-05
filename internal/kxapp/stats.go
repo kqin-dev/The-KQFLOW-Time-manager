@@ -160,6 +160,11 @@ func (t *statsTile) recentFocus() []dayFocus {
 	return out
 }
 
+// FocusSelection 回报：纯展示磁贴没有"当前条目"，返回零值清掉上一条选中。
+func (t *statsTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	return plugin.Selection{}
+}
+
 func (t *statsTile) Update(plugin.EventCtx, plugin.Event) plugin.Action { return plugin.None() }
 
 // ---------- 随手记 ----------
@@ -237,6 +242,11 @@ func (t *noteTile) Render(ctx plugin.RenderCtx) {
 		// 折行而不是截断：随手记是自由文本，一行往往长过磁贴宽度。
 		y = drawWrapped(ctx, y, ctx.Rect, line, tile.StyleMuted)
 	}
+}
+
+// FocusSelection 回报：随手记是只读预览，没有"当前条目"。
+func (t *noteTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	return plugin.Selection{}
 }
 
 func (t *noteTile) Update(plugin.EventCtx, plugin.Event) plugin.Action { return plugin.None() }

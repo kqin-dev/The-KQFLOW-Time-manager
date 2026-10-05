@@ -1,6 +1,8 @@
 package kxapp
 
 import (
+	"strings"
+
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
@@ -61,6 +63,38 @@ func (h *HostState) setFloatingCursor(v int) { h.TodoFloatCursor = v }
 
 // selectTodo 记录当前选中的待办 ID。
 func (h *HostState) selectTodo(id string) { h.SelectedTodo = id }
+
+// DisplayTitle 把一段文本清成"可以安全显示"的样子。
+//
+// 为什么渲染层也要做一遍（构造层已经 Sanitize 过了）：
+// **已经写进磁盘的老数据没法回头改**。实测用户数据里就有
+// `"title": "\u0000demo\u0000GOAL"`——NUL 在终端里完全不可见，
+// 却会污染任何从渲染结果里取文本的代码（诊断、断言、日志对比）。
+//
+// 这里是**只清显示、不改数据**：用户的文件保持原样（我们不该在
+// 未经允许的情况下改他的数据），但界面上不会出现不可见字符。
+func DisplayTitle(s string) string {
+	if !strings.ContainsFunc(s, isControlRune) {
+		return s // 绝大多数情况走这里，零分配
+	}
+	return strings.Map(func(r rune) rune {
+		if isControlRune(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// isControlRune 报告一个字符是否属于"终端里不可见但会污染文本"的控制字符。
+//
+// 与 model.Sanitize 的口径一致：C0、DEL、C1 都算。
+// 换行与制表不算（多行文本要用，由各自的渲染逻辑处理）。
+//
+// 注意这里判的是 **rune**：非法 UTF-8 字节在 range 里会变成 U+FFFD，
+// 那种情况应当交给编码层处理（我们只负责把合法的控制符清掉）。
+func isControlRune(r rune) bool {
+	return (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
 
 // TodoList 返回今日固定或临时的待办列表。
 //

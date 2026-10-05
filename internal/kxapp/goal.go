@@ -145,7 +145,7 @@ func goalRowCounts(goals []*model.Goal, src Source, rowWidth int) []int {
 	return out
 }
 
-// goalLine 生成一条目标的显示文本。
+// goalLine 生成一条目标的显示文本（标题走 DisplayTitle，见其说明）。
 func goalLine(g *model.Goal, src Source) string {
 	mark := "○"
 	if g.Done {
@@ -153,7 +153,7 @@ func goalLine(g *model.Goal, src Source) string {
 	} else if g.Status == model.StatusDoing {
 		mark = "◐"
 	}
-	line := fmt.Sprintf("%s %s", mark, g.Title)
+	line := fmt.Sprintf("%s %s", mark, DisplayTitle(g.Title))
 	if g.Due != "" {
 		line += "  ⏰" + g.Due
 	}
@@ -163,6 +163,25 @@ func goalLine(g *model.Goal, src Source) string {
 	}
 	_ = src
 	return line
+}
+
+// FocusSelection 回报"本磁贴获得焦点时选中的是谁"（光标所指那一条）。
+//
+// 与待办列表同理：tab 过来即选中第一条；没有目标时返回零值，
+// 避免把上一个磁贴的选中带过来。
+func (t *goalTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	goals := GoalList(t.src)
+	cur := ClampCursor(t.state.GoalCursor, len(goals))
+	if cur >= len(goals) {
+		t.state.SelectedGoal = ""
+		return plugin.Selection{}
+	}
+	g := goals[cur]
+	t.state.SelectedGoal = g.ID
+	return plugin.Selection{
+		Kind: "goal", ID: g.ID, Title: DisplayTitle(g.Title),
+		Can: svc.Capability{CapItemDue, CapItemLabel},
+	}
 }
 
 // KeyHints 申报目标列表上的可用按键（空列表时没什么可按）。
@@ -224,18 +243,7 @@ func (t *goalTile) toggle(ctx plugin.EventCtx, goals []*model.Goal) plugin.Actio
 }
 
 func (t *goalTile) selectCurrent() plugin.Action {
-	goals := GoalList(t.src)
-	cur := ClampCursor(t.state.GoalCursor, len(goals))
-	if cur >= len(goals) {
-		t.state.SelectedGoal = ""
-		return plugin.Select(plugin.Selection{})
-	}
-	g := goals[cur]
-	t.state.SelectedGoal = g.ID
-	return plugin.Select(plugin.Selection{
-		Kind: "goal", ID: g.ID, Title: g.Title,
-		Can: svc.Capability{CapItemDue, CapItemLabel},
-	})
+	return plugin.Select(t.FocusSelection(plugin.RenderCtx{}))
 }
 
 // goalPersist 是一次"目标发生了移动"的持久化请求。

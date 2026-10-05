@@ -7,6 +7,8 @@ import (
 	"github.com/kqin-dev/kxflow/canvas"
 	"github.com/kqin-dev/kxflow/geometry"
 	"github.com/kqin-dev/kxflow/plugin"
+
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
 // TestItemRowWidthMatchesDrawPath 断言"滚动用的行数"与"绘制用的宽度"同源。
@@ -24,6 +26,67 @@ func TestItemRowWidthMatchesDrawPath(t *testing.T) {
 	// 极窄时不能为负（负数会让 canvas.Wrap 直接返回空行，列表整块消失）。
 	if got := itemRowWidth(geometry.Rect{W: 1}); got >= 1 {
 		t.Errorf("1 列宽时正文宽度应为非正数（表示放不下），实际 %d", got)
+	}
+}
+
+// TestDisplayTitleStripsInvisibleRunes 验证"不可见字符不会进到界面上"。
+//
+// 这是一次**真实数据事故**的墓碑：用户 goals.json 里的标题是
+// "\u0000demo\u0000GOAL"（终端粘贴带进去的 NUL 字节）。
+// NUL 在终端里完全不可见，于是它一路躺在数据文件里，
+// 直到有代码去比较这个字符串才暴露出来。
+//
+// 两处一起修：
+//   - model.NewTodo / NewGoal 走 Sanitize（不再让新的脏数据进来）；
+//   - kxapp.DisplayTitle 在**显示时**清一遍（老数据没法回头改，
+//     但我们不该在未经允许的情况下改用户的文件）。
+func TestDisplayTitleStripsInvisibleRunes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"正常标题", "正常标题"},
+		{"\x00demo\x00GOAL", "demoGOAL"},
+		{"a\x1bb\x7fc", "abc"},
+		// ⚠️ 这里必须写 \u009d 而不是 \x9d：后者是**单个非法 UTF-8 字节**，
+		// range 会把它解成 U+FFFD（替换字符），于是测的根本不是 C1 控制符。
+		// 我第一版就写错了，测试因此"红得莫名其妙"——注释留在这里免得再犯。
+		{"带\u009dC1字符", "带C1字符"},
+		{"保留\n换行", "保留\n换行"}, // 换行是多行文本要用的
+		{"保留\t制表", "保留\t制表"}, // 制表同理
+	}
+	for _, c := range cases {
+		if got := DisplayTitle(c.in); got != c.want {
+			t.Errorf("DisplayTitle(%q) = %q，期望 %q", c.in, got, c.want)
+		}
+	}
+	// 干净文本必须原样返回（这条路径应当是零分配的常见情形）。
+	if got := DisplayTitle("普通标题"); got != "普通标题" {
+		t.Errorf("干净文本应原样返回，实际 %q", got)
+	}
+}
+
+// TestNoNULInRenderedText 断言渲染输出里**不含 NUL 字节**——包括
+//
+// 磁盘上本来就带着脏字符的情况（用户现有数据就是这样）。
+func TestNoNULInRenderedText(t *testing.T) {
+	src := newMemSource(t, testNow())
+	src.addTodo("中文待办甲", model.KindFixed)
+	src.addTodo("\x00脏\x00待办", model.KindFloating)
+	src.addGoal("\x00demo\x00GOAL")
+	src.data.Note = "随手记丁"
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	for _, size := range []struct{ w, h int }{{120, 40}, {90, 30}, {70, 24}, {40, 12}} {
+		m.Resize(size.w, size.h)
+		out := m.View()
+		if strings.ContainsRune(out, 0) {
+			t.Errorf("%dx%d：渲染输出里出现了 NUL 字节\n%q", size.w, size.h, out)
+		}
+	}
+	// 选中项的标题也必须干净（它会被拼进选项标签里）。
+	m.Resize(120, 40)
+	m.SetFocus(geometry.AnchorLeftBottom)
+	if sel := m.Selection(); strings.ContainsRune(sel.Title, 0) {
+		t.Errorf("选中项标题里出现了 NUL：%q", sel.Title)
 	}
 }
 

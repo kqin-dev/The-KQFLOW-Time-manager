@@ -366,6 +366,9 @@ func (m *Model) applyFocusDefaults() {
 	for _, a := range geometry.AllAnchors {
 		if _, ok := m.registry.At(a); ok {
 			m.focus = a
+			// 初次落焦点同样要把选中对齐：否则开局就存在
+			// "高亮在 A、选中为空"的错位，用户按 l 会得到"没有操作"。
+			m.syncSelectionToFocus()
 			return
 		}
 	}
@@ -611,6 +614,9 @@ func (m *Model) Footer() *chrome.FooterBar { return &m.footer }
 func (m *Model) Focus() geometry.Anchor { return m.focus }
 
 // SetFocus 设置焦点（不可用的槽位会被忽略）。
+//
+// 焦点一变就**必须重算选中**：否则"高亮在 A、选中还是 B"，
+// 而 l 会作用在 B 上——屏幕上完全看不出来（用户实测到的错位 bug）。
 func (m *Model) SetFocus(a geometry.Anchor) {
 	// 舞台是合法的焦点目标，但只在**有人借调**时可聚焦：
 	// 栈空时的看板是底色，不是"一种磁贴"，不该抢焦点。
@@ -627,6 +633,27 @@ func (m *Model) SetFocus(a geometry.Anchor) {
 		return
 	}
 	m.focus = a
+	m.syncSelectionToFocus()
+}
+
+// syncSelectionToFocus 让"选中"跟着焦点走。
+//
+// 这是用户第 3 条反馈的落点：tab 之后观感上已经选中了新磁贴的第一项，
+// 内部状态就必须同意这件事。做法是把决定权交给**磁贴自己**
+// （它知道自己光标在哪、有没有条目），而不是引擎去猜。
+func (m *Model) syncSelectionToFocus() {
+	if m.focus == geometry.AnchorStage {
+		return // 舞台上的视图不需要"选中条目"这个概念
+	}
+	slot, ok := m.registry.At(m.focus)
+	if !ok || slot.Component == nil {
+		return
+	}
+	ctx := m.renderCtx()
+	ctx.Focus = true
+	if sel, ok := plugin.FocusSelectionOf(slot.Component, ctx); ok {
+		m.selection = sel
+	}
 }
 
 // FocusNext 把焦点移到下一个目标（tab 的行为）。
@@ -651,6 +678,8 @@ func (m *Model) FocusNext(delta int) {
 		next += len(targets)
 	}
 	m.focus = targets[next]
+	// 焦点换了，选中必须跟着换（见 syncSelectionToFocus）。
+	m.syncSelectionToFocus()
 }
 
 // focusTargets 返回当前的焦点环。

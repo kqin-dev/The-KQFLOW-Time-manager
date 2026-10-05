@@ -162,27 +162,32 @@ func TestRenderNeverOverflowsWithRealData(t *testing.T) {
 // 它验证三件事同时成立：
 //  1. 在 TODO 磁贴上选中一条 → 引擎收到选中上下文；
 //  2. **联动选项因此出现**（打标签、设截止时间）——而它们不认识任何磁贴；
-//  3. 取消选中（或换到没选中的状态）之后它们消失。
+//  3. 焦点离开（到没有列表的磁贴）之后它们消失。
 func TestSelectingTodoRevealsContextOptions(t *testing.T) {
 	src := newMemSource(t, testNow())
 	todo := src.addTodo("写文档", model.KindFixed)
+	src.addTodo("回复邮件", model.KindFixed)
 
 	l := NewLoader(src, src.Config())
 	m, _, _ := l.Build()
 	m.Resize(120, 40)
 
-	// 初始：没有选中，不该有联动选项。
-	if got := m.ContextOptions(); len(got) != 0 {
-		t.Fatalf("初始不该有联动选项，实际 %d 个", len(got))
+	// 初始就有焦点落在第一个磁贴上，而**聚焦即选中第一条**
+	//（用户反馈："TAB 也不会自动选中磁贴中的第一个选项"——现在开局就是稳定状态：
+	//  高亮在第一条、选中也是第一条，两者一致）。
+	if got := m.ContextOptions(); len(got) == 0 {
+		t.Fatal("开局聚焦在待办列表上，应当已选中第一条并出现联动选项")
+	}
+	if sel := m.Selection(); sel.ID != todo.ID {
+		t.Fatalf("开局选中应为第一条「写文档」，实际 %+v", sel)
 	}
 
-	// 让焦点落在固定待办磁贴上，然后按 j（移动光标会顺带上报选中）。
+	// 焦点落到固定待办磁贴上：**立刻**选中它的第一条
+	//（用户反馈："TAB 也不会自动选中磁贴中的第一个选项"——现在会自动了）。
 	m.SetFocus(geometry.AnchorLeftTop)
-	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
-
 	sel := m.Selection()
 	if sel.ID != todo.ID {
-		t.Fatalf("选中应指向刚加的待办，实际 %+v", sel)
+		t.Fatalf("聚焦列表时应自动选中第一条，实际 %+v", sel)
 	}
 	if sel.Kind != "todo" {
 		t.Errorf("选中类型应为 todo，实际 %q", sel.Kind)
@@ -780,8 +785,88 @@ func TestSaveFailureIsSurfaced(t *testing.T) {
 }
 
 // TestBoardOptionsHaveNoDuplicates 是"选项重复"那次事故的墓碑。
+// TestTabResyncsSelection 是"tab 之后选中还留在旧磁贴"这个错位 bug 的墓碑。
 //
-// 内核本身也是一个已装载的包，而 Manager.BoardOptions 既从 m.kernel
+// 用户的原话：
+//
+//	我按下 TAB 按键后光标实际上指向了什么都不是，但是内部其实还指在
+//	旧的位置（因为 TAB 不更新光标位置，但是会影响渲染）这就导致明明
+//	我已经 TAB 到其他位置，实际上光标还是选着之前最后一个选项，
+//	并且 TAB 也不会自动选中磁贴中的第一个选项（但是观感和直觉是选中了）。
+//
+// 根因：高亮由焦点决定（渲染时算），选中由磁贴的 j/k 上报（按键时算）。
+// 只按 tab 不改选中 → l 会作用在**上一个磁贴的那一条**上。
+func TestTabResyncsSelection(t *testing.T) {
+	src := newMemSource(t, testNow())
+	src.addTodo("固定一", model.KindFixed)
+	fixed2 := src.addTodo("固定二", model.KindFixed)
+	floating := src.addTodo("临时一", model.KindFloating)
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 40)
+
+	// 在固定待办里把光标移到第二条：选中应当是"固定二"。
+	m.SetFocus(geometry.AnchorLeftTop)
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+	if sel := m.Selection(); sel.ID != fixed2.ID {
+		t.Fatalf("固定列表里下移一格后应选中「固定二」，实际 %q", sel.Title)
+	}
+
+	// tab 到临时待办：选中必须立刻变成它的第一条，**不能**还留着固定二。
+	m.SetFocus(geometry.AnchorLeftBottom)
+	sel := m.Selection()
+	if sel.ID != floating.ID {
+		t.Errorf("tab 到临时列表后应选中它的第一条「临时一」，实际 %q（id=%q）",
+			sel.Title, sel.ID)
+	}
+	if sel.ID == fixed2.ID {
+		t.Error("选中还留在上一个磁贴——这正是用户报的错位 bug")
+	}
+
+	// 再 tab 到一个没有列表的磁贴：选中必须被**清空**，
+	// 否则按 l 会作用在看不见的地方。
+	m.SetFocus(geometry.AnchorCenterDockLeft) // 统计磁贴（纯展示）
+	if sel := m.Selection(); sel.ID != "" {
+		t.Errorf("tab 到纯展示磁贴后选中应清空，实际 %q", sel.Title)
+	}
+
+	// 回到固定列表：应当自动恢复它当前光标位置（固定二，光标没变）。
+	m.SetFocus(geometry.AnchorLeftTop)
+	if sel := m.Selection(); sel.ID != fixed2.ID {
+		t.Errorf("回到固定列表后应恢复它的光标位置「固定二」，实际 %q", sel.Title)
+	}
+
+	// 用 FocusNext（tab 的实际实现）走一遍同样的路径。
+	m.FocusNext(1)
+	if sel := m.Selection(); sel.ID == fixed2.ID {
+		t.Error("FocusNext 之后选中不该还是上一个磁贴的条目")
+	}
+}
+
+// TestFocusNextAutoSelectsFirstItem 验证"tab 过去就等于选中第一条"。
+//
+// 用户说"TAB 也不会自动选中磁贴中的第一个选项（但是观感和直觉是选中了）"——
+// 现在观感与内部状态一致了。
+func TestFocusNextAutoSelectsFirstItem(t *testing.T) {
+	src := newMemSource(t, testNow())
+	first := src.addTodo("第一条", model.KindFixed)
+	src.addTodo("第二条", model.KindFixed)
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 40)
+
+	m.SetFocus(geometry.AnchorLeftTop)
+	sel := m.Selection()
+	if sel.ID != first.ID {
+		t.Fatalf("聚焦列表时应自动选中第一条，实际 %q", sel.Title)
+	}
+	if sel.Title != "第一条" {
+		t.Errorf("应选中「第一条」，实际 %q", sel.Title)
+	}
+}
+
 // TestBoardOptionsHaveNoDuplicates 是"选项重复"那次事故的墓碑。
 //
 // 内核本身也是一个已装载的包，而 Manager.BoardOptions 既从 m.kernel

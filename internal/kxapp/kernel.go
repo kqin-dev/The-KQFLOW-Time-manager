@@ -190,6 +190,15 @@ func centerLine(s string, width int) string {
 	return strings.Repeat(" ", (width-w)/2) + s
 }
 
+// FocusSelection 回报"本组件获得焦点时选中了谁"。
+//
+// 内核与各种"没有可选条目"的磁贴都返回零值——这一点很关键：
+// 它把**上一个磁贴的选中清掉**。否则 tab 到一个没有列表的磁贴上，
+// 内里的选中还留着上一条，按 l 就会作用在看不见的地方。
+func (k *kernel) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	return plugin.Selection{}
+}
+
 // Render 让内核也能作为组件被渲染（中栏以外的场合不画东西）。
 func (k *kernel) Render(ctx plugin.RenderCtx) {}
 

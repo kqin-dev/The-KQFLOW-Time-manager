@@ -425,6 +425,12 @@ func (t *timerTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 	return plugin.Toast("已暂停")
 }
 
+// FocusSelection 回报：计时磁贴没有"当前条目"（它管的是时间），
+// 返回零值把上一个磁贴的选中清掉。
+func (t *timerTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	return plugin.Selection{}
+}
+
 // KeyHints 申报计时磁贴上的可用按键——**随计时状态变化**。
 //
 // 这正是"提示必须由插件包提供"的最好例子：没在计时时只有"开始"，
