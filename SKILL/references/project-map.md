@@ -48,11 +48,14 @@ SKILL/                  本手册
 
 | 目录 | 职责 | 状态 |
 | --- | --- | --- |
-| `kxflow/geometry` | Rect、尺寸、四向分割（`CutTop/CutBottom/CutLeft/CutRight`） | ✅ 已完成 |
-| `kxflow/canvas` | 画布、裁剪区、样式下标、折行/截断/宽度口径 | ✅ 已完成 |
-| `kxflow/internal/enginetest` | 架构约束测试（引擎不得依赖宿主） | ✅ 已完成 |
-| `kxflow/theme`、`layout`、`tile`、`stage`、`plugin`、`chrome`、`svc` | 五层骨架与插件体系 | 待实现（M2 起） |
-| `internal/kxapp` | 宿主适配层：KQFLOW 内核 + 各业务插件 | 待实现（M4 起） |
+| `kxflow/geometry` | Rect、尺寸、四向分割（`CutTop/CutBottom/CutLeft/CutRight`）、`Anchor` 槽位锚点 | ✅ |
+| `kxflow/canvas` | 画布、裁剪区、样式下标、折行/截断/宽度口径 | ✅ |
+| `kxflow/semver` | 版本与版本范围（插件/包/引擎的兼容裁决依据） | ✅ |
+| `kxflow/svc` | 副作用边界（`Services`、`Effect`、能力标记） | ✅ |
+| `kxflow/plugin` | **整合包与插件体系**：五种插件类型、装载器、冲突裁决、视图安置 | ✅ |
+| `kxflow/internal/enginetest` | 架构约束测试（引擎不得依赖宿主） | ✅ |
+| `kxflow/theme`、`layout`、`tile`、`stage`、`chrome` | 五层骨架的其余部分 | 待实现（M2 起） |
+| `internal/kxapp` | 宿主适配层：KQFLOW 内核 + 各业务整合包 | 待实现（M4 起） |
 
 **两条硬规则**（改了就是破坏架构，测试会红）：
 
@@ -62,6 +65,29 @@ SKILL/                  本手册
    `EastAsianWidth` 设为 `false`（中日韩文字 2 列，框线/几何图形 1 列）。
    不要依赖它的自动环境检测——那会让同一份代码在不同机器上得到不同的列宽，
    而测试仍然是绿的（这正是 v2.1.0"只在特定终端下复现"那类问题的根因）。
+
+### 插件体系的两层模型（v3.0.0 评审后定稿，是最容易记错的一处）
+
+```text
+整合包 Pack          ← 装载 / 版本 / 冲突 / **用户开关** 的单位
+  └── 插件 Plugin     ← 引擎认识的**渲染与事件**单位
+        ├── Tile           磁贴：占槽位
+        ├── BoardOption    看板选项：常驻中栏（设置/帮助/退出）
+        ├── ContextOption  联动选项：只在选中上下文成立时出现（打标签/设 DDL）
+        └── Service        服务：不渲染，只提供能力
+```
+
+- **包内**成员可以任意互相调用（一起写、一起发版），引擎不管；
+  **包间**只允许 `Requires`/`Provides`/`Conflicts` 三种声明，不允许直接调用。
+- 用户开关的粒度是**包**，摆放/显隐的粒度是**磁贴**（`ViewConfig`）。两者不是一回事。
+- ⚠️ **不要再把"固定 TODO / 临时 TODO"说成两个包**：它们是同一个包
+  `kqflow.todo` 的两个磁贴（同一个功能的两半），拆成两个包会让用户能关掉一半。
+- ⚠️ **不要再把两类选项混成一个 `KindOption`**：差别就在"存在条件"。
+- 联动选项**不认识任何磁贴**：它只声明 `AppliesTo()`（选中类别）与
+  `Requires()`（能力标记），引擎用 `Applies()` 统一判定它是否出现。
+- 装载失败一律**记录成可解释的报告**（`LoadReport.Explain()`），不 panic：
+  "少一个包"必须仍然可用，而且"为什么它没出现"永远有答案。
+
 
 ### internal/ui 细分
 

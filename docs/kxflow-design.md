@@ -372,20 +372,30 @@ type Origin struct {
 ```go
 // 引擎门面：事件循环与终端驱动。保持 Bubble Tea 的 Elm 结构，宿主无需改习惯。
 type App struct {
-	shell   layout.Shell
-	stage   *stage.Stage
-	tiles   *tile.Registry
-	plugins *plugin.Manager
-	theme   *theme.Theme
-	svc     svc.Services
-	anim    AnimState
+	shell    layout.Shell
+	stage    *stage.Stage
+	manager  *plugin.Manager // 装载好的整合包（见 §4）
+	theme    *theme.Theme
+	svc      svc.Services
+	anim     AnimState
+	// selection 是全局"当前选中上下文"，由引擎维护、供联动选项消费（见 §4.2）。
+	// 它必须由引擎持有而不是某个磁贴私有：否则"设 DDL"这类选项
+	// 就得认识具体是哪个磁贴在持有选中项。
+	selection Selection
+	focus     Focus // 当前焦点落在哪块区域（侧栏槽位 / 中栏停靠区 / 舞台）
 }
 
 func New(cfg Config) *App
 func (a *App) Init() tea.Cmd
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd)
-func (a *App) View() string   // 内部：一帧 = 一次 Layout + 一次 Canvas 绘制
+func (a *App) View() string // 内部：一帧 = 一次 Layout + 一次 Canvas 绘制
 func (a *App) Resize(w, h int)
+
+// Selection 由磁贴通过 ActionSelect 上报，引擎负责归一化与广播。
+func (a *App) SetSelection(s Selection)
+func (a *App) Selection() Selection
+// ContextOptions 返回当前选中上下文下"适用"的联动选项（见 §4.2）。
+func (a *App) ContextOptions() []plugin.ContextOption
 ```
 
 ```go
@@ -418,141 +428,318 @@ type Effect struct {
 
 ## 4. 插件体系（`plugin`）
 
-### 4.1 三类插件接口
+> **本节在评审后按用户意见重写**（2026-10-05）。用户指出两件事，其中第二件补掉了
+> 原方案的一个结构性缺口，因此改为**两层模型**：
+>
+> 1. "选项插件"有歧义——**联动选项**（如给选中条目设 DDL）与**看板选项**
+>    （如设置/帮助）不是同类东西，必须在种类上分开。
+> 2. 一个功能天然横跨多种插件类型时（DDL = 磁贴 + 联动选项；计时 = 磁贴 + 视图 + 联动选项），
+>    原方案只能让内核硬编码它们的内部连线——**那等于把耦合藏进内核**，
+>    正是我们要消灭的东西。用户提出**整合包（Pack）**：一整套有机结合、
+>    一般不能独立开关、彼此有调用关系的插件。
+>
+> 这正是"引擎只认插件、宿主只认包"的分工：**包内有机耦合，包间声明式解耦**。
+
+### 4.1 两层模型：包（装载单位）与插件（渲染单位）
+
+```text
+整合包 Pack          ← 装载 / 版本 / 冲突 / 用户开关 的单位
+  └── 插件 Plugin     ← 引擎认识的最小渲染与事件单位
+        ├── Tile           磁贴：占槽位
+        ├── BoardOption    看板选项：常驻中栏选项列表
+        └── ContextOption  联动选项：只在特定"选中上下文"成立时才有意义
+```
+
+| | Pack（整合包） | Plugin（插件） |
+| --- | --- | --- |
+| 是谁的单位 | 装载、版本、冲突裁决、**用户开关** | 渲染与事件 |
+| 包内关系 | **允许**任意互相调用（一起写、一起发版） | 不关心同伴 |
+| 包间关系 | 只允许声明式 `Requires` / `Conflicts` | **不得**跨包调用 |
+| 用户能否单独开关 | **能**（这就是开关粒度） | 不能 |
+| 与数据的关系 | 声明 `DataSchema` | 只读写包内约定的数据 |
+
+**为什么开关粒度是包而不是插件**：`DDL` 的"磁贴"与"联动选项"拆开都不成立——
+只留磁贴就没法设时间，只留选项就看不见已有截止时间。用户要的是"我要不要 DDL 这个功能"，
+不是"我要 DDL 的左半边"。**而"磁贴放哪、显示不显示"仍然自由**（§6 的 `ViewConfig`），
+两者是不同层的问题，不要混为一谈。
+
+### 4.2 五种插件类型
 
 ```go
 type Kind uint8
 const (
-	KindKernel Kind = iota // 内核插件：把引擎"武装"成某个 CLI 工具
-	KindTile               // 磁贴插件：占用槽位的独立业务组件
-	KindOption             // 选项插件：中栏选项列表里的一个条目
+	KindKernel        Kind = iota // 内核：把引擎"武装"成某个 CLI 工具（单例）
+	KindTile                      // 磁贴：占用槽位
+	KindBoardOption               // 看板选项：常驻中栏选项列表（永远在）
+	KindContextOption             // 联动选项：依赖"当前选中"上下文（条件出现）
+	KindService                   // 服务：不渲染，只提供能力（提醒、持久化钩子等）
 )
+```
 
-// 所有插件的共同元数据（版本与冲突裁决的唯一依据）。
-type Manifest struct {
-	ID          string          // 全局唯一，建议 "kqflow.focus"
-	Name        string          // 显示名（中文）
-	Kind        Kind
-	Version     semver.Version  // 插件自身版本
-	EngineAPI   semver.Range    // 需要的 KXFLOW API 版本范围，如 ">=0.1 <0.2"
-	DataSchema  int             // 它读写的数据结构版本（对应 KQFLOW 的 schema_version）
-	Slots       SlotPreference  // 磁贴才有：期望位置与优先级
-	Conflicts   []string        // 显式声明与哪些插件 ID 冲突
-	Provides    []string        // 提供的能力标记，用于"谁满足谁"的裁决
-	Requires    []string        // 需要的能力标记
+**联动选项 vs 看板选项的区别就在"存在条件"**：
+
+| | 看板选项 `BoardOption` | 联动选项 `ContextOption` |
+| --- | --- | --- |
+| 何时出现 | 永远 | 仅当 `Selection` 满足 `AppliesTo` |
+| 例子 | 设置 / 帮助 / 历史 / 退出 / 随手记 | 给选中条目打标签、设 DDL |
+| 需要什么 | 无 | 引擎提供的 `Selection`（选中上下文） |
+| 触发的界面 | 通常是常驻视图 | 通常借调 `Stage` 显示二级页 |
+
+```go
+// Selection 是引擎暴露给联动选项的"当前选中上下文"。
+//
+// 关键点：它由**引擎**统一维护，而不是由某个磁贴私有。这样"给选中条目设 DDL"
+// 这类选项既能被侧栏磁贴里的选中项触发，也能被中栏停靠区的选中项触发——
+// 而它自己不需要认识任何一个磁贴。
+type Selection struct {
+	// Kind 是选中对象的类别，如 "todo" / "goal" / "session" / "none"。
+	Kind string
+	// ID 是选中对象的稳定标识（空表示没有选中）。
+	ID string
+	// Title 供选项显示（如"给「写架构文档」设截止时间"）。
+	Title string
+	// Can 描述该选中对象支持哪些能力（capability 标记），
+	// 联动选项据此判断自己是否适用，而不必认识具体类型。
+	Can Capability
 }
 
-// 内核插件：中栏渲染本内核 LOGO 与 "Power by KXFLOW"，并提供基本选项（设置等）。
-type KernelPlugin interface {
+// ContextOption 只在 Selection 满足条件时才有意义。
+type ContextOption interface {
+	Plugin
+	// AppliesTo 声明它适用于哪类选中对象（对应 Selection.Kind）。
+	AppliesTo() []string
+	// Requires 声明它需要的能力标记（对应 Selection.Can）。
+	Requires() []string
+	// Label 用 Selection 生成显示文本（可以带上选中项的名字）。
+	Label(s Selection) string
+	// Activate 返回要借调舞台的视图。
+	Activate(s Selection, svc svc.Services) (stage.View, error)
+}
+```
+
+### 4.3 插件与包的元数据
+
+```go
+// Plugin 是所有插件的共同接口。身份、版本与冲突声明都在这里。
+type Plugin interface {
+	// Manifest 声明身份与版本需求。引擎与包管理器只信它。
 	Manifest() Manifest
-	Logo(width int, pal *theme.Palette) []canvas.Line
-	Options() []Option          // 主看板上的基本选项
-	Dashboard() stage.View      // Stage 的默认底层视图
+	// New 由包在装配时调用，注入宿主能力并返回可用的组件实例。
+	New(svc svc.Services) (Component, error)
+}
+
+// Component 是"已经装配好、可以渲染与收事件"的组件。
+type Component interface {
+	Title() string
+	Render(ctx RenderCtx)
+	Update(ctx EventCtx, ev Event) Action
+}
+
+// Manifest 描述一个插件。版本与冲突裁决只依据这里，不看注册顺序。
+type Manifest struct {
+	ID         string         // 全局唯一，建议 "kqflow.todo.fixed"
+	Name       string         // 显示名（中文）
+	Kind       Kind
+	Version    semver.Version // 插件自身版本
+	EngineAPI  semver.Range   // 需要的 KXFLOW API 版本范围，如 ">=0.1 <0.2"
+	DataSchema int            // 它读写的数据结构版本（对应 KQFLOW 的 schema_version）
+	Slots      SlotPreference // 磁贴才有：期望位置与优先级
+}
+
+// Pack 是装载与开关的单位：一整套有机结合、彼此有调用关系的插件。
+//
+// 包**内部**的调用关系由包自己装配（New 的时候把彼此接上），引擎不管；
+// 包**之间**只允许下面这两个声明，不允许直接调用。
+type Pack interface {
+	ID() string
+	Name() string
+	Version() semver.Version
+	// EngineAPI 是整个包共同要求的引擎版本（包内取交集，最严的那个生效）。
+	EngineAPI() semver.Range
+	// Members 返回包内全部插件。它们不单独开关，只随包一起装载或卸载。
+	Members() []Plugin
+	// Requires 声明依赖哪些**其他包**的能力标记；缺失则整包拒绝加载。
+	Requires() []string
+	// Provides 声明本包提供哪些能力标记。
+	Provides() []string
+	// Conflicts 声明与哪些包 ID 互斥。
+	Conflicts() []string
+	// Assemble 由宿主在装载时调用：把包内成员的互相引用接好（注入 Services、
+	// 解析 Selection 依赖、共享包内状态）。引擎不解释它的内部结构。
+	Assemble(svc svc.Services) (Assembled, error)
+}
+
+// Assembled 是装载完成的包：引擎从这里取到已经装好的组件。
+type Assembled interface {
+	Pack() Pack
+	// Tiles 返回本包提供的磁贴（按 Manifest.Slots 参与槽位安置）。
+	Tiles() []Component
+	// BoardOptions / ContextOptions 返回本包提供的两类选项。
+	BoardOptions() []BoardOption
+	ContextOptions() []ContextOption
+	// Services 返回本包提供的服务（不渲染，只提供能力）。
+	Services() []Service
+	// Dispose 释放包内资源（定时器、网络连接等）。
+	Dispose()
+}
+```
+
+**内核插件的特殊性**：内核是单例，且它**本身也是一个包**（`Pack` 里只有它一个成员）。
+这样装载路径只有一条，不必为内核开特例。内核额外提供 LOGO 与默认看板视图：
+
+```go
+type Kernel interface {
+	Pack
+	Logo(width int, pal canvas.Palette) []canvas.Line
+	Dashboard() stage.View // Stage 的默认底层视图
 	DecorateHeader(h *chrome.HeaderBar)
 	DecorateFooter(f *chrome.FooterBar)
 }
-
-// 磁贴插件
-type TilePlugin interface {
-	Manifest() Manifest
-	New(svc svc.Services) tile.Tile   // 工厂：同一插件可实例化多份（未来配置多实例）
-}
-
-// 选项插件
-type OptionPlugin interface {
-	Manifest() Manifest
-	Label() string
-	// Activate 返回要在舞台上展示的视图（这就是"向中栏请求界面"）。
-	Activate(svc svc.Services) (stage.View, error)
-}
 ```
 
-### 4.2 插件管理器与冲突裁决（`req.md` 的四类冲突）
+### 4.4 插件管理器与冲突裁决（`req.md` 的四类冲突）
 
-`req.md` 明确要求考虑四类冲突，对应的裁决规则**必须可预测、可解释**（不允许"看注册顺序"）：
+`req.md` 要求考虑四类冲突。加了包这一层之后，**每类冲突的裁决单位都是包**，
+规则必须可预测、可解释（不允许"看注册顺序"）：
 
-| 冲突类型 | 裁决依据 | 冲突时的行为 |
-| --- | --- | --- |
-| 插件 ↔ 引擎 | `Manifest.EngineAPI` 语义化范围 | 不匹配 → **拒绝加载该插件**，其余照常启动，并在启动报告里列出原因 |
-| 内核插件 ↔ 内核插件 | 同 `Kind` 只能有一个激活 | 第二个 → 拒绝加载（内核是单例）；多个候选时由宿主配置指定 |
-| 磁贴/选项插件 ↔ 自身 | `Manifest.Conflicts` + 同 `ID` 重复 | 显式冲突 → 后加载者被拒；同 ID 重复 → 后者被拒（先到先得，且记录） |
-| 插件 ↔ 数据库 | `Manifest.DataSchema` vs 数据文件实际版本 | 插件要求的 schema **低于**数据 → 拒绝（宁可不用，也不写坏数据，沿用 v2.1.0 的保守策略） |
+| 冲突类型 | 裁决单位 | 裁决依据 | 冲突时的行为 |
+| --- | --- | --- | --- |
+| 包 ↔ 引擎 | 包 | `Pack.EngineAPI()` 语义化范围 | 不匹配 → **整包拒绝**，其余包照常启动，并在启动报告里列出原因 |
+| 内核 ↔ 内核 | 包 | 内核是单例 | 第二个内核包 → 拒绝（多个候选时由宿主配置指定） |
+| 包 ↔ 包 | 包 | `Conflicts` + 重复 `ID` + `Requires` 未满足 | 显式冲突/重复 ID → 后者被拒；能力缺失 → 整包拒绝并指出缺哪个标记 |
+| **包内**成员冲突 | 插件 | 同 `ID` / 同 `Kind` 的两个内核级成员 | **视为包自身缺陷，装载期直接失败**（这是开发者错误，不该静默降级） |
+| 包 ↔ 数据库 | 包 | 包内成员 `DataSchema` 的最大值 vs 数据实际版本 | 要求低于数据的包 → 拒绝（宁可不用，也不写坏数据，沿用 v2.1.0 的保守策略） |
 
 ```go
 type Manager struct {
-	km     KernelPlugin
-	tiles  []RegisteredTile
-	opts   []RegisteredOption
-	report LoadReport
+	kernel  Kernel
+	packs   []Assembled
+	report  LoadReport
 }
 
-// Load 按上表逐条裁决，全部失败都记录而不 panic：
-// CLI 工具"少一个磁贴"必须仍然可用，"起不来"才是事故。
-func (m *Manager) Load(engineAPI semver.Version, dataSchema int, ps ...Plugin) LoadReport
+// Load 按上表逐条裁决。除"包内冲突"外，失败一律记录而不 panic：
+// CLI 工具"少一个包"必须仍然可用，"起不来"才是事故。
+func (m *Manager) Load(engineAPI semver.Version, dataSchema int, packs ...Pack) LoadReport
 
 type LoadReport struct {
-	Loaded  []Manifest
-	Rejected []Rejection // {Plugin, Reason, Kind}
+	Loaded   []string    // 装载成功的包 ID
+	Rejected []Rejection // {PackID, Reason, Detail}
+	// Disabled 是用户显式关掉的包（不是错误，但也要列出来，便于回答"它去哪了"）。
+	Disabled []string
 }
+
+// Placements 把装载成功的磁贴按 ViewConfig 安置到槽位，返回未安置的磁贴。
+//
+// ViewConfig 里有、但对应包没装载的槽位会被忽略并记录——否则用户看到的是
+// "我明明设了，它却没了"这种无法解释的状态。
+func (m *Manager) Placements(vc ViewConfig) (placed Placed, unplaced []Manifest, issues []PlacementIssue)
 ```
 
-**裁决必须可解释**：启动报告（以及设置页里的"插件"一栏）要能回答
-"为什么我的磁贴没出现"——直接对应 `req.md` 的"bug 定位困难"。
+**裁决必须可解释**：启动报告（以及设置页的"插件"一栏）要能回答
+"为什么我的 DDL 没出现"——直接对应 `req.md` 的"bug 定位困难"。
 
-### 4.3 数据版本策略（与 v2.1.0 一致，不动）
+### 4.5 数据版本策略（与 v2.1.0 一致，不动）
 
 - `schema_version` 是**数据**版本，程序版本号是另一套编号，二者独立（`SKILL/references/release.md` §0）。
 - 开发期**一律不动** `schema_version`（用户明确要求过）。
 - 引擎的 `EngineAPI` 版本从 `0.1.0` 起，并遵守：**引擎的破坏性改动必须抬 minor**（0.x 阶段
   minor 即破坏性变更位），这是插件 `EngineAPI` 范围能起作用的前提。
+- 包的版本与成员的版本是两套：包版本是"功能整体"的版本（用户看这个），
+  成员版本是"接口"的版本（引擎看这个）。
+
 
 ---
 
-## 5. KQFLOW 如何降级为"内核 + 插件"
+## 5. KQFLOW 如何降级为"内核 + 整合包"
 
 `internal/kxapp/` 是宿主适配层：把现有 `model`/`store`/`config`/`clock` 接到引擎的
-`Services` 与三类插件上。**业务逻辑一行不改**，只换外壳。
+`svc.Services` 与各整合包上。**业务逻辑一行不改**，只换外壳。
 
-### 5.1 这一版的插件划分（按业务独立性切）
+### 5.1 KQFLOW 的整合包划分
 
-| 插件 | 类型 | 承载的现有功能 | 现有代码来源 |
-| --- | --- | --- | --- |
-| `kqflow.kernel` | 内核 | LOGO、"Power by KXFLOW"、基本选项（设置/帮助/历史/退出）、日界线 | `ui/logo.go`、`ui/app.go` 的 `menuItems` |
-| `kqflow.todo.fixed` | 磁贴 | TODAY 固定 TODO | `renderTodoPanel(Fixed)` |
-| `kqflow.todo.floating` | 磁贴 | TODAY 临时 TODO | `renderTodoPanel(Floating)` |
-| `kqflow.goal` | 磁贴 | GOAL 列表（含归档） | `renderGoalPanel` |
-| `kqflow.ddl` | 磁贴 | 截止时间面板 | `ui/ddl.go` + `renderDdlPanel` |
-| `kqflow.stats` | 磁贴 | 连续 7 天柱状图 | `ui/stats.go` |
-| `kqflow.timer` | 磁贴 + 选项 | 四种计时、计时菜单、归档 | `ui/state.go` 的 timer、`app.go` 的 `runAction` |
-| `kqflow.note` | 磁贴 + 选项 | 随手记 | `ui/note.go` |
-| `kqflow.labels` | 选项 | 标签编辑页 | `ui/labels.go` |
-| `kqflow.history` | 选项 | 历史记录页 | `views.go` 的 `historyLines` |
-| `kqflow.settings` | 选项 | 设置页 | `views.go` 的 `settingsLines` + `actions.go` |
-| `kqflow.help` | 选项 | 帮助页 | `views.go` 的 `helpLines` |
-| `kqflow.notify` | 选项/服务 | 时段切换提醒（流光/响铃/ntfy 推送） | `ui/notify.go`、`ui/notify_ntfy.go` |
+**划分原则**：一个包 = 一个"用户能理解并单独开关的功能整体"。
+判断标准是问一句"**把它拆开一半，另一半还说得通吗**"——
+`DDL` 拆开就说不通（只有面板没法设时间、只有设置项看不到结果），所以它必须是一个包；
+`随手记` 的磁贴与选项拆开各自都说得通，所以它们的内部关系可以留在包内自由处理。
 
-**划分原则**：一个插件 = 一个"能独立开关而不影响别的"功能单元。
-因此"固定 TODO"与"临时 TODO"拆成两个磁贴（它们各自可关），而"标签/DDL"是**选项插件**
-（它们作用于"当前选中条目"，由内核通过 `Focus` 上下文提供，不适合做成磁贴）。
+| 包 ID | 成员 | 成员类型 | 承载的现有功能 | 现有代码来源 |
+| --- | --- | --- | --- | --- |
+| `kqflow.core`（内核） | `kqflow.kernel` | 内核 | LOGO、"Power by KXFLOW"、**看板选项**（设置/帮助/历史/退出）、日界线、默认看板 | `ui/logo.go`、`menuItems`、`helpLines`、`settingsLines`、`historyLines` |
+| `kqflow.todo` | `kqflow.todo.fixed`、`kqflow.todo.floating`、`kqflow.todo.task`、`kqflow.todo.ctx` | 磁贴 ×3 + **联动选项** | 固定/临时 TODO、子任务、勾选与增删改入口 | `renderTodoPanel`、`app.go` 的 todo 动作 |
+| `kqflow.goal` | `kqflow.goal.list`、`kqflow.goal.ctx` | 磁贴 + **联动选项** | GOAL 列表（含归档）与目标操作 | `renderGoalPanel`、`handleGoalAction` |
+| `kqflow.ddl` | `kqflow.ddl.panel`、`kqflow.ddl.ctx` | 磁贴 + **联动选项** | 截止时间面板（看板）+ 给选中条目设时间（选项） | `renderDdlPanel`、`ui/ddl.go` |
+| `kqflow.labels` | `kqflow.labels.ctx` | **联动选项** | 给选中条目打标签 | `ui/labels.go` |
+| `kqflow.timer` | `kqflow.timer.tile`、`kqflow.timer.board`、`kqflow.timer.ctx` | 磁贴 + 看板选项 + 联动选项 | 四种计时的入口、计时中的 `p` 菜单、计时摘要、归档 | `ui/state.go` 的 timer、`runAction`、`renderTimerBar` |
+| `kqflow.note` | `kqflow.note.tile`、`kqflow.note.board` | 磁贴 + 看板选项 | 随手记（看板预览 + 编辑入口） | `ui/note.go` |
+| `kqflow.stats` | `kqflow.stats.tile` | 磁贴 | 连续 7 天柱状图 | `ui/stats.go` |
+| `kqflow.notify` | `kqflow.notify.svc`、`kqflow.notify.board` | 服务 + 看板选项 | 时段切换提醒（流光/响铃/ntfy 推送）与其测试入口 | `ui/notify.go`、`ui/notify_ntfy.go` |
 
-> **评审点 2**：这张表就是最终的功能归属。请确认"固定/临时 TODO 拆成两个磁贴"以及
-> "标签与 DDL 是选项插件而不是磁贴"这两条是否符合你的直觉。
+**这张表纠正了评审前的一个错划分**：原先建议"固定 TODO / 临时 TODO 拆成两个**包**"。
+按包的定义看它们不成立——它们是**同一个包 `kqflow.todo` 的两个磁贴**（同一功能的两半），
+拆成两个包会让用户能关掉一半、留下语义残缺的功能。
+**但它们在 `ViewConfig` 里各自可以显示/隐藏、换槽位**，灵活性没有损失（§6）。
 
-### 5.2 内核负责的跨插件协调
+**`kqflow.ddl` 是"包"这个概念最好的例子**：它同时提供
+① 看板上的 DDL 面板（磁贴）、② 给当前选中条目设截止时间（联动选项）。
+两者共享同一份排序与到期计算逻辑，**必须一起装载**；而它们与
+`kqflow.todo` / `kqflow.goal` 之间**没有**直接调用关系——
+它们只通过引擎的 `Selection` 与 `Action` 交互。这就是"包内有机耦合、
+包间声明式解耦"的落点。
 
-磁贴彼此不能直接调用（否则又耦合了）。跨插件的动作由**内核**统一转译：
+**包间依赖示例**：
+
+```text
+kqflow.todo   Provides: ["item.selection"]        （提供"条目选中"上下文）
+kqflow.goal   Provides: ["item.selection"]
+kqflow.ddl    Requires: ["item.selection"]        （没有可选中条目就没有意义）
+kqflow.labels Requires: ["item.selection"]
+kqflow.timer  Provides: ["focus.session"]         （提供计时会话记录）
+kqflow.stats  Requires: ["focus.session"]         （柱状图要读专注时长）
+kqflow.notify Provides: ["notify.channel"]
+```
+
+好处是**可解释**：如果用户关掉了 `kqflow.todo` 与 `kqflow.goal`，
+装载报告会明确写出"`kqflow.ddl` 因缺少能力 `item.selection` 未装载"，
+而不是让设置项静静消失。
+
+### 5.2 跨包协调：一切经由 `Selection` 与 `Action`
+
+包与包之间不允许互相调用（否则又耦合了）。跨包的动作由内核统一转译：
 
 ```go
 // 插件返回的 Action 是"意图"，不是"操作"。
 type Action struct {
-	Kind    ActionKind // ActionPersist | ActionEffect | ActionBorrow | ActionFocus | ActionToast
+	Kind    ActionKind // ActionPersist | ActionEffect | ActionBorrow | ActionSelect | ActionToast
 	Payload any
 }
 ```
 
-例：`kqflow.todo.floating` 勾选完成 → 返回 `Action{Kind: ActionPersist, Payload: ToggleTodo{...}}`
-→ 内核解释为 `store.SaveDay` + 检查"今日全部完成" → 若完成则 `Action{Kind: ActionEffect, Effect: Celebrate}`。
-**磁贴不知道存储、不知道庆祝动画存在**——这就是"解耦"的实际含义。
+两个方向各有一个统一通道：
+
+- **数据方向 `Selection`**：谁被选中由引擎维护。`kqflow.todo` 里的磁贴
+  把选中项报给引擎（`ActionSelect`），引擎更新 `Selection`；
+  `kqflow.ddl.ctx` / `kqflow.labels.ctx` 据此决定自己是否出现。
+  **联动选项因此不需要认识任何磁贴**——连"选中项来自侧栏还是中栏停靠区"都不必知道。
+- **动作方向 `Action`**：`kqflow.todo.floating` 勾选完成
+  → `Action{ActionPersist, ToggleTodo{...}}` → 内核执行 `store.SaveDay`，
+  再检查"今日全部完成" → 若完成则发 `Action{ActionEffect, Celebrate}`。
+  **磁贴不知道存储、不知道庆祝动画存在**。
+
+### 5.3 内核的职责边界
+
+内核包（`kqflow.core`）只做四件事，**不做业务**：
+
+1. 渲染 LOGO 与"Power by KXFLOW"，提供默认看板视图；
+2. 提供全局看板选项（设置/帮助/历史/退出）——它们是**内核自带**的选项，
+   不是"选项插件"，因为任何基于 KXFLOW 的产品都需要它们；
+3. 解释 `Action`（落盘、播副作用、借调舞台、更新 `Selection`）；
+4. 维护 `Selection` 与焦点，供联动选项使用。
+
+> **评审点 2（已按用户意见修订）**：这张表就是最终的功能归属。
+> 请确认两处：
+> ① `kqflow.ddl` / `kqflow.labels` 作为**只含联动选项的独立包**是否合理
+> （它们依赖 `item.selection`，所以关掉 TODO 与 GOAL 时会连带不装载）；
+> ② `kqflow.timer` 同时含磁贴 / 看板选项 / 联动选项三种成员，是否同意它们属于一个包。
 
 ---
 
@@ -650,15 +837,53 @@ func (v ViewConfig) Validate(avail []plugin.Manifest) []PlacementIssue
 
 ---
 
-## 10. 需要评审确认的问题
+## 10. 评审记录与遗留问题
 
-| # | 问题 | 我的建议 |
+### 10.1 评审结论（2026-10-05）
+
+**设计已批准**（`docs/kxflow-design.md`，用户 2026-10-05 明确批准）。批准时用户提出
+一条重要修正，已并入 §4 与 §5：
+
+> "选项插件"可能有歧义……DDL 同时又具有独立的磁贴，这可能是需要特殊考虑的事情，
+> 还有一种选项是中栏的看板选项，这可能需要在插件种类中区分。并且这个问题揭露出：
+> 如果有的功能同时需要磁贴、选项、和其他磁贴联动，这怎么办？也许我们可以提出
+> **整合包**的概念，其包含了一整套有机结合的插件，他们一般不能独立开关，相互有调用关系。
+
+**采纳结果**：
+
+1. 插件种类由 3 种扩为 5 种，其中选项拆成 **`BoardOption`（看板选项，永远在）**
+   与 **`ContextOption`（联动选项，依赖 `Selection` 才出现）**——§4.2。
+2. 新增 **整合包 `Pack`** 作为**装载 / 版本 / 冲突 / 用户开关的单位**，
+   插件降为**渲染与事件的单位**；**包内有机耦合，包间声明式解耦**——§4.1、§4.4。
+3. 修正了一处错划分：固定/临时 TODO 不是两个包，而是同一个包 `kqflow.todo`
+   的两个磁贴（`ViewConfig` 仍可各自显示/隐藏与换槽位）——§5.1。
+4. `Selection`（全局选中上下文）由**引擎**持有，联动选项据此自动出现/消失，
+   因此**不需要认识任何磁贴**——§3.5、§5.2。
+
+### 10.2 三项原评审点的确认状态
+
+| # | 问题 | 状态 |
 | --- | --- | --- |
-| 1 | 多模块的构建方式：`replace` + `go.work` 双提交（§2.3 B 方案） | 建议接受，理由：仓库分发物是单 exe + 安装包，必须保证"全新克隆即可构建" |
-| 2 | 功能归属：固定/临时 TODO 拆为两个磁贴；标签与 DDL 做成选项插件而非磁贴（§5.1） | 建议按此，因为它们各自可独立开关 |
-| 3 | 插件 API 冻结时机：M3 冻结 `v0.1.0`，M4 结束前不宣称稳定 | 建议接受，避免过早承诺 |
-| 4 | `SKILL/` 手册的更新：v3.0.0 完成后需要新增"如何写 KXFLOW 插件"一章，并把"渲染层缺陷"一节改为历史记录 | 建议接受 |
-| 5 | 是否现在就把本文从 `docs/kxflow-design.md` 提升为仓库根的 `KXFLOW.md`（替换 `ROADMAP.md` 引用的、当前缺失的 `../KXflow.md`） | 建议放 `docs/`，并在 `ROADMAP.md` 里把失效链接指向它 |
+| 1 | 多模块构建：`go.work` + 根 `go.mod` 的 `replace` | 已随设计整体批准；M1 已按此落地并实测"无 `go.work` 也能构建" |
+| 2 | 功能归属（原"固定/临时拆包"、"标签/DDL 是不是选项"） | **已按用户意见修订**为 §5.1 的整合包表；其中两处细节待确认（见下） |
+| 3 | 插件 API 冻结时机：M3 冻结 `v0.1.0`，M4 前不宣称稳定 | 已批准 |
+
+### 10.3 仍待确认的两处（不阻塞 M2，但会决定 M3 的接口）
+
+1. `kqflow.ddl` / `kqflow.labels` 作为**只含联动选项的独立包**是否合理？
+   它们的代价是：用户关掉 `kqflow.todo` 与 `kqflow.goal` 时，
+   这两个包会因缺少能力 `item.selection` 而**连带不装载**（装载报告会写明原因）。
+   备选方案是把它们并进 `kqflow.todo` 包内（更省事，但 GOAL 就用不上打标签了）。
+2. `kqflow.timer` 同时含磁贴 / 看板选项 / 联动选项三种成员——是否同意它们同属一个包？
+   （同意则"计时中的 `p` 菜单"与"开始计时的入口"永远一起存在，不会出现半个计时功能。）
+
+### 10.4 已废弃的旧提问（保留以便追溯）
+
+| # | 原问题 | 处理 |
+| --- | --- | --- |
+| 4 | `SKILL/` 手册是否新增"如何写 KXFLOW 插件"一章 | 已同意；M6 执行。M1 已先把 `kxflow/` 与两条硬规则写进 `project-map.md` |
+| 5 | 设计文档放 `docs/` 还是提升为仓库根 `KXFLOW.md` | 放 `docs/`（现状），`ROADMAP.md` 的死链已改指它 |
+
 
 ---
 
