@@ -1,6 +1,7 @@
 package kxapp
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -337,10 +338,11 @@ func TestDashboardShowsContextOptions(t *testing.T) {
 	m, _, _ := l.Build()
 	m.Resize(120, 34)
 
-	// 未选中时：看板应给出"选中后会出现操作"的说明，而不是留白。
+	// 未选中时：看板要明确给出**怎么操作**（按 l），而不是留白。
+	// 只写"选中后会出现操作"是不够的——用户仍不知道按哪个键打开它。
 	before := m.View()
-	if !strings.Contains(before, "选中") {
-		t.Errorf("未选中时看板应提示选中后会出现操作，实际输出：\n%s", before)
+	if !strings.Contains(before, "l 操作") {
+		t.Errorf("未选中时看板应提示按 l 打开操作，实际输出：\n%s", before)
 	}
 
 	// 选中浮动待办（我们的数据里它就是"拿快递"）。
@@ -370,6 +372,207 @@ func TestDashboardShowsContextOptions(t *testing.T) {
 		t.Errorf("选项标签应带上选中项名字，实际输出：\n%s", after)
 	}
 	// 渲染必须仍然干净。
+	if !m.CanvasClean() {
+		t.Errorf("画布诊断不干净：%s", m.Diagnostics())
+	}
+}
+
+// TestOptionMenuIsAPendingTransaction 固化"未决事务"的语义（实机反馈）。
+//
+// 用户在真机上遇到的问题：
+//
+//	我 Tab 离开，选项还在舞台上——也就是说选项现在是随着光标触发改变的。
+//
+// 那说明选项被做成了"光标的副产品"。现在它们是**显式事务**：
+//
+//  1. 选中条目后按 l 才打开（不是光标一动就弹）；
+//  2. 打开后独占焦点：tab 不再把用户带走（会提示先处理）；
+//  3. 菜单里可以用方向键选择、回车执行；
+//  4. esc 关闭事务，焦点交还给原磁贴。
+func TestOptionMenuIsAPendingTransaction(t *testing.T) {
+	src := newMemSource(t, testNow())
+	src.addTodo("拿快递", model.KindFloating)
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 34)
+
+	m.SetFocus(geometry.AnchorLeftBottom)
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"}) // 选中
+
+	// ① 光标移动本身**不**打开任何界面。
+	if m.Stage().Borrowing() {
+		t.Fatal("移动光标不该打开界面（选项不是光标的副产品）")
+	}
+	// 但选项确实已经可用（联动选项存在）。
+	if len(m.ContextOptions()) == 0 {
+		t.Fatal("选中后应存在联动选项")
+	}
+
+	// ② 按 l 打开事务。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "l"})
+	if !m.Stage().Borrowing() {
+		t.Fatal("按 l 应打开操作菜单（未决事务）")
+	}
+	if m.Focus() != geometry.AnchorStage {
+		t.Errorf("打开事务后焦点应在舞台上，实际 %v", m.Focus())
+	}
+	out := m.View()
+	for _, want := range []string{"可用操作", "打标签", "设截止时间"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("事务界面里应出现 %q：\n%s", want, out)
+		}
+	}
+
+	// ③ 事务独占焦点：tab 不能把用户带走。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "tab"})
+	if m.Focus() != geometry.AnchorStage {
+		t.Errorf("未决事务期间 tab 不该切换焦点，实际焦点 %v", m.Focus())
+	}
+	if !m.Stage().Borrowing() {
+		t.Error("未决事务期间 tab 不该关闭它")
+	}
+
+	// ④ 菜单里用方向键选择、esc 取消。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "k"})
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "esc"})
+	if m.Stage().Borrowing() {
+		t.Error("esc 应关闭事务")
+	}
+	if m.Focus() != geometry.AnchorLeftBottom {
+		t.Errorf("关闭事务后焦点应交还给原磁贴（左下），实际 %v", m.Focus())
+	}
+}
+
+// TestMenuEnterOpensEditorAndEscReturnsToMenu 验证事务内的两级结构。
+//
+// 在菜单里回车打开真正的编辑界面后，esc 应当**先退回菜单**而不是
+// 一路退回看板——填错一个字符不必重开菜单。
+func TestMenuEnterOpensEditorAndEscReturnsToMenu(t *testing.T) {
+	src := newMemSource(t, testNow())
+	src.addTodo("拿快递", model.KindFloating)
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 34)
+	m.SetFocus(geometry.AnchorLeftBottom)
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "l"})
+
+	if depth := m.Stage().Depth(); depth != 1 {
+		t.Fatalf("打开菜单后栈深应为 1，实际 %d", depth)
+	}
+	// 光标停在第一项（打标签），回车进入编辑界面。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "enter"})
+	if depth := m.Stage().Depth(); depth != 2 {
+		t.Fatalf("回车后应进入编辑界面（栈深 2），实际 %d", depth)
+	}
+	if !strings.Contains(m.View(), "按数字键切换") {
+		t.Errorf("应显示标签编辑器：\n%s", m.View())
+	}
+	// 第一次 esc：退回菜单（仍在事务里）。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "esc"})
+	if depth := m.Stage().Depth(); depth != 1 {
+		t.Fatalf("esc 应退回菜单（栈深 1），实际 %d", depth)
+	}
+	// 第二次 esc：关闭事务。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "esc"})
+	if m.Stage().Borrowing() {
+		t.Error("第二次 esc 应关闭事务")
+	}
+}
+
+// TestStageIsInFocusRingWhileBorrowing 验证"tab 能回到舞台"（实机反馈第 3 条）。
+//
+//	用户的原话：理论上应该可以通过 TAB 回到舞台按方向键。
+func TestStageIsInFocusRingWhileBorrowing(t *testing.T) {
+	src := newMemSource(t, testNow())
+	src.addTodo("拿快递", model.KindFloating)
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 34)
+	m.SetFocus(geometry.AnchorLeftBottom)
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+
+	// 未借调时舞台不在焦点环里（它是底色，不是一种磁贴）。
+	for i := 0; i < 10; i++ {
+		m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "tab"})
+		if m.Focus() == geometry.AnchorStage {
+			t.Fatal("栈空时舞台不该进入焦点环（看板是底色，不是磁贴）")
+		}
+	}
+
+	// 借调之后（帮助页），tab 应当能转到舞台。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "3"}) // 打开"帮助"
+	if !m.Stage().Borrowing() {
+		t.Fatal("应借调打开帮助页")
+	}
+	seen := false
+	for i := 0; i < 12; i++ {
+		m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "tab"})
+		if m.Focus() == geometry.AnchorStage {
+			seen = true
+			break
+		}
+	}
+	if !seen {
+		t.Error("借调期间 tab 应当能转到舞台")
+	}
+}
+
+// TestLWithoutOptionsExplains 验证没有可打开项时**说清原因**。
+//
+// 按键不能"按了没反应"：用户会以为程序卡了。
+func TestLWithoutOptionsExplains(t *testing.T) {
+	src := newMemSource(t, testNow())
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 34)
+
+	// 没有任何条目 → 没有选中 → 按 l 应当给出提示而不是静默。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "l"})
+	if m.Stage().Borrowing() {
+		t.Error("没有可操作项时不该打开空菜单")
+	}
+	out := m.View()
+	if !strings.Contains(out, "先选中") {
+		t.Errorf("按 l 而无可操作项时应给出提示：\n%s", out)
+	}
+}
+
+// TestSaveFailureIsSurfaced 验证落盘失败会**显示给用户**。
+//
+// 实机反馈里出现过这个现象（沙盒里 Access is denied）：
+//
+//	保存失败：创建临时文件失败: open …\.2026-10.json.tmp…: Access is denied.
+//
+// 它是否在沙盒里"正常"并不重要——重要的是这条信息必须出现在界面上：
+// 用户改了东西却不知道没存上，是数据工具最不能接受的一类沉默失败。
+func TestSaveFailureIsSurfaced(t *testing.T) {
+	src := newMemSource(t, testNow())
+	src.addTodo("拿快递", model.KindFloating)
+	src.saveErr = fmt.Errorf("创建临时文件失败: Access is denied")
+
+	l := NewLoader(src, src.Config())
+	m, services, _ := l.Build()
+	m.Resize(120, 34)
+	m.SetFocus(geometry.AnchorLeftBottom)
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+
+	// 勾选会触发落盘（Persist），落盘失败必须变成界面上的提示。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: " "})
+	if services.Saves != 0 {
+		t.Fatalf("落盘失败时不该计入成功次数，实际 %d", services.Saves)
+	}
+	out := m.View()
+	if !strings.Contains(out, "保存失败") {
+		t.Errorf("落盘失败必须显示给用户，实际输出：\n%s", out)
+	}
+	if !strings.Contains(out, "Access is denied") {
+		t.Errorf("提示里应带上底层原因（用户据此才能定位）：\n%s", out)
+	}
 	if !m.CanvasClean() {
 		t.Errorf("画布诊断不干净：%s", m.Diagnostics())
 	}

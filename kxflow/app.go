@@ -134,7 +134,8 @@ func New(cfg Config) *Model {
 		m.footer.TextStyle = tile.StyleMuted
 		m.footer.Hints = []chrome.KeymapHint{
 			{Key: "tab", Desc: "切换栏位"},
-			{Key: "enter", Desc: "借调/选中"},
+			{Key: "j/k", Desc: "移动"},
+			{Key: "l", Desc: "操作"},
 			{Key: "esc", Desc: "退回"},
 			{Key: "q", Desc: "退出"},
 		}
@@ -311,7 +312,20 @@ func (m *Model) placeTiles() {
 // applyFocusDefaults 把焦点放到第一个可用槽位。
 //
 // 焦点必须有归宿：没有焦点时按键无处可去，用户会觉得"程序卡住了"。
+//
+// 舞台（geometry.AnchorStage）也参与这个归属判断：它是伪锚点，
+// 代表"中栏那块被借调出去的地方"。为什么它要能拿焦点，见
+// geometry.AnchorStage 的说明（用户要求"可以通过 TAB 回到舞台按方向键"）。
 func (m *Model) applyFocusDefaults() {
+	// 舞台上有借调内容时，焦点优先落在舞台：那是用户刚打开的东西。
+	if m.stage.Borrowing() {
+		m.focus = geometry.AnchorStage
+		return
+	}
+	if m.focus == geometry.AnchorStage {
+		// 舞台已经空了：焦点必须离开它，否则按键会落在一个不存在的东西上。
+		m.focus = geometry.AnchorUnset
+	}
 	if m.focus.IsSlot() {
 		if _, ok := m.registry.At(m.focus); ok {
 			return
@@ -377,15 +391,22 @@ func (m *Model) View() string {
 	// 2) 主舞台（先画）。
 	//
 	// 顺序很关键：栈空时舞台画的是**看板底色**，它是背景；
-	// 磁贴是前景，必须后画、画在上面。曾经顺序是对的（先磁贴后舞台），
-	// 那时看板很窄所以看不出问题；一但看板拿到了完整宽度，
+	// 磁贴是前景，必须后画、画在上面。曾经顺序是反的（先磁贴后舞台），
+	// 那时看板很窄所以看不出问题；一旦看板拿到完整宽度，
 	// 它就变成一块大底板，把先画的磁贴整片盖掉——
 	// 画面上表现为"侧栏的框被擦掉了、只剩几根线"。
 	//
 	// 舞台拿到的是"整行横向跨度 + 主控区纵向跨度"（见 stageRect），
 	// 因此它绝不会盖住停靠区；而侧栏由磁贴后画覆盖，也不会被擦掉。
 	if stageRect := m.stageRect(); !stageRect.Empty() {
-		m.stage.Render(m.canvas, stageRect, m.renderCtx())
+		sctx := m.renderCtx()
+		// 借调内容在舞台上，因此"舞台获得焦点"就等于"这一层获得焦点"。
+		sctx.Focus = m.focus == geometry.AnchorStage && m.stage.Borrowing()
+		sctx.State = plugin.StateIdle
+		if sctx.Focus {
+			sctx.State = plugin.StateFocused
+		}
+		m.stage.Render(m.canvas, stageRect, sctx)
 	}
 
 	// 3) 磁贴（含中栏停靠区）——前景，画在舞台之上。
@@ -410,10 +431,14 @@ func (m *Model) currentToast() string {
 	return m.toast
 }
 
-// drawToast 在上栏下方画一行提示。
+// drawToast 在上栏位置上画一行提示（**有意覆盖**上栏内容）。
 //
-// 它刻意**不用浮层**：v2.1.0 的教训是"铺满屏幕的居中浮层"会把左右面板
-// 的边框切出断口，用户截图反馈"渲染坏了"。一行提示夹在上栏与主体之间最简单。
+// 它刻意不用浮层：v2.1.0 的教训是"铺满屏幕的居中浮层"会把左右面板
+// 的边框切出断口，用户截图反馈"渲染坏了"。一行提示就地替换上栏最简单。
+//
+// 因为是有意覆盖，这里必须显式声明 overlay：否则画布会把这次覆盖记成
+// "覆盖已有内容"，而那条不变量是全项目最重要的报警器——
+// 不能为了一个提示条把它整体关掉（实测这条用例就是这样发现问题的）。
 func (m *Model) drawToast(text string) {
 	r := geometry.NewRect(m.shell.Header.X, m.shell.Header.Y, m.shell.Header.W, 1)
 	if r.Empty() {
@@ -427,8 +452,10 @@ func (m *Model) drawToast(text string) {
 		style = tile.StyleError
 	}
 	inner := geometry.NewRect(r.X+1, r.Y, max(0, r.W-2), r.H)
-	restore := m.canvas.PushClip(inner)
-	defer restore()
+	restoreClip := m.canvas.PushClip(inner)
+	defer restoreClip()
+	restoreOverlay := m.canvas.BeginOverlay()
+	defer restoreOverlay()
 	m.canvas.ClearRect(inner)
 	m.canvas.Text(inner.X, inner.Y, canvas.Truncate(text, inner.W), style)
 }
@@ -507,6 +534,14 @@ func (m *Model) Focus() geometry.Anchor { return m.focus }
 
 // SetFocus 设置焦点（不可用的槽位会被忽略）。
 func (m *Model) SetFocus(a geometry.Anchor) {
+	// 舞台是合法的焦点目标，但只在**有人借调**时可聚焦：
+	// 栈空时的看板是底色，不是"一种磁贴"，不该抢焦点。
+	if a == geometry.AnchorStage {
+		if m.stage.Borrowing() {
+			m.focus = a
+		}
+		return
+	}
 	if !a.IsSlot() {
 		return
 	}
@@ -516,25 +551,37 @@ func (m *Model) SetFocus(a geometry.Anchor) {
 	m.focus = a
 }
 
-// FocusNext 把焦点移到下一个已占用槽位（tab 的行为）。
+// FocusNext 把焦点移到下一个目标（tab 的行为）。
+//
+// 焦点环 = 已占用槽位 + （有人借调时）舞台本身。
+// 舞台排在最后：它是"中栏"，放在磁贴之后符合"从外往里"的直觉。
 func (m *Model) FocusNext(delta int) {
-	anchors := m.registry.Anchors()
-	if len(anchors) == 0 {
+	targets := m.focusTargets()
+	if len(targets) == 0 {
 		m.focus = geometry.AnchorUnset
 		return
 	}
 	cur := -1
-	for i, a := range anchors {
+	for i, a := range targets {
 		if a == m.focus {
 			cur = i
 			break
 		}
 	}
-	next := (cur + delta) % len(anchors)
+	next := (cur + delta) % len(targets)
 	if next < 0 {
-		next += len(anchors)
+		next += len(targets)
 	}
-	m.focus = anchors[next]
+	m.focus = targets[next]
+}
+
+// focusTargets 返回当前的焦点环。
+func (m *Model) focusTargets() []geometry.Anchor {
+	targets := append([]geometry.Anchor{}, m.registry.Anchors()...)
+	if m.stage.Borrowing() {
+		targets = append(targets, geometry.AnchorStage)
+	}
+	return targets
 }
 
 // Dispatch 把一个事件交给当前该处理它的那一层，并执行返回的动作。
@@ -560,14 +607,27 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 		m.toast = ""
 	}
 
+	// 焦点被"未决事务"锁住时，tab 不再切换焦点。
+	// 这一条是实机反馈的直接落点：菜单打开着、用户按 tab 走开，
+	// 事务就退化成"一个恰好画在中栏的东西"，用户再也回不来。
+	locked := plugin.IsFocusLocked(m.stage.Top())
+
 	// 全局按键：先处理"谁能拿到焦点"这类与具体磁贴无关的动作。
 	switch ev.Key {
 	case "ctrl+c":
 		return true
 	case "tab":
+		if locked {
+			m.Toast("请先处理当前操作（esc 取消）")
+			return false
+		}
 		m.FocusNext(1)
 		return false
 	case "shift+tab":
+		if locked {
+			m.Toast("请先处理当前操作（esc 取消）")
+			return false
+		}
 		m.FocusNext(-1)
 		return false
 	case "esc":
@@ -578,18 +638,36 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 		}
 	}
 
-	if top := m.stage.Top(); top != nil && m.stage.Borrowing() {
-		act, close := top.Update(ctx, ev)
-		m.runAction(act)
-		if close {
-			if origin, ok := m.stage.Pop(); ok {
-				m.focusBack(origin)
+	// 舞台层：**没有借调时**它作为"默认看板"存在，但仍可被 tab 聚焦。
+	//
+	// 焦点在舞台上时，按键交给舞台层处理（而不是穿透到磁贴）——
+	// 这正是用户要求的"可以通过 TAB 回到舞台按方向键"。
+	// tab/shift+tab/esc 已在上面处理过，因此这里只可能是别的按键。
+	if top := m.stage.Top(); top != nil {
+		if m.stage.Borrowing() || m.focus == geometry.AnchorStage {
+			act, close := top.Update(ctx, ev)
+			m.runAction(act)
+			if close {
+				if origin, ok := m.stage.Pop(); ok {
+					m.focusBack(origin)
+				}
 			}
+			return false
 		}
-		return false
 	}
 
-	// 选项（联动 + 看板）用数字键触发。
+	// 打开"未决事务"：把当前选中项的操作菜单推上舞台。
+	//
+	// 用**按键**触发而不是"光标一移到就自动弹"：后者会让选项跟着光标
+	// 变来变去，用户一走神就分不清"我现在到底在操作谁"。
+	// 这也是 v2.1.0 的语义（按 L 打开选中项的操作菜单）。
+	if ev.Key == "l" && !m.stage.Borrowing() {
+		if m.openSelectionOptions() {
+			return false
+		}
+	}
+
+	// 选项也可以用数字键直接触发（快捷方式，与 l 打开菜单等价）。
 	//
 	// 排在磁贴**之前**：数字键在看板上没有别的语义，因此借走它们不会
 	// 造成"这个键本来是什么"的问题（字母键就会——v2.1.0 踩过）。
@@ -608,6 +686,104 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 	act := slot.Component.Update(ctx, ev)
 	m.runAction(act)
 	return false
+}
+
+// openSelectionOptions 打开当前选中项的"未决事务"（操作菜单）。
+//
+// 返回 false 表示没有可打开的选项（此时按键应当继续传给磁贴，
+// 不能让用户按了没反应）。
+func (m *Model) openSelectionOptions() bool {
+	bindings := m.OptionKeys()
+	// 只收**联动选项**：看板选项（帮助/关于）常驻，不需要"事务"这一层，
+	// 它们有自己的数字键。
+	var ctxOpts []OptionBinding
+	for _, b := range bindings {
+		if b.IsContext() {
+			ctxOpts = append(ctxOpts, b)
+		}
+	}
+	if len(ctxOpts) == 0 {
+		m.Toast("先选中一个条目（enter），再按 l 查看可用操作")
+		return true
+	}
+	// 记下"是谁打开的"：关闭事务时焦点要交还给当时获得焦点的那个磁贴。
+	// 不记的话 focusBack 找不到目标，只能退回第一个磁贴——
+	// 表现为"esc 之后焦点莫名跳到了左上角"。
+	origin := plugin.Origin{Kind: plugin.OriginContextOption}
+	if slot, ok := m.registry.At(m.focus); ok {
+		origin.TileID = slot.PluginID
+		origin.Anchor = slot.Anchor
+	}
+	m.stage.Push(m.newOptionsMenu(ctxOpts), origin)
+	m.focus = geometry.AnchorStage
+	return true
+}
+
+// newOptionsMenu 构造操作菜单视图。
+//
+// 它是一个**未决事务**：独占焦点（FocusLock），玩家必须选一项或按 esc 取消，
+// 期间 tab 无效。菜单自己按方向键选择、回车确认。
+func (m *Model) newOptionsMenu(opts []OptionBinding) plugin.View {
+	cursor := 0
+	var status string
+	return &plugin.ViewFunc{
+		ViewName:    "操作",
+		FocusLockFn: func() bool { return true },
+		RenderFn: func(ctx plugin.RenderCtx) {
+			putLine := func(y int, s string, style canvas.StyleID) {
+				if y < ctx.Rect.Y1() {
+					ctx.Canvas.Text(ctx.Rect.X, y, canvas.Truncate(s, ctx.Rect.W), style)
+				}
+			}
+			y := ctx.Rect.Y
+			putLine(y, "可用操作", tile.StyleTitle)
+			y += 2
+			for i, b := range opts {
+				if y >= ctx.Rect.Y1() {
+					break
+				}
+				mark := "  "
+				style := tile.StyleMuted
+				if i == cursor {
+					mark, style = "▸ ", tile.StyleTitleFocused
+				}
+				putLine(y, mark+b.Key+"  "+b.Label, style)
+				y++
+			}
+			y++
+			putLine(y, "↑↓ 选择 · enter 执行 · esc 取消", tile.StyleHint)
+			if status != "" && y+1 < ctx.Rect.Y1() {
+				putLine(y+1, status, tile.StyleMuted)
+			}
+		},
+		UpdateFn: func(ec plugin.EventCtx, ev plugin.Event) (plugin.Action, bool) {
+			switch ev.Key {
+			case "esc", "q":
+				return plugin.None(), true
+			case "j", "down":
+				cursor = (cursor + 1) % len(opts)
+				return plugin.None(), false
+			case "k", "up":
+				cursor = (cursor - 1 + len(opts)) % len(opts)
+				return plugin.None(), false
+			case "enter", " ":
+				b := opts[cursor]
+				view, err := b.Activate(m.svc, m.selection)
+				if err != nil {
+					status = "打开失败：" + err.Error()
+					return plugin.None(), false
+				}
+				if view == nil {
+					status = "这个操作没有界面"
+					return plugin.None(), false
+				}
+				// 把真正的编辑界面推在菜单之上：esc 先从编辑界面退回菜单，
+				// 再 esc 才关闭事务。这样"填错了"不必重开菜单。
+				return plugin.Borrow(view), false
+			}
+			return plugin.None(), false
+		},
+	}
 }
 
 // digitIndex 把 "1".."9" 解析成 0..8；其它按键返回 -1。
@@ -641,6 +817,9 @@ func (m *Model) activateOption(idx int) bool {
 		kind = plugin.OriginContextOption
 	}
 	m.stage.Push(view, plugin.Origin{Kind: kind})
+	// 打开一个界面就把焦点交给舞台：用户刚点开它，键当然该往那里走。
+	// 这也是"tab 能回到舞台"的前提——焦点本来就在舞台上。
+	m.focus = geometry.AnchorStage
 	return true
 }
 
@@ -656,6 +835,12 @@ func (m *Model) focusBack(origin plugin.Origin) {
 			m.focus = slot.Anchor
 			return
 		}
+	}
+	// 没有可交还的磁贴：如果栈里还有一层（例如菜单之上打开了编辑页），
+	// 焦点应当留在舞台；否则回到第一个磁贴，别把焦点丢给不存在的舞台。
+	if m.stage.Borrowing() && origin.Kind == plugin.OriginContextOption {
+		m.focus = geometry.AnchorStage
+		return
 	}
 	m.applyFocusDefaults()
 }

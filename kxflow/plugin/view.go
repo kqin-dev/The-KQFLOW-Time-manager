@@ -36,6 +36,29 @@ type View interface {
 	OnExit()
 }
 
+// FocusLocker 是可选能力：实现了它的视图可以**独占焦点**。
+//
+// 独占焦点时 tab/shift+tab 不再切换焦点，用户必须先处理这一层
+// （或按 esc 放弃）。req.md 把这类界面叫"未决事务"，实测反馈也印证了：
+//
+//	用户的原话：我 Tab 离开，选项还在舞台上——也就是说
+//	选项现在是随着光标触发改变的。
+//
+// 用**可选接口**而不是往 View 里加一个方法：绝大多数视图（帮助页、输入框）
+// 并不需要独占焦点，让它们都被迫实现一个恒为 false 的方法只是噪声，
+// 而且会破坏所有已有的 View 实现（包括各个测试夹具）。
+type FocusLocker interface {
+	FocusLock() bool
+}
+
+// IsFocusLocked 报告一个视图是否独占焦点（未实现该接口即为否）。
+func IsFocusLocked(v View) bool {
+	if l, ok := v.(FocusLocker); ok {
+		return l.FocusLock()
+	}
+	return false
+}
+
 // ViewFunc 让简单视图可以用函数字面量实现（只为减少样板，不改变语义）。
 type ViewFunc struct {
 	ViewName string
@@ -44,6 +67,16 @@ type ViewFunc struct {
 	UpdateFn func(ctx EventCtx, ev Event) (Action, bool)
 	EnterFn  func(origin Origin)
 	ExitFn   func()
+	// FocusLockFn 为真时本视图独占焦点（见 FocusLocker）。
+	//
+	// 用它来表达"未决事务"：选项菜单一旦打开就该锁住焦点，
+	// 不让 tab 把用户带走。
+	FocusLockFn func() bool
+}
+
+// FocusLock 实现 FocusLocker。
+func (v *ViewFunc) FocusLock() bool {
+	return v != nil && v.FocusLockFn != nil && v.FocusLockFn()
 }
 
 // Name 返回视图名。

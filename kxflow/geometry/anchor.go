@@ -25,6 +25,17 @@ const (
 	AnchorCenterDockLeft
 	// AnchorCenterDockRight 中栏停靠区右半。
 	AnchorCenterDockRight
+	// AnchorStage 是**伪锚点**：它不指向任何磁贴槽位，而是代表"舞台本身"。
+	//
+	// 为什么需要它（实机反馈）：用户要求"可以通过 TAB 回到舞台按方向键"。
+	// 舞台不是磁贴（不占槽位、由视图栈驱动），但它必须是焦点环里的一站，
+	// 否则"中栏有东西"与"键往哪走"就成了互不相干的两件事，
+	// 用户只能靠记住数字键来操作。
+	//
+	// ⚠️ 它**不在** AllAnchors 里：那个列表是"真实槽位"的契约顺序，
+	// 安置磁贴、装载报告都依赖它。Valid() 认它（它是合法取值），
+	// 但任何"遍历槽位"的代码都必须用 AllAnchors 而不是这个枚举。
+	AnchorStage
 )
 
 // AllAnchors 按"从左上到右下"的稳定顺序列出全部真实槽位。
@@ -50,14 +61,17 @@ func (a Anchor) Valid() bool {
 	switch a {
 	case AnchorUnset,
 		AnchorLeftTop, AnchorLeftBottom, AnchorRightTop, AnchorRightBottom,
-		AnchorCenterDockLeft, AnchorCenterDockRight:
+		AnchorCenterDockLeft, AnchorCenterDockRight,
+		AnchorStage:
 		return true
 	}
 	return false
 }
 
-// IsSlot 报告它是否指向一个**真实槽位**（AnchorUnset 返回 false）。
-func (a Anchor) IsSlot() bool { return a.Valid() && a != AnchorUnset }
+// IsSlot 报告它是否指向一个**真实槽位**。
+//
+// AnchorUnset（没有指定位置）与 AnchorStage（舞台这个伪锚点）都返回 false。
+func (a Anchor) IsSlot() bool { return a.Valid() && a != AnchorUnset && a != AnchorStage }
 
 // Column 报告锚点所属的栏位（left / right / center-dock）。
 func (a Anchor) Column() string {
@@ -100,6 +114,8 @@ func (a Anchor) String() string {
 		return "中栏停靠左"
 	case AnchorCenterDockRight:
 		return "中栏停靠右"
+	case AnchorStage:
+		return "舞台"
 	}
 	return "未知锚点"
 }

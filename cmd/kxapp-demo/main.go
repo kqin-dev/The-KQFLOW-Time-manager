@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -73,6 +74,10 @@ func run() error {
 	selectFirst := flag.Bool("select", false,
 		"离屏渲染前先选中第一个磁贴的首个条目（用来验证联动选项是否出现）")
 	verbose := flag.Bool("v", false, "打印绘制路径的内部汇报（排查布局用）")
+	keys := flag.String("keys", "",
+		"离屏按顺序模拟按键（例如 \"j l j enter\"），空格分隔；每个按键后打印一帧")
+	focusID := flag.String("focus", "",
+		"离屏时先把焦点放到指定插件 ID 的磁贴上（例如 kqflow.todo.floating）")
 	flag.Parse()
 
 	// 与 cmd/kqf 一样的装配顺序：先解析路径，再读配置，最后打开数据层。
@@ -119,6 +124,13 @@ func run() error {
 
 	if *render {
 		m.Resize(*width, *height)
+		if *focusID != "" {
+			if slot, ok := m.Registry().ByID(*focusID); ok {
+				m.SetFocus(slot.Anchor)
+			} else {
+				fmt.Fprintf(os.Stderr, "找不到插件 %q\n", *focusID)
+			}
+		}
 		if *selectFirst {
 			selectSomething(m)
 		}
@@ -126,6 +138,21 @@ func run() error {
 			// 打开绘制路径的内部汇报：排查"布局算成了什么"时非常有用。
 			canvas.DebugTrace = func(s string) { fmt.Fprintln(os.Stderr, "  [trace] "+s) }
 			defer func() { canvas.DebugTrace = nil }()
+		}
+		if *keys != "" {
+			// 脚本化按键模式：每个按键后打印一帧 + 当前状态。
+			//
+			// 这是**离屏验证交互**的唯一途径（本环境没有真终端）。
+			// 它走的是与真实按键完全相同的 Dispatch 路径，
+			// 因此验证的是真流程，而不是"直接改内部状态"这种假验证。
+			for _, k := range strings.Fields(*keys) {
+				fmt.Printf("=== 按键 %q ===\n", k)
+				m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: k, Runes: []rune(k)})
+				fmt.Println(m.View())
+				fmt.Fprintf(os.Stderr, "    [状态] 焦点=%v 栈深=%d 选中=%q\n",
+					m.Focus(), m.Stage().Depth(), m.Selection().Title)
+			}
+			return nil
 		}
 		fmt.Println(m.View())
 		fmt.Fprintln(os.Stderr, "--- 装载报告 ---")

@@ -221,6 +221,10 @@ func (t *todoTile) setCursor(v int) {
 }
 
 // Update 处理按键：移动光标、勾选、上报选中。
+//
+// 选中始终 = **光标所在的那一条**。移动光标会重新上报，因此按 l 打开的
+// 事务一定作用在"用户眼睛看到的那一条"上——不会出现"高亮在 A、
+// 操作作用在 B"这种最难查的错位。
 func (t *todoTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 	items := TodoList(t.src, t.kind)
 	switch ev.Key {

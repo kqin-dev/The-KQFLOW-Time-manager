@@ -137,7 +137,9 @@ func (k *kernel) Dashboard() plugin.View {
 
 			// **可用选项**：这是本视图最重要的部分。
 			y = k.drawOptions(ctx, y, inner)
-			putLine(ctx, y, inner, centerLine("tab 切换栏位 · enter 借调 · esc 退回 · q 退出", inner.W), tile.StyleHint)
+			putLine(ctx, y, inner,
+				centerLine("tab 换栏位 · j/k 移动 · l 操作 · esc 退回 · q 退出", inner.W),
+				tile.StyleHint)
 		},
 	}
 }

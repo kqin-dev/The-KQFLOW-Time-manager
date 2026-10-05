@@ -180,6 +180,8 @@ type Canvas struct {
 	W, H  int
 	cells []Cell
 	clip  geometry.Rect
+	// overlay 为真时，覆盖已有内容不记为冲突（见 BeginOverlay）。
+	overlay bool
 	// Diag 记录异常。永不为 nil，调用方不必判空。
 	Diag Diagnostics
 	// styles 是样式表（下标 → 实际样式），由调用方通过 Render 传入。
@@ -267,6 +269,32 @@ func (c *Canvas) inClip(x, y int) bool { return c.clip.Contains(x, y) }
 //
 // 返回是否写入成功。以下情况返回 false 并计入诊断：坐标越界、超出裁剪区、
 // 宽字符右侧放不下（**宁可整字不写，也不写半个汉字**）、控制字符。
+// BeginOverlay 声明"接下来这一小块是**有意覆盖**已有内容的浮层"。
+//
+// 返回一个恢复函数，调用方式固定为 defer：
+//
+//	restore := c.BeginOverlay()
+//	defer restore()
+//	c.ClearRect(r)   // 先擦掉旧内容
+//	c.Text(...)      // 再写新内容
+//
+// 为什么需要它：画布把"覆盖已有内容"记为 DiagCollision，这是全项目最重要
+// 的一条不变量（它抓到过边框被擦、文字叠字等一长串问题）。但浮层是**故意**
+// 覆盖的——提示条要在上栏位置上盖掉原来的内容。若不给一个显式的开口，
+// 就只有两条错路：要么放弃浮层，要么把这条不变量整体关掉。
+//
+// 语义上它回答的是"这次覆盖是设计，还是失误"：只有调用方明确声明了，
+// 诊断才放行；同一次写入落在**没有声明**的区域上，照样报冲突。
+func (c *Canvas) BeginOverlay() func() {
+	prev := c.overlay
+	c.overlay = true
+	return func() { c.overlay = prev }
+}
+
+// Overlaying 报告当前是否处于"有意覆盖"状态（供诊断与测试查询）。
+func (c *Canvas) Overlaying() bool { return c.overlay }
+
+// Set 把一个字符写进 (x, y)。
 func (c *Canvas) Set(x, y int, r rune, st StyleID) bool {
 	if r == '\n' || r == '\t' || r == '\r' {
 		r = ' '
@@ -287,7 +315,7 @@ func (c *Canvas) Set(x, y int, r rune, st StyleID) bool {
 		return false
 	}
 	if cell := c.at(x, y); cell != nil {
-		if cell.R != ' ' && cell.R != r {
+		if !c.overlay && cell.R != ' ' && cell.R != r {
 			c.Diag.record(DiagCollision, x, y, "覆盖已有内容 "+string(cell.R)+" → "+string(r))
 		}
 		// 覆盖宽字符的**右半格**时，把左半格一并抹掉（否则右边会留下孤立的半格）。
@@ -315,7 +343,7 @@ func (c *Canvas) Set(x, y int, r rune, st StyleID) bool {
 	}
 	if w == 2 {
 		if cell := c.at(x+1, y); cell != nil {
-			if cell.R != ' ' && !cell.Cont {
+			if !c.overlay && cell.R != ' ' && !cell.Cont {
 				c.Diag.record(DiagCollision, x+1, y, "宽字符右半格覆盖已有内容")
 			}
 			// 右半格必须**保留同一个字符**，只用 Cont 标记"输出时跳过"。
