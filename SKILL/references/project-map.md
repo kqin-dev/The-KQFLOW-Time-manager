@@ -54,8 +54,33 @@ SKILL/                  本手册
 | `kxflow/svc` | 副作用边界（`Services`、`Effect`、能力标记） | ✅ |
 | `kxflow/plugin` | **整合包与插件体系**：五种插件类型、装载器、冲突裁决、视图安置 | ✅ |
 | `kxflow/internal/enginetest` | 架构约束测试（引擎不得依赖宿主） | ✅ |
-| `kxflow/theme`、`layout`、`tile`、`stage`、`chrome` | 五层骨架的其余部分 | 待实现（M2 起） |
-| `internal/kxapp` | 宿主适配层：KQFLOW 内核 + 各业务整合包 | 待实现（M4 起） |
+| `kxflow/theme`、`layout`、`tile`、`stage`、`chrome` | 五层骨架 | ✅ 已完成 |
+| `internal/kxapp` | ★ 宿主适配层：KQFLOW 的**内核 + 7 个整合包**，全部接在真实 model/store 上 | ✅ 已完成（M3） |
+
+### internal/kxapp（v3.0.0 的宿主适配层）
+
+它把 KQFLOW 拆成"内核 + 整合包"，而 `internal/ui`（v2.1.0 原型）**一行未改**——
+两条路并行，配置开关切默认留到 M5。
+
+| 文件 | 内容 |
+| --- | --- |
+| `source.go` / `day.go` | `Source` 接口（读写业务数据的唯一入口）+ 真实 store 实现。逻辑日**复用 `internal/clock`**，不重写 |
+| `state.go` | `HostState`：各包**共享**的光标与选中（选中必须只有一处，否则"当前选中是谁"会有多个答案） |
+| `kernel.go` | 内核包：LOGO、默认看板、全局看板选项（帮助/关于） |
+| `todo.go` / `goal.go` | 待办（固定+临时两个磁贴）与目标包；两者都 `Provides("item.selection")` |
+| `ddl.go` | 截止时间包：**磁贴 + 联动选项**（"整合包"概念最好的例子） |
+| `label.go` | 标签包：**只含一个联动选项**（"没有水瓶给水"的现实来源） |
+| `stats.go` / `note.go` | 柱状图与随手记预览磁贴 |
+| `services.go` / `loader.go` | 副作用实现（落盘/响铃）+ 装配入口 `Loader.Build()` |
+
+**运行它**：`go run ./cmd/kxapp-demo -data-dir <目录> -seed -render -w 120 -h 34`
+（`-seed` 只在目录为空时写示例数据；离屏渲染不需要真终端）。
+
+⚠️ **改动留意**：
+- 磁贴只画**内容区**，边框与标题由 `tile.DrawTile` 统一画——别在磁贴里自己画框。
+- 菜单/编辑界面一律返回 `plugin.View` 交引擎**借调舞台**，不要往根模型加"当前页"字段。
+- 内置标签预设已移到 `model.LabelPresets`（两个界面共用同一份）。
+
 
 **两条硬规则**（改了就是破坏架构，测试会红）：
 
