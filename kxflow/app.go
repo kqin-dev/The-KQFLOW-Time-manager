@@ -374,19 +374,22 @@ func (m *Model) View() string {
 	m.header.Draw(m.canvas, m.shell.Header)
 	m.footer.Draw(m.canvas, m.shell.Footer)
 
-	// 2) 磁贴（含中栏停靠区）。
-	m.registry.RenderAll(m.canvas, m.rectOf, m.renderCtx(), m.frame)
-
-	// 3) 主舞台。
+	// 2) 主舞台（先画）。
 	//
-	// **必须用 Center.Stage 而不是 Primary**：Primary 是"整页内容该用哪一块"
-	// （窄终端下它等于整行，宽终端下等于中栏），而舞台永远只在主控区里。
-	// 曾经这里传了 Primary，于是在 60×16 这类尺寸下，内核的看板视图
-	// 拿到了 14 行高（含停靠区的 7 行），直接把文字画到了停靠区磁贴上面——
-	// 画布诊断报出一串"覆盖已有内容"，而画面上看起来只是"字叠在一起了"。
+	// 顺序很关键：栈空时舞台画的是**看板底色**，它是背景；
+	// 磁贴是前景，必须后画、画在上面。曾经顺序是对的（先磁贴后舞台），
+	// 那时看板很窄所以看不出问题；一但看板拿到了完整宽度，
+	// 它就变成一块大底板，把先画的磁贴整片盖掉——
+	// 画面上表现为"侧栏的框被擦掉了、只剩几根线"。
+	//
+	// 舞台拿到的是"整行横向跨度 + 主控区纵向跨度"（见 stageRect），
+	// 因此它绝不会盖住停靠区；而侧栏由磁贴后画覆盖，也不会被擦掉。
 	if stageRect := m.stageRect(); !stageRect.Empty() {
 		m.stage.Render(m.canvas, stageRect, m.renderCtx())
 	}
+
+	// 3) 磁贴（含中栏停靠区）——前景，画在舞台之上。
+	m.registry.RenderAll(m.canvas, m.rectOf, m.renderCtx(), m.frame)
 
 	// 4) 提示浮层叠在最上面（它永远在最上层，否则用户看不到自己刚触发的反馈）。
 	if t := m.currentToast(); t != "" {
@@ -434,41 +437,33 @@ func (m *Model) drawToast(text string) {
 //
 // 规则只有一句：**舞台与停靠区共享中栏，但绝不重叠**。
 //
-//   - 停靠区可见时，舞台用 Center.Stage（停靠区之下那部分不属于它）；
-//   - 停靠区不可见时，舞台可以用整个中栏高度；
-//   - 栈空时（在看板）还允许横向借用到整行——窄终端下多看板一屏能多放内容；
-//     栈非空（借调中）则不借：借调视图属于主控区，横跨出去会盖住侧栏磁贴。
+//	停靠区可见 → 舞台 = Center.Stage：它与停靠区上下分中栏，
+//	             横向也**不外借**——外借会盖到左右栏磁贴上
+//	             （实测表现为看板文字横穿侧栏、侧栏的框被擦出缺口）。
+//	停靠区不可见 → 舞台可用整个中栏（含其整高），窄终端下多放一屏内容。
+//	借调中       → 永远只在主控区里，横向纵向都不越界。
 //
-// 曾经这里写成 `Primary ∩ Center.Rect`，而 Center.Rect 是**整个中栏**
-// （含停靠区的 14 行），于是看板拿到了本该属于停靠区的行，
-// 把文字直接画到停靠区磁贴上——画布诊断报出"覆盖已有内容"。
+// ⚠️ **不要把横向外借写成 `wide.Intersect(vertical)`**：
+// wide 的 X 是整行起点（0），vertical 的 X 是中栏起点（34），
+// 求交会拿 wide.X1()（整行中段的 56）当右边界，宽度被砍成 22 而不是 56
+// ——实机表现为"终端明明很宽，看板里的文字却被折成很短几行"。
+// 要的是"整行横向跨度 + 主控区纵向跨度"的**组合**，不是交集。
 func (m *Model) stageRect() geometry.Rect {
-	// 垂直方向：有停靠区就用它的上方。
-	vertical := m.shell.Center.Rect
-	if m.shell.Center.DockVisible && !m.shell.Center.Dock.Empty() {
-		vertical = m.shell.Center.Stage
+	dockOn := m.shell.Center.DockVisible && !m.shell.Center.Dock.Empty()
+	if dockOn || m.stage.Borrowing() {
+		return m.shell.Center.Stage
 	}
-	if vertical.Empty() {
-		return vertical
+	if r := m.shell.Center.Rect; !r.Empty() {
+		return r
 	}
-	if m.stage.Borrowing() {
-		return vertical
-	}
-	// 看板可以借用左右栏的横向空间，但仍以 vertical 的高度为界。
-	wide := m.shell.Primary
-	wide.W = minInt(wide.W, m.shell.Body.W)
-	wide.X = m.shell.Body.X
-	wide.H = minInt(wide.H, vertical.H)
-	wide.Y = vertical.Y
-	return wide.Intersect(vertical)
+	return m.shell.Body
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
+// StageRect 返回舞台当前实际绘制的矩形（供宿主与测试查询）。
+//
+// 它是内部规则的只读出口：测试据此断言"底色不越界"，
+// 宿主据此在需要时对齐自己的浮层。
+func (m *Model) StageRect() geometry.Rect { return m.stageRect() }
 
 // CanvasClean 报告最近一帧没有越界、没有覆盖。
 //

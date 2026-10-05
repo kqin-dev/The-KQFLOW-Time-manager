@@ -163,19 +163,18 @@ func (k *kernel) drawOptions(ctx plugin.RenderCtx, y int, inner geometry.Rect) i
 		if b.Context {
 			style = tile.StyleAccent
 		}
-		line := "  " + b.Key + "  " + b.Label
-		// 选项名可能很长（带条目名），折行而不是截断：
-		// 半句话比完整的短句更难懂。
-		for _, l := range ctx.Wrap(line) {
-			if y >= inner.Y1() {
-				return y
-			}
-			ctx.Canvas.Text(inner.X, y, l, style)
-			y++
-		}
+		// 键位放在固定宽的"栏目"里，说明文字在其后折行。
+		//
+		// 这样窄栏下看到的是"1  打标签「拿快 /   递」"，
+		// 而不是把选项名从中间劈开成"2  设截止时间「拿快 / 递」"——
+		// 后者看起来像文字被截断了（正是用户反馈过的那类观感）。
+		y = drawWrappedInset(ctx, y, inner, "  "+b.Key+"  ", optionGutter, b.Label, style)
 	}
 	return y
 }
+
+// optionGutter 是选项说明文字的续行缩进（对齐到键位右侧）。
+const optionGutter = "     "
 
 // centerLine 在给定宽度内居中一段**纯文本**（不截断，超宽原样返回）。
 func centerLine(s string, width int) string {

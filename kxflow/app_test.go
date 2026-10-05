@@ -177,6 +177,83 @@ func newTestModel(t *testing.T, tiles ...*fakeTile) (*Model, *fakePack) {
 
 // ---------- 布局与渲染 ----------
 
+// TestDashboardDoesNotShrinkOrCrossColumns 是"舞台矩形算错"那次事故的墓碑。
+//
+// 两个真实错误都在这条测试里：
+//
+//	① 宽度被砍成一半：写成 `wide.Intersect(vertical)`，而 wide 的 X 是整行
+//	   起点（0）、vertical 的 X 是中栏起点，求交时拿 wide.X1() 当右边界，
+//	   于是 56 列的中栏被算成 22 列——终端很宽，看板里的字却被折得很短。
+//	② 看板侵入侧栏：横向外借之后看板盖住了左右栏磁贴
+//	   （表现为侧栏的框被擦出缺口），诊断还会报"覆盖已有内容"。
+//
+// 现在的规则：有停靠区时舞台就是主控区，横向纵向都不外借。
+func TestDashboardDoesNotShrinkOrCrossColumns(t *testing.T) {
+	// 装三块磁贴：左右栏各一块，中栏停靠区一块——这样舞台四周都有邻居，
+	// "越界"才有东西可撞。
+	packs := []plugin.Pack{newFakePack("demo.pack",
+		newFakeTileAt("demo.left", "左", geometry.AnchorLeftTop),
+		newFakeTileAt("demo.right", "右", geometry.AnchorRightTop),
+		newFakeTileAt("demo.dock", "停靠", geometry.AnchorCenterDockLeft),
+	)}
+	m := New(Config{
+		EngineAPI: testEngine, Services: svc.Noop{},
+		Layout: layout.DefaultConfig(), View: plugin.NewViewConfig(),
+		Packs: packs,
+	})
+	m.Resize(120, 30)
+	_ = m.View() // 先渲染一次，Layout() 才有值
+
+	sh := m.Layout()
+	if !sh.Center.DockVisible {
+		t.Fatalf("120×30 下停靠区应当可见：%v", sh.Center)
+	}
+	stage := m.StageRect()
+	if stage.W > sh.Center.Stage.W {
+		t.Errorf("舞台宽度 %d 超过了主控区 %d（不该横向外借）", stage.W, sh.Center.Stage.W)
+	}
+	if stage.Intersects(sh.Center.Dock) {
+		t.Errorf("舞台 %v 与停靠区 %v 重叠了", stage, sh.Center.Dock)
+	}
+	if stage.Intersects(sh.Left.Rect) || stage.Intersects(sh.Right.Rect) {
+		t.Errorf("舞台 %v 侵入了侧栏（左 %v / 右 %v）", stage, sh.Left.Rect, sh.Right.Rect)
+	}
+	if !m.CanvasClean() {
+		t.Errorf("画布诊断不干净：%s", m.Diagnostics())
+	}
+}
+
+// TestStageDrawsBeforeTiles 验证绘制次序：舞台是底色，磁贴是前景。
+//
+// 顺序反了的话，一块拿到完整宽度的看板会把先画的磁贴整片盖掉——
+// 实测表现为"侧栏的框被擦掉了、只剩几根线"。
+func TestStageDrawsBeforeTiles(t *testing.T) {
+	packs := []plugin.Pack{newFakePack("demo.pack",
+		newFakeTileAt("demo.left", "甲", geometry.AnchorLeftTop),
+		newFakeTileAt("demo.right", "乙", geometry.AnchorRightTop),
+	)}
+	m := New(Config{
+		EngineAPI: testEngine, Services: svc.Noop{},
+		Layout: layout.DefaultConfig(), View: plugin.NewViewConfig(),
+		Packs: packs,
+	})
+	m.Resize(120, 30)
+	out := m.View()
+
+	// 两块磁贴的标题都应可见（它们是后画的前景）。
+	for _, want := range []string{"甲", "乙"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("磁贴标题 %q 应可见（前景不该被底色盖掉）：\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "╰"); n < 2 {
+		t.Errorf("磁贴下边框应至少 2 个，实际 %d 个：\n%s", n, out)
+	}
+	if !m.CanvasClean() {
+		t.Errorf("画布诊断不干净：%s", m.Diagnostics())
+	}
+}
+
 // TestRenderFitsTerminalExhaustive 在尺寸网格上断言引擎输出永不溢出。
 //
 // 这是 v2.1.0 那个"排版问题修不完"的根治性断言：不是"某个页面在某个宽度下

@@ -21,6 +21,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kqin-dev/kxflow"
+	"github.com/kqin-dev/kxflow/canvas"
+	"github.com/kqin-dev/kxflow/geometry"
 	"github.com/kqin-dev/kxflow/plugin"
 
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/clock"
@@ -37,12 +39,40 @@ func main() {
 	}
 }
 
+// selectSomething 让引擎"选中第一个磁贴的首个条目"。
+//
+// 它只是**模拟一次用户操作**（焦点 + 按 j），不绕过任何机制：
+// 走的是与真实按键完全相同的 Dispatch 路径，
+// 因此它验证的是真流程，而不是"直接改内部状态"这种假验证。
+//
+// 为什么需要它：联动选项只在**有选中**时出现，而离屏渲染没有人按键。
+// 没有这条路径，"选中后选项是否可见"就只能靠肉眼看交互界面。
+func selectSomething(m *kxflow.Model) {
+	// 依赖装载顺序：待办磁贴排在前面，因此从第一个锚点开始找。
+	for _, a := range []geometry.Anchor{
+		geometry.AnchorLeftTop, geometry.AnchorLeftBottom,
+		geometry.AnchorRightTop, geometry.AnchorRightBottom,
+	} {
+		if _, ok := m.Registry().At(a); !ok {
+			continue
+		}
+		m.SetFocus(a)
+		m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+		if m.Selection().ID != "" {
+			return
+		}
+	}
+}
+
 func run() error {
 	render := flag.Bool("render", false, "离屏渲染一帧后退出（不进入交互）")
 	width := flag.Int("w", 120, "离屏渲染的终端宽度")
 	height := flag.Int("h", 40, "离屏渲染的终端高度")
 	dataDir := flag.String("data-dir", "", "指定数据目录（覆盖配置）")
 	seed := flag.Bool("seed", false, "向数据目录写入几条示例数据（仅在它为空时动手）")
+	selectFirst := flag.Bool("select", false,
+		"离屏渲染前先选中第一个磁贴的首个条目（用来验证联动选项是否出现）")
+	verbose := flag.Bool("v", false, "打印绘制路径的内部汇报（排查布局用）")
 	flag.Parse()
 
 	// 与 cmd/kqf 一样的装配顺序：先解析路径，再读配置，最后打开数据层。
@@ -89,11 +119,30 @@ func run() error {
 
 	if *render {
 		m.Resize(*width, *height)
+		if *selectFirst {
+			selectSomething(m)
+		}
+		if *verbose {
+			// 打开绘制路径的内部汇报：排查"布局算成了什么"时非常有用。
+			canvas.DebugTrace = func(s string) { fmt.Fprintln(os.Stderr, "  [trace] "+s) }
+			defer func() { canvas.DebugTrace = nil }()
+		}
 		fmt.Println(m.View())
 		fmt.Fprintln(os.Stderr, "--- 装载报告 ---")
 		fmt.Fprintln(os.Stderr, rep.Explain())
 		// 画布诊断：正常路径下必须干净（越界与覆盖都是 0）。
 		fmt.Fprintf(os.Stderr, "--- 画布诊断 --- %s\n", m.Diagnostics())
+		// 把"当前可用选项"也打出来：这是"联动选项是否出现"最直接的证据。
+		if bindings := m.OptionKeys(); len(bindings) > 0 {
+			fmt.Fprintln(os.Stderr, "--- 当前可用选项 ---")
+			for _, b := range bindings {
+				kind := "看板"
+				if b.IsContext() {
+					kind = "联动"
+				}
+				fmt.Fprintf(os.Stderr, "  [%s] %s  %s\n", kind, b.Key, b.Label)
+			}
+		}
 		return nil
 	}
 
