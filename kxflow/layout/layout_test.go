@@ -158,14 +158,29 @@ func TestSingleTileIsFullBar(t *testing.T) {
 }
 
 // TestTwoTilesSplitEvenly 验证两个磁贴各占一半，且不重不漏。
+//
+// 注意"装不下"的情形：栏位太矮时两个槽位**都判空**，而不是重叠。
+// 判空的语义是明确的（这个尺寸下摆不开两块），而重叠会让两块磁贴
+// 互相覆盖边框——那在画布诊断里是一串"覆盖已有内容"。
 func TestTwoTilesSplitEvenly(t *testing.T) {
-	for h := 6; h <= 60; h++ {
+	emptyPairs, splitPairs := 0, 0
+	for h := 4; h <= 60; h++ {
 		sh := Layout(geometry.Size{W: 120, H: h}, func() LayoutConfig {
 			c := DefaultConfig()
 			c.LeftTiles, c.RightTiles = 2, 2
 			return c
 		}())
 		top, bottom := sh.Left.Slot(0), sh.Left.Slot(1)
+		if top.Empty() && bottom.Empty() {
+			// 装不下：两者必须**同时**为空。只空一个会让"用户只配了一块"
+			// 与"这个尺寸摆不开两块"在界面上无法区分。
+			emptyPairs++
+			continue
+		}
+		if top.Empty() != bottom.Empty() {
+			t.Fatalf("高 %d：两个槽位应当同为可用或同为空，实际 %v / %v", h, top, bottom)
+		}
+		splitPairs++
 		if top.H+bottom.H != sh.Left.Rect.H {
 			t.Fatalf("高 %d：两槽高度和 %d 应等于栏高 %d", h, top.H+bottom.H, sh.Left.Rect.H)
 		}
@@ -176,6 +191,60 @@ func TestTwoTilesSplitEvenly(t *testing.T) {
 			t.Fatalf("高 %d：两槽高度差应为 0 或 1（上多一行），实际 %d（%d vs %d）",
 				h, diff, top.H, bottom.H)
 		}
+		if top.H < MinTileH || bottom.H < MinTileH {
+			t.Fatalf("高 %d：可用的槽位不该小于最小磁贴高度 %d（%d / %d）",
+				h, MinTileH, top.H, bottom.H)
+		}
+	}
+	if emptyPairs == 0 || splitPairs == 0 {
+		t.Fatalf("这个用例应当同时覆盖「摆得开」与「摆不开」两种情形，实际 空=%d 均分=%d",
+			emptyPairs, splitPairs)
+	}
+}
+
+// TestDegenerateSlotsNeverOverlap 是"槽位重叠"那次事故的墓碑。
+//
+// 曾经 splitEven 在矩形太矮时让两个槽位都指向整块，注释里还写着
+// "不会出现负数或重叠"——**恰恰就是重叠**，实测在 40×10 的终端下
+// 画布报出 62 次"覆盖已有内容"。这条测试直接断言"要么都有面积且不相交、
+// 要么都空"，把那种写法彻底堵死。
+func TestDegenerateSlotsNeverOverlap(t *testing.T) {
+	overlaps := 0
+	for w := 1; w <= 200; w += 7 {
+		for h := 1; h <= 40; h++ {
+			for _, tiles := range []int{2, 3} {
+				cfg := DefaultConfig()
+				cfg.LeftTiles, cfg.RightTiles, cfg.DockTiles = tiles, tiles, tiles
+				sh := Layout(geometry.Size{W: w, H: h}, cfg)
+				pairs := [][2]geometry.Rect{
+					{sh.Left.Slot(0), sh.Left.Slot(1)},
+					{sh.Right.Slot(0), sh.Right.Slot(1)},
+				}
+				if sh.Center.DockVisible {
+					pairs = append(pairs, [2]geometry.Rect{sh.Center.Slot(0), sh.Center.Slot(1)})
+				}
+				for _, p := range pairs {
+					a, b := p[0], p[1]
+					if a.Empty() && b.Empty() {
+						continue
+					}
+					if a.Empty() != b.Empty() {
+						t.Fatalf("%dx%d：两槽应同为可用或同为空：%v / %v", w, h, a, b)
+					}
+					// 不相交时 Intersect 返回零值矩形。
+					if got := a.Intersect(b); got.W != 0 || got.H != 0 {
+						t.Fatalf("%dx%d：两个槽位重叠了：%v 与 %v 交集 %v", w, h, a, b, got)
+					}
+					if a.Intersects(b) {
+						t.Fatalf("%dx%d：Intersects 应报告不相交：%v 与 %v", w, h, a, b)
+					}
+					overlaps++
+				}
+			}
+		}
+	}
+	if overlaps == 0 {
+		t.Fatal("这个用例没有扫到任何可用槽位对，等于没验证")
 	}
 }
 

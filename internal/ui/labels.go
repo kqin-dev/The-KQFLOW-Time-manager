@@ -16,6 +16,8 @@ import (
 //   - 这里的「标签」是用户自己起的记号（星星 / 紧急 / 忽略），存在条目上。
 //   - `Goal.Tag` 是标题的稳定指纹（`#a1b2c3`），程序算出来用于继承时避免
 //     同名混淆，用户改不了。
+//
+// labelOption 是界面层使用的标签条目：名字 + 记号。
 type labelOption struct {
 	Name string
 	// Glyph 是内置预设的记号字符；用户自定义的标签没有记号。
@@ -24,18 +26,10 @@ type labelOption struct {
 
 // labelPresets 是内置标签预设。
 //
-// 用纯文本 + 单字符记号而不是 emoji：emoji 在不同终端字体下宽度会飘
-// （有的当 2 列、有的当 1 列甚至渲染成方框），而本项目所有排版都依赖
-// 显示宽度，这里引入不确定宽度会让面板边框错位。中文字符宽度是稳定的。
-var labelPresets = []labelOption{
-	{Name: "星星", Glyph: "★"},
-	{Name: "旗帜", Glyph: "⚑"},
-	{Name: "爱心", Glyph: "♥"},
-	{Name: "紧急", Glyph: "!"},
-	{Name: "忽略", Glyph: "~"},
-	{Name: "进行中", Glyph: "▸"},
-	{Name: "已阻塞", Glyph: "×"},
-}
+// **已移到 model.LabelPresets**：它是一份数据而非排版逻辑，
+// 而引擎版界面（internal/kxapp）也要用同一份。留在这里会导致两边各存一份，
+// 迟早不一致。这里保留别名以避免改动旧界面里大量引用点。
+var labelPresets = model.LabelPresets
 
 // labelViewState 是标签编辑页的状态。
 type labelViewState struct {

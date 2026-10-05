@@ -24,6 +24,42 @@ const MaxLabelRunes = 16
 // MaxLabelsPerItem 是单个条目最多能带的标签数。
 const MaxLabelsPerItem = 8
 
+// LabelPreset 是一个内置标签预设：名字 + 记号字符。
+type LabelPreset struct {
+	Name string
+	// Glyph 是内置预设的记号字符；用户自定义的标签没有记号。
+	Glyph string
+}
+
+// LabelPresets 是内置标签预设。
+//
+// 它放在 model 而不是界面层，因为**它是一份数据**（"有哪些内置标签"），
+// 而不是排版逻辑。旧原型把它放在 internal/ui/labels.go 里，
+// 于是引擎版界面想用同一份预设就得复制一份——两份内置标签迟早会不一致。
+//
+// 用纯文本 + 单字符记号而不是 emoji：emoji 在不同终端字体下宽度会飘
+// （有的当 2 列、有的当 1 列甚至渲染成方框），而本项目所有排版都依赖
+// 显示宽度，引入不确定宽度会让面板边框错位。中文字符宽度是稳定的。
+var LabelPresets = []LabelPreset{
+	{Name: "星星", Glyph: "★"},
+	{Name: "旗帜", Glyph: "⚑"},
+	{Name: "爱心", Glyph: "♥"},
+	{Name: "紧急", Glyph: "!"},
+	{Name: "忽略", Glyph: "~"},
+	{Name: "进行中", Glyph: "▸"},
+	{Name: "已阻塞", Glyph: "×"},
+}
+
+// PresetGlyph 返回内置预设的记号；不是预设则返回空串。
+func PresetGlyph(name string) string {
+	for _, p := range LabelPresets {
+		if p.Name == name {
+			return p.Glyph
+		}
+	}
+	return ""
+}
+
 // LabelName 清洗用户输入的标签名：去掉控制字符、折叠空白、截断到上限。
 //
 // 返回空串表示这个标签无效，调用方应忽略它。

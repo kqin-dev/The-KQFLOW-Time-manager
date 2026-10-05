@@ -12,6 +12,7 @@
 package kxflow
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/kqin-dev/kxflow/canvas"
@@ -166,8 +167,81 @@ func (m *Model) Selection() plugin.Selection { return m.selection }
 func (m *Model) SetSelection(s plugin.Selection) { m.selection = s }
 
 // ContextOptions 返回当前选中下适用的联动选项。
+//
+// 这是**唯一**一处判定"哪个联动选项该出现"的入口：判定逻辑在
+// plugin.Applies 里，各包不会各自实现一份。
 func (m *Model) ContextOptions() []plugin.ContextOption {
 	return m.manager.ContextOptions(m.selection)
+}
+
+// BoardOptions 返回全部看板选项（内核自带的 + 各包的）。
+func (m *Model) BoardOptions() []plugin.BoardOption {
+	return m.manager.BoardOptions()
+}
+
+// OptionKeys 返回"数字键 → 选项"的映射，供内核在界面上显示可用的快捷键。
+//
+// 编号规则（刻意与两处来源的顺序解耦）：
+//   - 联动选项排在前面（1..N）：它们是**上下文相关**的，
+//     用户刚选中一项时最可能想用的就是它们；
+//   - 看板选项接在后面。
+//
+// 键位只用数字：字母与空格/回车在看板上有既有语义，
+// 借走它们会导致"这个键在看板上本来是什么"的问题（v2.1.0 踩过）。
+func (m *Model) OptionKeys() []OptionBinding {
+	var out []OptionBinding
+	// 联动选项：当期适用才给键位——不适用的选项连编号都不该出现。
+	for i, o := range m.ContextOptions() {
+		if len(out) >= 9 {
+			break
+		}
+		out = append(out, OptionBinding{
+			Key:   string(rune('1' + i)),
+			Label: o.Label(m.selection),
+			Ctx:   o,
+		})
+	}
+	base := len(out)
+	for i, o := range m.BoardOptions() {
+		if base+i >= 9 {
+			break
+		}
+		out = append(out, OptionBinding{
+			Key:   string(rune('1' + base + i)),
+			Label: o.Label(),
+			Board: o,
+		})
+	}
+	return out
+}
+
+// OptionBinding 是一条"按键 → 选项"的绑定。
+type OptionBinding struct {
+	// Key 是触发它的按键（当前只用数字键）。
+	Key string
+	// Label 是显示文本。
+	Label string
+	// Ctx 非空表示它来自联动选项（依赖当前选中）。
+	Ctx plugin.ContextOption
+	// Board 非空表示它来自看板选项。
+	Board plugin.BoardOption
+}
+
+// IsContext 报告它是不是联动选项。
+func (b OptionBinding) IsContext() bool { return b.Ctx != nil }
+
+// Activate 打开这个选项对应的界面（借调舞台）。
+//
+// 必须把当前选中一并传进来：联动选项要据此决定"给谁设"。
+// 宿主、内核与用户按数字键都走这**同一条**路，谁都不开后门。
+func (b OptionBinding) Activate(s svc.Services, sel plugin.Selection) (plugin.View, error) {
+	if b.Ctx != nil {
+		return b.Ctx.Activate(sel, s)
+	}
+	if b.Board != nil {
+		return b.Board.Activate(s)
+	}
+	return nil, nil
 }
 
 // Toast 显示一条临时提示（默认 3 秒后消失）。
@@ -288,12 +362,15 @@ func (m *Model) View() string {
 	// 2) 磁贴（含中栏停靠区）。
 	m.registry.RenderAll(m.canvas, m.rectOf, m.renderCtx(), m.frame)
 
-	// 3) 主舞台：只画中栏那一块。舞台拿不到别的矩形，
-	//    因此"二级内容横跨三栏把边框切出断口"在结构上做不出来。
-	if !m.shell.Center.Stage.Empty() {
-		origin := m.stage.TopOrigin()
-		_ = origin
-		m.stage.Render(m.canvas, m.shell.Primary, m.renderCtx())
+	// 3) 主舞台。
+	//
+	// **必须用 Center.Stage 而不是 Primary**：Primary 是"整页内容该用哪一块"
+	// （窄终端下它等于整行，宽终端下等于中栏），而舞台永远只在主控区里。
+	// 曾经这里传了 Primary，于是在 60×16 这类尺寸下，内核的看板视图
+	// 拿到了 14 行高（含停靠区的 7 行），直接把文字画到了停靠区磁贴上面——
+	// 画布诊断报出一串"覆盖已有内容"，而画面上看起来只是"字叠在一起了"。
+	if stageRect := m.stageRect(); !stageRect.Empty() {
+		m.stage.Render(m.canvas, stageRect, m.renderCtx())
 	}
 
 	// 4) 提示浮层叠在最上面（它永远在最上层，否则用户看不到自己刚触发的反馈）。
@@ -336,6 +413,68 @@ func (m *Model) drawToast(text string) {
 	defer restore()
 	m.canvas.ClearRect(inner)
 	m.canvas.Text(inner.X, inner.Y, canvas.Truncate(text, inner.W), style)
+}
+
+// stageRect 返回舞台当前应当绘制的矩形。
+//
+// 规则只有一句：**舞台与停靠区共享中栏，但绝不重叠**。
+//
+//   - 停靠区可见时，舞台用 Center.Stage（停靠区之下那部分不属于它）；
+//   - 停靠区不可见时，舞台可以用整个中栏高度；
+//   - 栈空时（在看板）还允许横向借用到整行——窄终端下多看板一屏能多放内容；
+//     栈非空（借调中）则不借：借调视图属于主控区，横跨出去会盖住侧栏磁贴。
+//
+// 曾经这里写成 `Primary ∩ Center.Rect`，而 Center.Rect 是**整个中栏**
+// （含停靠区的 14 行），于是看板拿到了本该属于停靠区的行，
+// 把文字直接画到停靠区磁贴上——画布诊断报出"覆盖已有内容"。
+func (m *Model) stageRect() geometry.Rect {
+	// 垂直方向：有停靠区就用它的上方。
+	vertical := m.shell.Center.Rect
+	if m.shell.Center.DockVisible && !m.shell.Center.Dock.Empty() {
+		vertical = m.shell.Center.Stage
+	}
+	if vertical.Empty() {
+		return vertical
+	}
+	if m.stage.Borrowing() {
+		return vertical
+	}
+	// 看板可以借用左右栏的横向空间，但仍以 vertical 的高度为界。
+	wide := m.shell.Primary
+	wide.W = minInt(wide.W, m.shell.Body.W)
+	wide.X = m.shell.Body.X
+	wide.H = minInt(wide.H, vertical.H)
+	wide.Y = vertical.Y
+	return wide.Intersect(vertical)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// CanvasClean 报告最近一帧没有越界、没有覆盖。
+//
+// 供宿主在自检与开发期断言使用（测试里尤其有用：它让"画坏了"这件事
+// 有一个可查询的出口，而不是只能靠眼睛看）。
+func (m *Model) CanvasClean() bool {
+	return m.canvas.Diag.Overflow == 0 && m.canvas.Diag.Collisions == 0
+}
+
+// Diagnostics 返回最近一帧的诊断摘要，便于失败信息里带上线索。
+func (m *Model) Diagnostics() string {
+	return fmt.Sprintf("overflow=%d collisions=%d clipped=%d",
+		m.canvas.Diag.Overflow, m.canvas.Diag.Collisions, m.canvas.Diag.Clipped)
+}
+
+// DiagEvents 返回最近一帧的诊断明细（坐标、原因、可选调用点）。
+//
+// 把"画坏了"的现场交出去，而不是只给一个计数：本项目历史上多次出现
+// "量出来的数据在骗自己"，因此宁可多给一条线索。
+func (m *Model) DiagEvents() []canvas.DiagEvent {
+	return m.canvas.Diag.Events
 }
 
 // Layout 返回最近一次算好的骨架（供宿主查询各区域矩形）。
@@ -440,6 +579,17 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 		return false
 	}
 
+	// 选项（联动 + 看板）用数字键触发。
+	//
+	// 排在磁贴**之前**：数字键在看板上没有别的语义，因此借走它们不会
+	// 造成"这个键本来是什么"的问题（字母键就会——v2.1.0 踩过）。
+	// 而磁贴自己的按键是 j/k/space/enter 这些，不与数字冲突。
+	if n := digitIndex(ev.Key); n >= 0 {
+		if m.activateOption(n) {
+			return false
+		}
+	}
+
 	slot, ok := m.registry.At(m.focus)
 	if !ok || slot.Component == nil {
 		return false
@@ -448,6 +598,40 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 	act := slot.Component.Update(ctx, ev)
 	m.runAction(act)
 	return false
+}
+
+// digitIndex 把 "1".."9" 解析成 0..8；其它按键返回 -1。
+func digitIndex(key string) int {
+	if len(key) != 1 || key[0] < '1' || key[0] > '9' {
+		return -1
+	}
+	return int(key[0] - '1')
+}
+
+// activateOption 打开第 idx 个选项（按 OptionKeys 的顺序）；没有则返回 false。
+//
+// 返回 false 时调用方继续把按键交给磁贴——这样"按了没有对应选项的数字"
+// 不会把按键吞掉，用户不会觉得"这个键没反应"。
+func (m *Model) activateOption(idx int) bool {
+	bindings := m.OptionKeys()
+	if idx < 0 || idx >= len(bindings) {
+		return false
+	}
+	b := bindings[idx]
+	view, err := b.Activate(m.svc, m.selection)
+	if err != nil {
+		m.toast, m.toastKind = "打开失败："+err.Error(), toastErr
+		return true
+	}
+	if view == nil {
+		return false
+	}
+	kind := plugin.OriginBoardOption
+	if b.IsContext() {
+		kind = plugin.OriginContextOption
+	}
+	m.stage.Push(view, plugin.Origin{Kind: kind})
+	return true
 }
 
 // focusBack 在退出借调之后把焦点交还给借调方（req.md 的 Handover）。

@@ -77,6 +77,37 @@ type DiagEvent struct {
 	// 光知道"哪个坐标被拒"还不够——必须知道**是谁**写的，否则排查只能靠猜。
 	// 这一条是被真实事故逼出来的（一次负坐标写入查了很久）。
 	Where string
+	// Stack 是完整调用栈（仅 CallerInfo 打开时收集）。
+	//
+	// Where 只给"最后一跳"，而有时间题出在更上游（例如某个视图算错了矩形）。
+	// 真出事时，一条完整调用栈能把排查从"猜"变成"读"。
+	Stack string
+}
+
+// stackOf 返回从第 skip 层起的调用栈（最多若干帧，够看清来路即可）。
+func stackOf(skip int) string {
+	pcs := make([]uintptr, 12)
+	n := runtime.Callers(skip, pcs)
+	if n == 0 {
+		return ""
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	var b strings.Builder
+	for {
+		f, more := frames.Next()
+		if b.Len() > 0 {
+			b.WriteString(" <- ")
+		}
+		name := f.Function
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		fmt.Fprintf(&b, "%s:%d", name, f.Line)
+		if !more || b.Len() > 300 {
+			break
+		}
+	}
+	return b.String()
 }
 
 // DiagKind 是诊断类别。
@@ -101,6 +132,12 @@ const diagEventLimit = 64
 // 与"把越界变成可观测事件"是同一个思路——排查不该靠猜。
 var CallerInfo = false
 
+// DebugTrace 非空时，绘制路径会向它汇报内部状态（开发期排查用）。
+//
+// 与 CallerInfo 一样是开发期开关。它存在的理由很实在：
+// 排查"某一行被谁写了"时，光有坐标不够，还需要知道**当时的布局算成了什么**。
+var DebugTrace func(string)
+
 func (d *Diagnostics) record(kind DiagKind, x, y int, msg string) {
 	switch kind {
 	case DiagOverflow:
@@ -116,6 +153,7 @@ func (d *Diagnostics) record(kind DiagKind, x, y int, msg string) {
 	ev := DiagEvent{Kind: kind, X: x, Y: y, Msg: msg}
 	if CallerInfo {
 		ev.Where = callerOf(3)
+		ev.Stack = stackOf(3)
 	}
 	d.Events = append(d.Events, ev)
 }

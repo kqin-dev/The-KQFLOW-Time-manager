@@ -140,6 +140,42 @@ func newColumn(r geometry.Rect, count int) Column {
 	return c
 }
 
+// MinTileW / MinTileH 是一个磁贴能画出来的最小尺寸（含边框与标题行）。
+//
+// 小于它就别画了：一个 2 行高的框连标题都放不下，画出来只是噪声。
+// 这个阈值是**布置槽位的依据**，不是"建议"——见 splitEven 的说明。
+const (
+	MinTileW = 6
+	MinTileH = 3
+)
+
+// splitEven 把矩形上下均分给两个槽位；**装不下时就判空，绝不让它们重叠**。
+//
+// 这一条是踩出来的：早先版本在矩形太矮时让两个槽位都指向整块
+// （注释里写的是"不会出现负数或重叠"），结果**恰恰就是重叠**——
+// 两块磁贴画在同一片格子上，互相覆盖彼此的边框。
+// 实测症状：40×10 的终端下画布报出 62 次"覆盖已有内容"。
+//
+// 正确的取舍是：每个磁贴至少要 MinTileH 行；分不出来就判空，
+// 由调用方跳过渲染（少画一块磁贴，远好过画出两块互相盖住的）。
+func splitEven(r geometry.Rect) [2]geometry.Rect {
+	var empty [2]geometry.Rect
+	if r.H < 2*MinTileH || r.W < MinTileW {
+		// 两块的份都不够：**一个都不给**。
+		//
+		// 为什么不"给第一块、空第二块"：那样第一块会占满整栏，
+		// 看起来像"用户只配了一块磁贴"，而真相是"这个尺寸下摆不开两块"——
+		// 两种状态在界面上无法区分。判空则两块都不画，语义是明确的。
+		return empty
+	}
+	topH := (r.H + 1) / 2
+	top, bottom := r.CutTop(topH)
+	if top.H < MinTileH || bottom.H < MinTileH {
+		return empty
+	}
+	return [2]geometry.Rect{top, bottom}
+}
+
 // newLane 把中栏矩形分成主控区与（可选的）停靠区。
 func newLane(r geometry.Rect, dockVisible bool, dockCount int) Lane {
 	l := Lane{Rect: r, DockVisible: dockVisible, DockCount: dockCount}
@@ -150,38 +186,30 @@ func newLane(r geometry.Rect, dockVisible bool, dockCount int) Lane {
 		l.Dock = geometry.Rect{X: r.X, Y: r.Y + r.H}
 		return l
 	}
-	// 停靠区高度：一个槽位一行标题一行内容的量，两个则翻倍；并且不超过中栏一半。
+	// 停靠区高度：按需要的磁贴数算，但不超过中栏一半。
 	want := dockCount*3 + 2
-	maxDock := r.H / 2
-	if want > maxDock {
+	if maxDock := r.H / 2; want > maxDock {
 		want = maxDock
 	}
-	if want < 3 {
-		want = 3
+	if want < MinTileH {
+		want = MinTileH
 	}
 	if want > r.H {
 		want = r.H
 	}
 	stage, dock := r.CutBottom(want)
+	// 装不下就**不开停靠区**：一个 1~2 行高的停靠区画不出磁贴，
+	// 只会把主控区挤小——那正是"多了一条没用的空条"的来源。
+	if stage.H < MinTileH || dock.H < MinTileH || r.W < MinTileW {
+		l.Stage = r
+		l.Dock = geometry.Rect{X: r.X, Y: r.Y + r.H}
+		l.DockVisible = false
+		return l
+	}
 	l.Stage = stage
 	l.Dock = dock
 	l.DockSlots = splitEven(dock)
 	return l
-}
-
-// splitEven 把矩形上下均分给两个槽位。
-//
-// 高度为奇数时上半多占一行：标题在上半，多给一行标题比多给一行内容更不容易
-// 出现"标题被裁掉"这种看起来像渲染坏了的现象。
-func splitEven(r geometry.Rect) [2]geometry.Rect {
-	if r.H < 2 {
-		// 太矮，无法真正一分为二：两个槽位都指向整块，
-		// 画布会把内容裁掉，但**不会出现负数或重叠**。
-		return [2]geometry.Rect{r, r}
-	}
-	topH := (r.H + 1) / 2
-	top, bottom := r.CutTop(topH)
-	return [2]geometry.Rect{top, bottom}
 }
 
 // pickPrimary 选出"整页内容应当使用的那一块"。

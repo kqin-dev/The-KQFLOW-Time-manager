@@ -149,19 +149,38 @@ func (r *Registry) RenderAll(c *canvas.Canvas, rectOf func(geometry.Anchor) (geo
 			continue
 		}
 		outer, ok := rectOf(a)
-		if !ok || outer.Empty() {
+		if !ok {
 			continue
 		}
 		DrawTile(c, outer, &s, ctx, frame)
 	}
 }
 
+// MinW / MinH 是一个磁贴能被画出来的最小尺寸（含边框与标题行）。
+//
+// 与 layout.MinTileW/MinTileH 是同一个阈值，这里再写一遍是因为**绘制侧必须
+// 自己守住这条线**：布局在某些极端尺寸下会把某一栏压到 0 宽
+// （实测 60×16 时中栏 44、两侧各 0），此时 rectOf 仍会返回一个"位置合法但
+// 没有面积"的矩形。若照画不误，就会在一个 1×1 的区域里画出一整套边框，
+// 把相邻栏的边框覆盖掉——画布诊断会报出一串"覆盖已有内容"。
+const (
+	MinW = 6
+	MinH = 3
+)
+
+// CanDraw 报告给定矩形是否足够画出一块磁贴。
+//
+// 调用方（含引擎的渲染路径）必须先问它：**画不出来就不画**，
+// 少一块磁贴远好过画出互相覆盖的残框。
+func CanDraw(r geometry.Rect) bool {
+	return !r.Empty() && r.W >= MinW && r.H >= MinH
+}
+
 // DrawTile 画一块磁贴：外框 + 标题 + 内容。
 //
-// 标题行占用框内第一行；内容从第二行开始。框太小的时候退化为"只画内容"，
-// 宁可少一个标题也不留下画不出的边框。
+// 标题行占用框内第一行；内容从第二行开始。
 func DrawTile(c *canvas.Canvas, outer geometry.Rect, s *Slot, ctx plugin.RenderCtx, frame canvas.Frame) {
-	if outer.Empty() || s == nil || s.Component == nil {
+	if !CanDraw(outer) || s == nil || s.Component == nil {
 		return
 	}
 

@@ -90,20 +90,27 @@ func (r Rect) ContainsRect(o Rect) bool {
 	return o.X >= r.X && o.Y >= r.Y && o.X1() <= r.X1() && o.Y1() <= r.Y1()
 }
 
-// Intersect 返回两者的交集；不相交时返回空矩形。
+// Intersect 返回两者的交集；**不相交时返回零值矩形**。
 //
-// 结果可能是"位置合法但面积为 0"的矩形（例如 X 落在某个合法列上），
-// 这也是为什么所有绘制入口都必须先看 Empty()。
+// 注意"不相交"必须返回**零值**（所有字段为 0），而不是"宽高为 0 但保留坐标"
+// 的矩形：后者在 Empty() 判定上一样，但两个矩阵一比较就会发现它们不等，
+// 于是 `if a.Intersect(b) != (Rect{})` 这类判断会失效——
+// 而"判断两个槽位有没有重叠"恰恰需要那种判断。
 func (r Rect) Intersect(o Rect) Rect {
 	x0, y0 := max(r.X, o.X), max(r.Y, o.Y)
 	x1, y1 := min(r.X1(), o.X1()), min(r.Y1(), o.Y1())
-	if x1 < x0 {
-		x1 = x0
-	}
-	if y1 < y0 {
-		y1 = y0
+	if x1 <= x0 || y1 <= y0 {
+		return Rect{}
 	}
 	return Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
+}
+
+// Intersects 报告两个矩形是否有**面积上的**重叠。
+//
+// 它比 `!a.Intersect(b).Empty()` 更直白，也是"槽位不许重叠"这条不变量
+// 最该用的写法。
+func (r Rect) Intersects(o Rect) bool {
+	return r.X < o.X1() && o.X < r.X1() && r.Y < o.Y1() && o.Y < r.Y1()
 }
 
 // Union 返回能包住两者的最小矩形。

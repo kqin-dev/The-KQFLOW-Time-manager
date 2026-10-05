@@ -253,6 +253,22 @@ type aboutOption struct{ k *coreKernel }
 func (o *aboutOption) Label() string { return "关于 / About" }
 func (o *aboutOption) Order() int    { return 100 }
 
+// Activate 打开"关于"页（借调舞台）。
+func (o *aboutOption) Activate(svc.Services) (plugin.View, error) {
+	return &plugin.ViewFunc{
+		ViewName: "关于",
+		RenderFn: func(ctx plugin.RenderCtx) {
+			drawLines(ctx, []string{
+				"KXFLOW 引擎演示",
+				"",
+				"  " + o.k.PowerBy(),
+				"",
+				"  本页面由内核的看板选项借调舞台打开。",
+			}, 2)
+		},
+	}, nil
+}
+
 // ---------- 时钟磁贴包 ----------
 
 type clockPack struct{}

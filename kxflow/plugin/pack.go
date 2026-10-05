@@ -31,6 +31,12 @@ type BoardOption interface {
 	Label() string
 	// Order 决定在选项列表里的位置，小的在前；同值按 ID 字典序。
 	Order() int
+	// Activate 返回要借调舞台显示的视图。
+	//
+	// 与 ContextOption.Activate 一样，这是选项获得界面的**唯一**途径：
+	// 它不能自己往画布上画东西，也不能改根模型的状态——
+	// 于是"二级内容只占中栏"对选项也是机制而非约定。
+	Activate(svc.Services) (View, error)
 }
 
 // ContextOption 是**联动选项**：只在当前选中上下文满足条件时才出现。
@@ -50,6 +56,11 @@ type ContextOption interface {
 	Label(s Selection) string
 	// Order 决定在选项列表里的位置。
 	Order() int
+	// Activate 返回要借调舞台显示的视图；sel 是当前选中。
+	//
+	// 这是选项获得界面的**唯一**途径（与看板选项一致）：
+	// 它不能自己往画布上画，也不能改根模型状态。
+	Activate(sel Selection, s svc.Services) (View, error)
 }
 
 // Applies 报告该联动选项在当前选中下是否适用。

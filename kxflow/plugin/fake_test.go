@@ -40,10 +40,23 @@ func (p *fakePlugin) New(s svc.Services) (Component, error) {
 type fakeBoardOpt struct {
 	label string
 	order int
+	// view 为 nil 时 Activate 返回一个固定页面。
+	view View
+	err  error
 }
 
 func (o *fakeBoardOpt) Label() string { return o.label }
 func (o *fakeBoardOpt) Order() int    { return o.order }
+
+func (o *fakeBoardOpt) Activate(svc.Services) (View, error) {
+	if o.err != nil {
+		return nil, o.err
+	}
+	if o.view == nil {
+		o.view = &TestView{ViewName: o.label, Lines: []string{o.label}}
+	}
+	return o.view, nil
+}
 
 // fakeCtxOpt 是假联动选项：这就是"给选中条目设 DDL"那一类。
 type fakeCtxOpt struct {
@@ -51,6 +64,10 @@ type fakeCtxOpt struct {
 	kinds    []string
 	requires []string
 	order    int
+	// activated 记录最近一次被打开时的选中项，供测试断言"传对了对象"。
+	activated Selection
+	// activatedCount 记录被打开的次数。
+	activatedCount int
 }
 
 func (o *fakeCtxOpt) AppliesTo() []string { return o.kinds }
@@ -62,6 +79,12 @@ func (o *fakeCtxOpt) Label(s Selection) string {
 	return o.label
 }
 func (o *fakeCtxOpt) Order() int { return o.order }
+
+func (o *fakeCtxOpt) Activate(sel Selection, s svc.Services) (View, error) {
+	o.activated = sel
+	o.activatedCount++
+	return &TestView{ViewName: o.label, Lines: []string{o.label, sel.Title}}, nil
+}
 
 // fakeService 是假服务。
 type fakeService struct {

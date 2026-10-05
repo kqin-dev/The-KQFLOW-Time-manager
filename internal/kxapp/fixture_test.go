@@ -1,0 +1,94 @@
+package kxapp
+
+import (
+	"testing"
+	"time"
+
+	"github.com/kqin-dev/kxflow/plugin"
+
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/config"
+	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
+)
+
+// memSource 是内存版数据源。
+//
+// 它让宿主层可以**完全离线**测试：不建目录、不落盘、不依赖系统时间。
+// 同时它是 Source 接口的第二个实现，这本身就证明了抽象是成立的
+// （只有一个实现的接口通常只是把结构体拆成两半）。
+type memSource struct {
+	cfg   *config.Config
+	now   time.Time
+	data  *model.DayData
+	goals []model.Goal
+
+	saves      int
+	goalsSaved int
+	saveErr    error
+}
+
+func newMemSource(t *testing.T, now time.Time) *memSource {
+	t.Helper()
+	cfg := config.Default()
+	// 日界线 04:00：与 v2.1.0 的默认一致，也让"20:00 属于哪个逻辑日"
+	// 这件事依赖真实实现（而不是碰巧相同）。
+	cfg.DayCutoff = "04:00"
+	s := &memSource{cfg: cfg, now: now}
+	s.data = model.NewDayData(logicalDay(now, cfg), now)
+	return s
+}
+
+func (m *memSource) Now() time.Time         { return m.now }
+func (m *memSource) Config() *config.Config { return m.cfg }
+func (m *memSource) Day() *model.DayData    { return m.data }
+func (m *memSource) Goals() []model.Goal    { return m.goals }
+
+func (m *memSource) SetGoals(goals []model.Goal) { m.goals = goals }
+
+func (m *memSource) Save() error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	m.saves++
+	return nil
+}
+
+func (m *memSource) SaveGoals() error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	m.goalsSaved++
+	return nil
+}
+
+func (m *memSource) Reload() error { return nil }
+
+// addTodo 往当天的列表里加一条待办。
+func (m *memSource) addTodo(title string, kind model.Kind) *model.Todo {
+	t := model.NewTodo(title, kind, m.data.Day, m.now)
+	if kind == model.KindFixed {
+		m.data.Fixed = append(m.data.Fixed, t)
+	} else {
+		m.data.Floating = append(m.data.Floating, t)
+	}
+	return t
+}
+
+// addGoal 加一个活跃目标。
+func (m *memSource) addGoal(title string) *model.Goal {
+	g := model.NewGoal(title, m.now)
+	m.goals = append(m.goals, *g)
+	return &m.goals[len(m.goals)-1]
+}
+
+// testNow 是一个固定的测试时刻（避开日界线边界）。
+func testNow() time.Time {
+	return time.Date(2026, 10, 3, 20, 0, 0, 0, time.Local)
+}
+
+// buildEngine 装载全部包并返回引擎模型。
+func buildEngine(t *testing.T, src Source) (*plugin.LoadReport, *Services) {
+	t.Helper()
+	l := NewLoader(src, src.Config())
+	_, services, rep := l.Build()
+	return rep, services
+}
