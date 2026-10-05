@@ -20,6 +20,8 @@ type memSource struct {
 	now   time.Time
 	data  *model.DayData
 	goals []model.Goal
+	// extraDays 非空时由 RecentDays 返回它（用来构造"多天历史"）。
+	extraDays []*model.DayData
 
 	saves       int
 	goalsSaved  int
@@ -75,6 +77,24 @@ func (m *memSource) SaveConfig() error {
 }
 
 func (m *memSource) Reload() error { return nil }
+
+// RecentDays 返回内存里的日数据，供历史页测试使用。
+//
+// 多天逻辑由 collectHistory 负责，这里只要能提供"若干天"就足以验证聚合口径；
+// 真机上的多天数据走 storeSource（转发 store.RecentDays）。
+func (m *memSource) RecentDays(limit int) ([]*model.DayData, error) {
+	if m.extraDays != nil {
+		out := m.extraDays
+		if limit > 0 && len(out) > limit {
+			out = out[len(out)-limit:]
+		}
+		return out, nil
+	}
+	if m.data == nil || limit <= 0 {
+		return nil, nil
+	}
+	return []*model.DayData{m.data}, nil
+}
 
 // addTodo 往当天的列表里加一条待办。
 func (m *memSource) addTodo(title string, kind model.Kind) *model.Todo {

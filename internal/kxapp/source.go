@@ -34,6 +34,15 @@ type Source interface {
 	Day() *model.DayData
 	// Goals 返回活跃的长期目标（goals.json 里的）。
 	Goals() []model.Goal
+	// RecentDays 返回最近若干天的日数据（最近的在最后），供历史页统计。
+	//
+	// 返回 []*model.DayData 而不是接口自己的类型：历史页要算的东西
+	// （完成数、专注时长、最投入的条目）都在 DayData 上，重新包一层
+	// 只会多一套需要同步的字段。
+	//
+	// 缺数据的日期会被跳过（不是每天都有记录），因此返回的条数
+	// 可能少于请求的天数——调用方不要假设它是等长的。
+	RecentDays(limit int) ([]*model.DayData, error)
 	// Save 把当前日数据写回存储。
 	Save() error
 	// SaveGoals 把活跃目标写回存储。
@@ -108,6 +117,27 @@ func (s *storeSource) Reload() error {
 	s.goals = goals
 	s.goalsDirty = false
 	return nil
+}
+
+// RecentDays 返回最近若干天的日数据。
+//
+// 它直接转发 store.RecentDays —— 历史页要的正是"按天列出来的原始数据"，
+// 在这里重新聚合只会让"什么算一天"出现第二处实现（日界线已经在别处定义过）。
+func (s *storeSource) RecentDays(limit int) ([]*model.DayData, error) {
+	days, err := s.st.RecentDays(limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*model.DayData, 0, len(days))
+	for _, day := range days {
+		data, err := s.st.Day(day)
+		if err != nil || data == nil {
+			// 某一天读不出来不该让整个历史页失败：跳过它。
+			continue
+		}
+		out = append(out, data)
+	}
+	return out, nil
 }
 
 func (s *storeSource) Save() error {
