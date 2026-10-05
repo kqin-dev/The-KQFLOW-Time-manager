@@ -384,6 +384,12 @@ const (
 	ActionToast
 	// ActionClosePack 请求卸载自己所在的包（由用户确认后由内核执行）。
 	ActionClosePack
+	// ActionQuit 请求退出整个程序。
+	//
+	// 与 ctrl+c 的区别：ctrl+c 是"立刻走"（终端级中断，不给任何机会），
+	// ActionQuit 是"经过确认、可以体面收尾"的退出（保存、打印小结）。
+	// 插件一般不该直接返回它——退出确认由引擎负责（见 kxflow.openQuitConfirm）。
+	ActionQuit
 )
 
 // Action 是插件返回的意图。
@@ -394,6 +400,9 @@ type Action struct {
 
 // None 是"什么都不做"的便捷构造函数。
 func None() Action { return Action{Kind: ActionNone} }
+
+// Quit 构造一个"退出程序"意图。
+func Quit() Action { return Action{Kind: ActionQuit} }
 
 // Persist 构造一个持久化意图。
 func Persist(pluginID, dataKind string, payload any) Action {

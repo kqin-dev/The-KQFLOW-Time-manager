@@ -147,10 +147,17 @@ func run() error {
 			// 因此验证的是真流程，而不是"直接改内部状态"这种假验证。
 			for _, k := range strings.Fields(*keys) {
 				fmt.Printf("=== 按键 %q ===\n", k)
-				m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: k, Runes: []rune(k)})
+				quit := m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: k, Runes: []rune(k)})
 				fmt.Println(m.View())
 				fmt.Fprintf(os.Stderr, "    [状态] 焦点=%v 栈深=%d 选中=%q\n",
 					m.Focus(), m.Stage().Depth(), m.Selection().Title)
+				// 退出请求必须能观察到：早期这个脚本**丢掉了 Dispatch 的
+				// 返回值**，于是"按 q 没反应"这种缺陷在离屏验证里看不出来
+				//（而它正是这么藏了很久的）。现在它会被明确打印出来。
+				if quit {
+					fmt.Printf("=== 请求退出（宿主应当收尾并结束）===\n")
+					break
+				}
 			}
 			return nil
 		}

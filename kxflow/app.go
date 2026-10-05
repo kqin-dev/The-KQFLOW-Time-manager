@@ -73,7 +73,11 @@ type Model struct {
 
 	toast     string
 	toastKind toastKind
-	toastTill time.Time
+	// quitPending 记录"退出确认层已经推出"，防止连按 q 叠出好几层。
+	quitPending bool
+	// quitRequested 记录"某处请求了退出"，由 Dispatch 读走并返回。
+	quitRequested bool
+	toastTill     time.Time
 
 	// report 是装载报告，可供宿主展示（"为什么我的 DDL 没出现"）。
 	report plugin.LoadReport
@@ -342,8 +346,13 @@ func (m *Model) Tick(now time.Time) {
 		StageDepth: m.stage.Depth(),
 	}
 	ev := plugin.Event{Kind: plugin.EventTick}
-	// 借调中的视图也算一份：它可能有自己的时间相关逻辑。
-	if top := m.stage.Top(); top != nil && m.stage.Borrowing() {
+	// **舞台顶层的视图**也算一份，不管它是借调来的还是常驻看板。
+	//
+	// ⚠️ 早期这里加了 `m.stage.Borrowing()` 的条件，于是"没有借调时"
+	// 看板（作为 stage top）永远收不到 Tick——字条因此不轮换。
+	// 而 Tick 的语义本来就是"把时间推进告诉当前在顶部的那一层"，
+	// 加不加借调条件跟它没关系。测试 TestQuotesRotateOnTick 钉住了这一点。
+	if top := m.stage.Top(); top != nil {
 		if act, close := top.Update(ctx, ev); close {
 			if origin, ok := m.stage.Pop(); ok {
 				m.focusBack(origin)
@@ -705,6 +714,75 @@ func (m *Model) ApplyViewConfig(vc plugin.ViewConfig) {
 	m.applyFocusDefaults()
 }
 
+// openQuitConfirm 推出"确定退出吗"的确认层。
+//
+// 默认选项是**取消**（光标停在第一项）：退出确认的目的是拦住误按，
+// 而不是让用户多按一次回车。
+func (m *Model) openQuitConfirm() {
+	if m.quitPending {
+		return
+	}
+	m.quitPending = true
+	choices := []string{"取消，继续使用", "退出 KQFLOW"}
+	cursor := 0
+	view := &plugin.ViewFunc{
+		ViewName:    "确认退出",
+		FocusLockFn: func() bool { return true },
+		HintFn: func(plugin.RenderCtx) []plugin.KeyHint {
+			return []plugin.KeyHint{
+				{Key: "j/k", Desc: "选择"},
+				{Key: "enter", Desc: "确认"},
+				{Key: "esc", Desc: "取消"},
+			}
+		},
+		RenderFn: func(ctx plugin.RenderCtx) {
+			// 只画单行、超宽就截断：确认框不需要折行逻辑，
+			// 而且它在极小窗口下也必须能画出来（否则用户会卡在
+			// 一个看不见的确认层里——那比不能退出更糟）。
+			line := func(y int, s string, style canvas.StyleID) {
+				if y < ctx.Rect.Y || y >= ctx.Rect.Y1() {
+					return
+				}
+				m.canvas.Text(ctx.Rect.X, y, canvas.Truncate(s, ctx.Rect.W), style)
+			}
+			y := ctx.Rect.Y
+			line(y, "确定要退出 KQFLOW 吗？", tile.StyleTitle)
+			y += 2
+			for i, c := range choices {
+				mark := "  "
+				style := tile.StyleMuted
+				if i == cursor {
+					mark, style = "▸ ", tile.StyleTitleFocused
+				}
+				line(y, mark+c, style)
+				y++
+			}
+			line(y+1, "未保存的改动会随退出丢失", tile.StyleMuted)
+		},
+		UpdateFn: func(ec plugin.EventCtx, ev plugin.Event) (plugin.Action, bool) {
+			switch ev.Key {
+			case "esc":
+				return plugin.None(), true
+			case "j", "down":
+				cursor = (cursor + 1) % len(choices)
+				return plugin.None(), false
+			case "k", "up":
+				cursor = (cursor - 1 + len(choices)) % len(choices)
+				return plugin.None(), false
+			case "enter", " ":
+				if cursor == 0 {
+					return plugin.None(), true
+				}
+				return plugin.Quit(), true
+			}
+			return plugin.None(), false
+		},
+	}
+	// origin 记下进来之前的焦点，取消后能回到原处。
+	m.stage.Push(view, plugin.Origin{})
+	m.focus = geometry.AnchorStage
+}
+
 // CanvasClean 报告最近一帧没有越界、没有覆盖。
 //
 // 供宿主在自检与开发期断言使用（测试里尤其有用：它让"画坏了"这件事
@@ -835,6 +913,18 @@ func (m *Model) focusTargets() []geometry.Anchor {
 //
 // 返回 requestQuit 表示宿主应当退出。
 func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
+	// 每轮开始先清掉上一轮的退出请求标记。
+	//
+	// 它必须在这里清（而不是在读取处）：万一某条分支提前 return，
+	// 标记会留到下一次调用，于是"上一轮的退出"在下一轮突然生效——
+	// 这种延迟触发的行为极难排查。
+	m.quitRequested = false
+	defer func() {
+		if m.quitRequested {
+			requestQuit = true
+		}
+	}()
+
 	ctx := plugin.EventCtx{
 		Now:        m.svc.Clock(),
 		Selection:  m.selection,
@@ -851,10 +941,42 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 	// 事务就退化成"一个恰好画在中栏的东西"，用户再也回不来。
 	locked := plugin.IsFocusLocked(m.stage.Top())
 
+	// 退出确认层自己处理按键（它需要收 q，而不是再叠一层）。
+	if m.quitPending {
+		if top := m.stage.Top(); top != nil {
+			act, close := top.Update(ctx, ev)
+			m.runAction(act)
+			if close {
+				m.stage.Pop()
+				m.quitPending = false
+				if !m.quitRequested {
+					m.focusBack(plugin.Origin{})
+				}
+			}
+			return m.quitRequested
+		}
+		// 层不见了（不该发生）：把标记清掉，免得谁也退不出去。
+		m.quitPending = false
+	}
+
 	// 全局按键：先处理"谁能拿到焦点"这类与具体磁贴无关的动作。
 	switch ev.Key {
 	case "ctrl+c":
 		return true
+	case "q":
+		// q 不直接退出，而是**先问一句**。
+		//
+		// 与 2.1.0 对齐（它的 askQuit 也是"取消"在第一位、默认选中它）。
+		// 理由不只是"怕误触"：本程序的数据都在内存里改、按需落盘，
+		// 而 q 就在下栏提示里写着，误按一次就丢一屏状态（例如正写着的
+		// 随手记、正跑着的计时）。让默认选项是"继续使用"，
+		// 才能让随手按 q 的人什么都不丢。
+		//
+		// ⚠️ 这条以前是**完全缺失**的：下栏一直显示"q:退出"，
+		// 但引擎压根没有处理 q 的分支——按了没反应。功能没做出来
+		// 比做错了更隐蔽，因为没有任何报错。
+		m.openQuitConfirm()
+		return false
 	case "tab":
 		if locked {
 			m.Toast("请先处理当前操作（esc 取消）")
@@ -1105,6 +1227,14 @@ func (m *Model) runAction(a plugin.Action) {
 		if s, ok := plugin.AsToast(a); ok {
 			m.Toast(s)
 		}
+	case plugin.ActionQuit:
+		// 记下来，由 Dispatch 统一返回。
+		//
+		// 为什么不当场返回：runAction 没有返回值，而"是否退出"必须
+		// 沿着 Dispatch → 宿主 这条唯一的路走上去（宿主才知道怎么收尾：
+		// 打印小结、恢复终端）。中间加一条隐蔽的旁路，就等于
+		// "退出"有两条路径了——而它们迟早会不一致。
+		m.quitRequested = true
 	}
 }
 

@@ -91,6 +91,96 @@ type kernel struct {
 	// 看板每一帧都去问它，因此选中条目后联动选项会**立刻出现**在
 	// 看板列表里——这是"功能可被发现"的关键一环。
 	options func() []plugin.OptionBindingView
+
+	// quoteIdx 是当前显示的字条下标（见 Quotes）。
+	// quoteAt 是**当前这条字条开始显示的时刻**（不是"上次 Tick 的时刻"）。
+	quoteIdx int
+	quoteAt  time.Time
+}
+
+// QuoteEvery 是看板字条的轮换间隔（与 2.1.0 的 quoteEvery 一致）。
+const QuoteEvery = 12 * time.Second
+
+// Quotes 是看板中间滚动展示的句子（照 2.1.0 的 state.go 原样搬过来）。
+//
+// 它们不是功能，但是**产品气质**的一部分：2.1.0 的看板正中一直有句话，
+// 引擎版把它漏了，看板就显得空。配置里设了自定义字条时用用户的那份。
+var Quotes = []string{
+	"时机成熟时，一切都会水到渠成。",
+	"把今天过好，就是对未来最好的投资。",
+	"专注不是做更多，而是少做一点别的。",
+	"不必完美地开始，只需开始。",
+	"你不需要更多时间，你需要更少的干扰。",
+	"每一次开始计时，都是一次对目标的投票。",
+	"拖延的代价，是别人替你过完这一生。",
+	"慢慢来，但别停。",
+	"今天的一小步，抵得过明天的一大步。",
+	"记录本身就是觉察，觉察本身就是改变。",
+	"完成胜过完美。",
+	"时间不会等人，但它会奖励尊重它的人。",
+	"你专注的地方，就是你人生生长的地方。",
+	"先做最重要的那件事，其余自会排队。",
+}
+
+// CurrentQuote 返回当前要展示的字条（自定义优先，与 2.1.0 同口径）。
+func (k *kernel) CurrentQuote() string {
+	list := k.quoteList()
+	if len(list) == 0 {
+		return ""
+	}
+	if k.quoteIdx < 0 || k.quoteIdx >= len(list) {
+		k.quoteIdx = 0
+	}
+	return list[k.quoteIdx]
+}
+
+// quoteList 返回当前生效的字条列表。
+func (k *kernel) quoteList() []string {
+	if cfg := k.src.Config(); cfg != nil && len(cfg.Quotes) > 0 {
+		out := make([]string, 0, len(cfg.Quotes))
+		for _, q := range cfg.Quotes {
+			if q = DisplayTitle(q); q != "" {
+				out = append(out, q)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return Quotes
+}
+
+// NextQuote 轮换到下一条字条。
+//
+// 顺序轮换（不是随机）：2.1.0 用随机并刻意避开重复，但在"每 12 秒换一次"
+// 的频率下，顺序轮换更可预期——用户能感觉到"它在走"，而不是"它有时重复"。
+func (k *kernel) NextQuote() {
+	n := len(k.quoteList())
+	if n <= 1 {
+		return
+	}
+	k.quoteIdx = (k.quoteIdx + 1) % n
+}
+
+// maybeRotateQuote 按"这条字条已经显示了多久"决定要不要换。
+//
+// ⚠️ 判据必须从**当前字条开始显示的时刻**算起，不能在每次 Tick 时
+// 都刷新基准时刻。我第一版就是每次 Tick 都把基准设成 now，于是
+// "每 11 秒 Tick 一次"永远攒不满 12 秒，字条再也不换——而且不换
+// 没有任何报错，只是静静地卡在第一句。测试（TestQuotesRotateOnTick）
+// 正是为了钉住这个场景：不规则的 Tick 间隔也必须能按时轮换。
+func (k *kernel) maybeRotateQuote(now time.Time) {
+	if k.quoteAt.IsZero() {
+		k.quoteAt = now
+		return
+	}
+	// 用 for 而不是 if：如果程序被挂起了很久（比如笔记本合盖），
+	// 醒来后不该只前进一条——那会让用户看到"刚打开还停在老句子"。
+	// 按经过的整倍数前进，视觉上等价于"它一直在走"。
+	for now.Sub(k.quoteAt) >= QuoteEvery && !k.quoteAt.IsZero() {
+		k.quoteAt = k.quoteAt.Add(QuoteEvery)
+		k.NextQuote()
+	}
 }
 
 func (k *kernel) Title() string { return "内核" }
@@ -109,6 +199,16 @@ func (k *kernel) SetOptionSource(f func() []plugin.OptionBindingView) { k.option
 func (k *kernel) Dashboard() plugin.View {
 	return &plugin.ViewFunc{
 		ViewName: "看板",
+		// Update 处理 Tick：字条按时间轮换。
+		//
+		// 引擎的 Tick 会走借调中的视图（stage top），而看板正是
+		// "没有借调时"的 stage top，因此这条路走得通。
+		UpdateFn: func(ec plugin.EventCtx, ev plugin.Event) (plugin.Action, bool) {
+			if ev.Kind == plugin.EventTick {
+				k.maybeRotateQuote(ec.Now)
+			}
+			return plugin.None(), false
+		},
 		RenderFn: func(ctx plugin.RenderCtx) {
 			inner := ctx.Rect
 			if inner.H < 1 || inner.W < 8 {
@@ -135,6 +235,20 @@ func (k *kernel) Dashboard() plugin.View {
 				y = putLine(ctx, y, inner, centerLine(line, inner.W), tile.StyleStatus)
 			}
 			y++
+
+			// 字条：看板正中那句话（2.1.0 一直有，引擎版补上）。
+			//
+			// 折行而不是截断：字条是给人读的，半句话比不显示更糟。
+			if q := k.CurrentQuote(); q != "" {
+				for _, line := range canvas.Wrap(q, inner.W-2) {
+					if y >= inner.Y1() {
+						break
+					}
+					ctx.Canvas.Text(inner.X, y, centerLine(line, inner.W), tile.StyleAccent)
+					y++
+				}
+				y++
+			}
 
 			// **可用选项**：这是本视图最重要的部分。
 			y = k.drawOptions(ctx, y, inner)
