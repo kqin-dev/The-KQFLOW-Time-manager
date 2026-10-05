@@ -44,6 +44,10 @@ func (s *Services) Clock() time.Time {
 //
 // 引擎不解释 payload，只负责把它交给这里；由宿主决定该调哪个保存方法。
 // 这样"新加一种可持久化的东西"不需要改引擎。
+//
+// 目前有两类：日数据（"day"）与配置（"config"）。
+// **分开存**：配置是偏好、日数据是记录，混在一起会让"改个昵称"
+// 也触发一次日数据备份（v2.1.0 的备份目录里就有大量这种无意义副本）。
 func (s *Services) Persist(req svc.PersistRequest) error {
 	if s.SaveErr != nil {
 		return s.SaveErr
@@ -51,7 +55,15 @@ func (s *Services) Persist(req svc.PersistRequest) error {
 	if s.src == nil {
 		return nil
 	}
-	// 目标列表与日数据是两个文件，因此两个都存一次。
+	switch req.Kind {
+	case "config":
+		if err := s.src.SaveConfig(); err != nil {
+			return err
+		}
+		s.Saves++
+		return nil
+	}
+	// 默认按日数据处理：目标列表与日数据是两个文件，因此两个都存一次。
 	// 先存日数据再存目标：完成一个 GOAL 会同时改两者，
 	// 万一中途失败，留下的是"日数据已更新、目标列表没跟上"，
 	// 而不是反过来——前者在界面上表现为目标还在，用户重试即可。

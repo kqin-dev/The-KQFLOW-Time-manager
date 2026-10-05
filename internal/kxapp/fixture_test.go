@@ -21,9 +21,10 @@ type memSource struct {
 	data  *model.DayData
 	goals []model.Goal
 
-	saves      int
-	goalsSaved int
-	saveErr    error
+	saves       int
+	goalsSaved  int
+	configSaved int
+	saveErr     error
 }
 
 func newMemSource(t *testing.T, now time.Time) *memSource {
@@ -57,6 +58,19 @@ func (m *memSource) SaveGoals() error {
 		return m.saveErr
 	}
 	m.goalsSaved++
+	return nil
+}
+
+// SaveConfig 记录配置写盘次数。
+//
+// 内存实现也要支持它——这正是"Source 是接口"的价值：
+// 宿主层可以完全离线地被测试，而接口一旦加了方法，
+// 所有实现都会在编译期被逼着补上（不会漏）。
+func (m *memSource) SaveConfig() error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	m.configSaved++
 	return nil
 }
 

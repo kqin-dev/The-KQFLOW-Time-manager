@@ -215,12 +215,21 @@ func TestSelectingTodoRevealsContextOptions(t *testing.T) {
 }
 
 // openMenuOption 按 l 打开操作菜单，用方向键把光标移到**标签包含 want**
-// 的那一项，回车进入它的界面；返回是否找到了这一项。
+// 的那一项，回车进入它的界面。
 //
-// 抽成 helper 是因为"按 label 找选项"在多个用例里都要做，
-// 而菜单的交互（l → j… → enter）是**用户真实的按键路径**——
-// 测试照着走一遍，就等于验证了这条路径本身。
-func openMenuOption(t *testing.T, m *kxflow.Model, want string) bool {
+// 返回本次操作**压在栈上的层数**（菜单 1 层 + 打开的界面 1 层 = 2），
+// 调用方据此计算"还差几次 esc 才能回到看板"。
+//
+// ⚠️ 这个返回值的必要性是踩出来的：helper 会留下菜单那一层，
+// 而调用方往往只想着"打开的那个界面"。忘了算菜单层，
+// 测试里"第二次 esc 应当关掉"就会失败——而失败原因是测试自己数错了栈。
+//
+// 设计上这也回答了一个问题：**用 l 从菜单进功能，比直接按键多一层**。
+// 这是"把菜单做成事务"的代价，换来的是按键数量不随功能增长。
+// 因此更要让这一层是显式的、可数的。
+//
+// 返回 0 表示没找到 `want` 这一项（此时什么都没做）。
+func openMenuOption(t *testing.T, m *kxflow.Model, want string) int {
 	t.Helper()
 	opts := m.Options()
 	target := -1
@@ -231,7 +240,7 @@ func openMenuOption(t *testing.T, m *kxflow.Model, want string) bool {
 		}
 	}
 	if target < 0 {
-		return false
+		return 0
 	}
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "l"})
 	if !m.Stage().Borrowing() {
@@ -241,7 +250,14 @@ func openMenuOption(t *testing.T, m *kxflow.Model, want string) bool {
 		m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
 	}
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "enter"})
-	return true
+	// 菜单 1 层 + 打开后的界面 1 层。
+	return 2
+}
+
+// openMenuOptionOK 是 openMenuOption 的布尔包装（多数用例只关心找没找到）。
+func openMenuOptionOK(t *testing.T, m *kxflow.Model, want string) bool {
+	t.Helper()
+	return openMenuOption(t, m, want) > 0
 }
 
 // TestMenuOpensContextOption 验证 l 真的能打开联动选项的界面。
@@ -328,8 +344,7 @@ func TestDDLWizardEditsRealData(t *testing.T) {
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
 
 	// 打开菜单，把光标移到"设截止时间"，回车进入向导。
-	opened := openMenuOption(t, m, "设截止时间")
-	if !opened {
+	if !openMenuOptionOK(t, m, "设截止时间") {
 		t.Fatal("应有「设截止时间」选项")
 	}
 	if !m.Stage().Borrowing() {
@@ -687,7 +702,7 @@ func TestStageIsInFocusRingWhileBorrowing(t *testing.T) {
 
 	// 借调之后（帮助页），tab 应当能转到舞台。
 	// 没有选中条目时，菜单里只有通用选项；"帮助"排在第一项。
-	if !openMenuOption(t, m, "帮助") {
+	if !openMenuOptionOK(t, m, "帮助") {
 		t.Fatalf("菜单里应有「帮助」，实际 %v", m.Options())
 	}
 	if !m.Stage().Borrowing() {

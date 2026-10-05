@@ -38,6 +38,12 @@ type Source interface {
 	Save() error
 	// SaveGoals 把活跃目标写回存储。
 	SaveGoals() error
+	// SaveConfig 把配置写回存储。
+	//
+	// 设置页改的是"偏好"，与日数据是**两个文件**：混在一起会让
+	// "改个昵称"也触发一次日数据备份（v2.1.0 的备份目录里就有大量
+	// 这种无意义副本）。因此单独一个入口。
+	SaveConfig() error
 	// Reload 重新按当前时间计算逻辑日并载入数据。
 	//
 	// 跨日界线时需要它：界面停留过夜后，"今天"要变成新的一天。
@@ -48,6 +54,7 @@ type Source interface {
 type storeSource struct {
 	st    *store.Store
 	cfg   *config.Config
+	paths *config.Paths
 	clock func() time.Time
 
 	day   string
@@ -63,8 +70,8 @@ type storeSource struct {
 }
 
 // NewStoreSource 用真实存储构造数据源，并立刻载入当天数据。
-func NewStoreSource(st *store.Store, cfg *config.Config, now func() time.Time) (Source, error) {
-	s := &storeSource{st: st, cfg: cfg, clock: now}
+func NewStoreSource(st *store.Store, paths *config.Paths, cfg *config.Config, now func() time.Time) (Source, error) {
+	s := &storeSource{st: st, cfg: cfg, paths: paths, clock: now}
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
@@ -123,4 +130,19 @@ func (s *storeSource) SaveGoals() error {
 	}
 	s.goalsDirty = false
 	return nil
+}
+
+// SaveConfig 把配置写回存储。
+//
+// 顺带重算一次逻辑日：日界线本身是个可改的设置，改完"今天是哪一天"
+// 可能立刻变了（例如从 04:00 改成 23:00）。不重算的话界面会停在
+// 旧的逻辑日上，而用户刚改的正是决定它的那个值。
+func (s *storeSource) SaveConfig() error {
+	if s.paths == nil {
+		return nil
+	}
+	if err := config.Save(s.paths, s.cfg); err != nil {
+		return err
+	}
+	return s.Reload()
 }

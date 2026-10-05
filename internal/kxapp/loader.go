@@ -45,6 +45,7 @@ func (l *Loader) Packs() []plugin.Pack {
 		NewTimerPack(l.src, l.state),
 		NewStatsPack(l.src, l.state),
 		NewNotePack(l.src, l.state),
+		NewSettingPack(l.src, l.state),
 	}
 }
 

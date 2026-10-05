@@ -117,6 +117,16 @@ type Config struct {
 
 	// ShowNote 决定是否在看板上展示当日随手记的前几行。
 	ShowNote bool `json:"show_note,omitempty"`
+	// Engine 选择渲染引擎（v3.0.0 的迁移开关，见 docs/kxflow-design.md §8）。
+	//
+	//	""/"legacy" → v2.1.0 的界面（internal/ui），**默认**
+	//	"kxflow"    → KXFLOW 引擎（internal/kxapp）
+	//
+	// 为什么默认仍是 legacy：迁移期间的纪律是**新老并行、老路径不许坏**。
+	// 引擎要切默认，前提是功能上能完全替代 2.1.0——
+	// 在那之前让新引擎当默认，等于拿用户的日常使用做测试。
+	// 空串按 legacy 处理，因此老配置文件（没有这个字段）行为完全不变。
+	Engine string `json:"engine,omitempty"`
 	// Timezone 为空时使用系统本地时区。
 	Timezone string `json:"timezone,omitempty"`
 	// Nickname 会出现在看板问候语中。
@@ -493,6 +503,24 @@ type Paths struct {
 	Root string
 	// ConfigFile 是配置文件路径。
 	ConfigFile string
+}
+
+// EngineKXFLOW 是"使用 KXFLOW 引擎"的配置值。
+const EngineKXFLOW = "kxflow"
+
+// EngineLegacy 是"使用 v2.1.0 界面"的配置值（默认）。
+const EngineLegacy = "legacy"
+
+// UseKXFLOW 报告是否应当使用 KXFLOW 引擎。
+//
+// 判据写成"只有明确写了 kxflow 才用新引擎"：未知值一律按老的走。
+// 这样拼错（"kxflwo"）不会让用户掉进一个他没打算用的界面里，
+// 而是继续用能用的那个——保守方向永远选"用户今天能干活"。
+func (c *Config) UseKXFLOW() bool {
+	if c == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(c.Engine), EngineKXFLOW)
 }
 
 // Dir 返回数据根目录：优先 KQFLOW_HOME 环境变量，其次配置里的 DataDir，

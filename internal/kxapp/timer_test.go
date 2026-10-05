@@ -165,7 +165,7 @@ func TestTimerEndToEndThroughEngine(t *testing.T) {
 	}
 
 	// 打开菜单里的"开始专注"（它是看板选项，因此不需要先选中条目）。
-	if !openMenuOption(t, m, "开始专注") {
+	if !openMenuOptionOK(t, m, "开始专注") {
 		t.Fatalf("选项里应有「开始专注」，实际 %v", m.Options())
 	}
 	if !strings.Contains(m.View(), "选择时长") {
@@ -221,7 +221,7 @@ func TestTimerStopRecordsSession(t *testing.T) {
 	// 过 12 分钟，然后从菜单进入计时界面并结束。
 	setNow(src, testNow().Add(12*time.Minute))
 
-	if !openMenuOption(t, m, "计时中") {
+	if !openMenuOptionOK(t, m, "计时中") {
 		t.Fatalf("计时中时选项应变成「计时中…」，实际 %v", m.Options())
 	}
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "s"}) // 结束并记录

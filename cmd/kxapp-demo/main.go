@@ -109,7 +109,7 @@ func run() error {
 	}
 
 	now := func() time.Time { return clock.NewWith(time.Now, cfg.Location()).Now() }
-	src, err := kxapp.NewStoreSource(st, cfg, now)
+	src, err := kxapp.NewStoreSource(st, paths, cfg, now)
 	if err != nil {
 		return err
 	}

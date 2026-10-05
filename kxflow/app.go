@@ -542,6 +542,18 @@ func (m *Model) StageRect() geometry.Rect { return m.stageRect() }
 //	如果光标在无动作时不会触发什么东西，那么下栏的操作提示就需要
 //	跟着光标的操作提示改变，显然这种提示需要插件包提供。
 func (m *Model) refreshHints() {
+	m.footer.Hints = m.computeHints()
+}
+
+// computeHints 计算**当前**应有的按键提示。
+//
+// 顺序上从具体到通用：借调视图 → 焦点磁贴 → 引擎兜底（tab/q）。
+//
+// 它与 refreshHints 分开，是因为**查询与渲染必须同源**：
+// 曾经 Hints() 直接读 footer 里的缓存，而缓存只在 View() 时更新，
+// 于是"按了键之后立刻问提示"拿到的是上一帧的旧值——
+// 测试会看到提示不跟着变（那正是这个功能要保证的事）。
+func (m *Model) computeHints() []chrome.KeymapHint {
 	var hints []chrome.KeymapHint
 
 	if top := m.stage.Top(); top != nil && m.stage.Borrowing() {
@@ -560,18 +572,17 @@ func (m *Model) refreshHints() {
 	}
 
 	// 换栏位与退出在任何位置都有意义，因此永远附在末尾。
-	hints = append(hints,
+	return append(hints,
 		chrome.KeymapHint{Key: "tab", Desc: "换栏位"},
 		chrome.KeymapHint{Key: "q", Desc: "退出"},
 	)
-	m.footer.Hints = hints
 }
 
-// Hints 返回当前下栏的按键提示（供宿主与测试查询）。
+// Hints 返回**当前**下栏应有的按键提示（供宿主与测试查询）。
 //
-// 它是"光标悬停在哪儿、那里能按什么"的可读出口：测试据此断言
-// 提示确实跟着光标变，而不是一套写死的通用提示。
-func (m *Model) Hints() []chrome.KeymapHint { return m.footer.Hints }
+// 它每次现算，不读渲染缓存：缓存只在 View() 时更新，
+// 而"按了键之后立刻问提示"必须拿到新的（那正是这个功能要保证的事）。
+func (m *Model) Hints() []chrome.KeymapHint { return m.computeHints() }
 
 // CanvasClean 报告最近一帧没有越界、没有覆盖。
 //
@@ -817,7 +828,7 @@ func (m *Model) openSelectionOptions() bool {
 		origin.TileID = slot.PluginID
 		origin.Anchor = slot.Anchor
 	}
-	m.stage.Push(m.newOptionsMenu(opts), origin)
+	m.stage.Push(m.newOptionsMenu(opts, origin), origin)
 	m.focus = geometry.AnchorStage
 	return true
 }
@@ -826,7 +837,7 @@ func (m *Model) openSelectionOptions() bool {
 //
 // 它是一个**未决事务**：独占焦点（FocusLock），玩家必须选一项或按 esc 取消，
 // 期间 tab 无效。菜单自己按方向键选择、回车确认。
-func (m *Model) newOptionsMenu(opts []OptionBinding) plugin.View {
+func (m *Model) newOptionsMenu(opts []OptionBinding, menuOrigin plugin.Origin) plugin.View {
 	cursor := 0
 	var status string
 	return &plugin.ViewFunc{
@@ -894,7 +905,14 @@ func (m *Model) newOptionsMenu(opts []OptionBinding) plugin.View {
 				}
 				// 把真正的编辑界面推在菜单之上：esc 先从编辑界面退回菜单，
 				// 再 esc 才关闭事务。这样"填错了"不必重开菜单。
-				return plugin.Borrow(view), false
+				//
+				// 但 origin 要记**进入菜单之前**的那个磁贴，而不是"菜单"。
+				// 否则关闭整条事务时 focusBack 找不到目标，只能退回第一个磁贴——
+				// 表现为"从设置页出来焦点莫名跳到了左上角"。
+				return plugin.Action{
+					Kind:    plugin.ActionBorrow,
+					Payload: plugin.BorrowRequest{View: view, Origin: menuOrigin},
+				}, false
 			}
 			return plugin.None(), false
 		},
