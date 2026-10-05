@@ -77,6 +77,12 @@ type ViewFunc struct {
 	// 借调视图的按键集与看板完全不同（编辑器有 ctrl+s、菜单有 j/k+enter），
 	// 因此下栏必须问**当前这一层**，而不是继续显示看板的提示。
 	HintFn func(ctx RenderCtx) []KeyHint
+	// OwnsEscFn 为真时本视图自己处理 esc（见 ModalOwner / OwnsEsc）。
+	//
+	// 典型用途是**编辑器**：多行编辑里 esc 是"取消编辑"，
+	// 而"有未保存改动时"这个取消需要先问一句——
+	// 那就必须由编辑器自己拿主意，不能让引擎直接把它关掉。
+	OwnsEscFn func() bool
 }
 
 // KeyHints 实现 KeyHinter。
@@ -90,6 +96,11 @@ func (v *ViewFunc) KeyHints(ctx RenderCtx) []KeyHint {
 // FocusLock 实现 FocusLocker。
 func (v *ViewFunc) FocusLock() bool {
 	return v != nil && v.FocusLockFn != nil && v.FocusLockFn()
+}
+
+// OwnsEsc 实现 ModalOwner。
+func (v *ViewFunc) OwnsEsc() bool {
+	return v != nil && v.OwnsEscFn != nil && v.OwnsEscFn()
 }
 
 // Name 返回视图名。

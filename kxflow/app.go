@@ -1002,6 +1002,13 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 			plugin.OwnsEsc(slot.Component) {
 			break // 落到下面的磁贴分派去
 		}
+		// 借调视图也能占 esc（编辑器要自己决定"有未保存改动时怎么办"）。
+		// 同理必须在 pop 之前问。
+		if top := m.stage.Top(); m.stage.Borrowing() && top != nil {
+			if owner, ok := top.(plugin.ModalOwner); ok && owner.OwnsEsc() {
+				break // 落到下面的舞台分派去
+			}
+		}
 		// esc 的语义：先退出借调，退出不了才算"没处可去"。
 		if origin, ok := m.stage.Pop(); ok {
 			m.focusBack(origin)

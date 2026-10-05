@@ -24,7 +24,18 @@ const (
 const (
 	NotePackID = "kqflow.note"
 	NoteTileID = "kqflow.note.tile"
+	// NoteOptionID 是"编辑随手记"看板选项。
+	NoteOptionID = "kqflow.note.edit"
 )
+
+// notePack 是随手记整合包：一个预览磁贴 + 一个**编辑入口**。
+//
+// 编辑入口做成看板选项（见 note.go），因为随手记面板只占一小格，
+// 而编辑器要多行空间——这与"二级内容只占中栏"的约定一致。
+type notePack struct {
+	src   Source
+	state *HostState
+}
 
 // statsPack 是统计整合包：一个"连续 7 天"柱状图磁贴。
 //
@@ -169,15 +180,6 @@ func (t *statsTile) Update(plugin.EventCtx, plugin.Event) plugin.Action { return
 
 // ---------- 随手记 ----------
 
-// notePack 是随手记整合包：一个"今日随手记预览"磁贴。
-//
-// 说明：**编辑**随手记需要多行输入框，那是 M5 的交互类工作；
-// 这一版先做只读预览，把"包能读真实数据并渲染"补齐。
-type notePack struct {
-	src   Source
-	state *HostState
-}
-
 // NewNotePack 创建随手记包。
 func NewNotePack(src Source, st *HostState) plugin.Pack {
 	return &notePack{src: src, state: st}
@@ -193,30 +195,46 @@ func (p *notePack) Requires() []string      { return nil }
 func (p *notePack) Conflicts() []string     { return nil }
 
 func (p *notePack) Members() []plugin.Plugin {
-	return []plugin.Plugin{&tilePluginSpec{
-		mf: plugin.Manifest{
-			ID: NoteTileID, Name: "随手记", Kind: plugin.KindTile,
-			Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
-			// 中栏停靠区的另一个格子。停靠区最多 4 格（2×2），
-			// 目前有统计、计时、随手记三块，正好落在前三格。
-			Slots: plugin.SlotPreference{Anchor: geometry.AnchorCenterDockLeft, Priority: 10},
+	return []plugin.Plugin{
+		&tilePluginSpec{
+			mf: plugin.Manifest{
+				ID: NoteTileID, Name: "随手记", Kind: plugin.KindTile,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+				// 中栏停靠区的另一个格子。停靠区最多 4 格（2×2），
+				// 目前有统计、计时、随手记三块，正好落在前三格。
+				Slots: plugin.SlotPreference{Anchor: geometry.AnchorCenterDockLeft, Priority: 10},
+			},
+			newComp: func(s svc.Services) plugin.Component {
+				return &noteTile{src: p.src, svc: s}
+			},
 		},
-		newComp: func(s svc.Services) plugin.Component {
-			return &noteTile{src: p.src, svc: s}
+		// 编辑随手记是**看板选项**而不是磁贴里的键：随手记面板只占一小格，
+		// 而编辑器要多行空间（借调中栏）。这与"二级内容只占中栏"一致。
+		&boardOptionSpec{
+			mf: plugin.Manifest{
+				ID: NoteOptionID, Name: "随手记", Kind: plugin.KindBoardOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &noteOption{src: p.src, state: p.state},
 		},
-	}}
+	}
 }
 
 func (p *notePack) Assemble(s svc.Services) (plugin.Assembled, error) {
-	tiles := make([]plugin.Component, 0, 1)
+	a := &simpleAssembled{p: p}
 	for _, m := range p.Members() {
-		comp, err := m.New(s)
-		if err != nil {
-			return nil, err
+		switch spec := m.(type) {
+		case *tilePluginSpec:
+			comp, err := spec.New(s)
+			if err != nil {
+				return nil, err
+			}
+			a.tiles = append(a.tiles, comp)
+		case *boardOptionSpec:
+			a.board = append(a.board, spec.opt)
 		}
-		tiles = append(tiles, comp)
 	}
-	return &simpleAssembled{p: p, tiles: tiles}, nil
+	return a, nil
 }
 
 // noteTile 展示今日随手记的前几行。
