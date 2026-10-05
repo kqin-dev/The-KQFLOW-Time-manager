@@ -47,25 +47,23 @@ func run() error {
 
 	// 与 cmd/kqf 一样的装配顺序：先解析路径，再读配置，最后打开数据层。
 	// 顺序不能换：数据版本检查必须排在 Open 之前（Open 会建目录）。
-	cfg := config.Default()
+	//
+	// `-data-dir` 通过与 cmd/kqf 相同的 KQFLOW_HOME 通道生效，
+	// 而不是在这里另写一套路径逻辑——否则"演示程序看到的数据目录"
+	// 与"正式程序看到的"会是两套规则，排查问题时极易混淆。
 	if *dataDir != "" {
-		cfg.DataDir = *dataDir
-	}
-	paths, err := config.Resolve(cfg)
-	if err != nil {
-		return err
-	}
-	loaded, err := config.Load(paths)
-	if err != nil {
-		return err
-	}
-	if *dataDir != "" {
-		loaded.DataDir = *dataDir
-		if paths, err = config.Resolve(loaded); err != nil {
+		if err := os.Setenv("KQFLOW_HOME", *dataDir); err != nil {
 			return err
 		}
 	}
-	cfg = loaded
+	paths, err := config.Resolve(nil)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(paths)
+	if err != nil {
+		return err
+	}
 
 	if err := store.CheckDataVersion(paths.Root); err != nil {
 		return err

@@ -3,6 +3,7 @@ package kxapp
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kqin-dev/kxflow/canvas"
@@ -100,20 +101,48 @@ func (t *goalTile) Render(ctx plugin.RenderCtx) {
 			canvas.Truncate("（还没有目标）", ctx.Rect.W), tile.StyleMuted)
 		return
 	}
-	off := scrollOffset(cursor, len(goals), ctx.Rect.H)
-	for i := off; i < len(goals) && i < off+ctx.Rect.H; i++ {
-		y := ctx.Rect.Y + (i - off)
-		line := goalLine(goals[i], t.src)
-		if i == cursor && ctx.Focus {
-			ctx.Canvas.Text(ctx.Rect.X, y, "▸"+canvas.Truncate(line, ctx.Rect.W-1), tile.StyleTitleFocused)
-			continue
+	// 光标可见性按**显示行数**倒推（长目标会折行，按条目数算会算少一行）。
+	rowW := itemRowWidth(ctx.Rect)
+	start := 0
+	if rows := goalRowCounts(goals, t.src, rowW); len(rows) > 0 {
+		start = firstVisibleByRows(rows, cursor, ctx.Rect.H)
+	}
+	y := ctx.Rect.Y
+	for i := start; i < len(goals); i++ {
+		if y >= ctx.Rect.Y1() {
+			return
 		}
+		line := goalLine(goals[i], t.src)
 		style := tile.StyleMuted
-		if goals[i].Done {
+		prefix := strings.Repeat(" ", markerWidth)
+		if i == cursor && ctx.Focus {
+			prefix, style = "▸ ", tile.StyleTitleFocused
+		} else if goals[i].Done {
 			style = tile.StyleBorderDim
 		}
-		ctx.Canvas.Text(ctx.Rect.X, y, " "+canvas.Truncate(line, ctx.Rect.W-1), style)
+		y = drawWrappedInset(ctx, y, ctx.Rect, prefix, strings.Repeat(" ", listIndentWidth), line, style)
 	}
+}
+
+// goalRowCounts 返回每条目标折行后占用的显示行数。
+//
+// 与绘制用**同一个**折行函数（canvas.Wrap + 同一个可用宽度），
+// 因此两者不可能对"占几行"有分歧——这正是之前栽过的地方：
+// 滚动按一个宽度算、绘制按另一个宽度算，长条目就会算少一行。
+func goalRowCounts(goals []*model.Goal, src Source, rowWidth int) []int {
+	out := make([]int, len(goals))
+	for i, g := range goals {
+		if rowWidth < 1 {
+			out[i] = 1
+			continue
+		}
+		if n := len(canvas.Wrap(goalLine(g, src), rowWidth)); n > 0 {
+			out[i] = n
+			continue
+		}
+		out[i] = 1
+	}
+	return out
 }
 
 // goalLine 生成一条目标的显示文本。

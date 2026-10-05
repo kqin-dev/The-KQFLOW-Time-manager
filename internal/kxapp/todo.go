@@ -2,6 +2,7 @@ package kxapp
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/kqin-dev/kxflow/canvas"
 	"github.com/kqin-dev/kxflow/geometry"
@@ -139,22 +140,49 @@ func (t *todoTile) Render(ctx plugin.RenderCtx) {
 		return
 	}
 	// 滚动：光标必须始终可见，否则用户会以为"按了没反应"。
-	off := scrollOffset(cursor, len(items), ctx.Rect.H)
-	for i := off; i < len(items) && i < off+ctx.Rect.H; i++ {
-		y := ctx.Rect.Y + (i - off)
-		line := todoLine(items[i])
-		if i == cursor && ctx.Focus {
-			// 高亮只铺到文字宽度，不铺满整行——
-			// 铺满会让底色看起来"拖了一行半"（用户报过这个观感问题）。
-			ctx.Canvas.Text(ctx.Rect.X, y, "▸"+canvas.Truncate(line, ctx.Rect.W-1), tile.StyleTitleFocused)
-			continue
+	//
+	// 这里**按显示行数**倒推起点，而不是按条目数：一条长待办折行后占两行，
+	// 若还按条目数算，光标那一条就可能只露出半行，
+	// 或者末尾几条挤掉光标所在条（用户看不到自己选中的是谁）。
+	rows := make([]int, len(items))
+	rowW := itemRowWidth(ctx.Rect)
+	for i, it := range items {
+		rows[i] = itemRows(it, rowW)
+	}
+	start := firstVisibleByRows(rows, cursor, ctx.Rect.H)
+	y := ctx.Rect.Y
+	for i := start; i < len(items); i++ {
+		if y >= ctx.Rect.Y1() {
+			return
 		}
+		line := todoLine(items[i])
 		style := tile.StyleMuted
-		if items[i].Done {
+		prefix := strings.Repeat(" ", markerWidth)
+		if i == cursor && ctx.Focus {
+			prefix, style = "▸ ", tile.StyleTitleFocused
+		} else if items[i].Done {
 			style = tile.StyleBorderDim
 		}
-		ctx.Canvas.Text(ctx.Rect.X, y, " "+canvas.Truncate(line, ctx.Rect.W-1), style)
+		// 折行而不是截断：长标题在小磁贴里被砍一半最难读。
+		y = drawWrappedInset(ctx, y, ctx.Rect, prefix, strings.Repeat(" ", listIndentWidth), line, style)
 	}
+}
+
+// markerWidth 是"记号 + 一个空格"的显示宽度（滚动计算与绘制必须用同一个值）。
+const markerWidth = 2
+
+// itemRows 返回一条待办折行后占几行（rowW 已是正文可用宽度）。
+//
+// 它必须与绘制路径用**同一个**可用宽度与同一个折行函数，
+// 否则"占几行"的判定会与画出来的不一致（见 textAreaWidth 的说明）。
+func itemRows(t *model.Todo, rowW int) int {
+	if rowW < 1 {
+		return 1
+	}
+	if n := len(canvas.Wrap(todoLine(t), rowW)); n > 0 {
+		return n
+	}
+	return 1
 }
 
 // todoLine 生成一条待办的显示文本。
@@ -240,7 +268,7 @@ func (t *todoTile) selectCurrent() plugin.Action {
 	})
 }
 
-// scrollOffset 计算列表滚动偏移，保证光标可见。
+// scrollOffset 计算列表滚动偏移，保证光标可见（**按条目数**，用于单行列表）。
 func scrollOffset(cursor, n, height int) int {
 	if height <= 0 || n <= height {
 		return 0
@@ -256,6 +284,37 @@ func scrollOffset(cursor, n, height int) int {
 		off = 0
 	}
 	return off
+}
+
+// firstVisibleByRows 按"每条占几行"倒推出起始下标，保证 cursor 可见。
+//
+// 这是滚动计算与绘制之间**唯一**的共享判定：两侧都从同一组 rows 取信息，
+// 因此不会出现"按条目数滚动、按显示行绘制"的错位
+// （那种错位会让长条目算少一行，光标跑到可视区外）。
+func firstVisibleByRows(rows []int, cursor, height int) int {
+	if height <= 0 || len(rows) == 0 {
+		return 0
+	}
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	if cursor < 0 {
+		return 0
+	}
+	used := 0
+	start := cursor
+	for start > 0 {
+		need := rows[start-1]
+		if need < 1 {
+			need = 1
+		}
+		if used+need > height {
+			break
+		}
+		used += need
+		start--
+	}
+	return start
 }
 
 // tilePluginSpec 是一个"声明 + 构造函数"组成的磁贴插件。

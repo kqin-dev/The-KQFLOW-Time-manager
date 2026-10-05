@@ -25,6 +25,9 @@ func (fakeKernel) Update(plugin.EventCtx, plugin.Event) plugin.Action { return p
 func (fakeKernel) PowerBy() string                                    { return "Power by KXFLOW" }
 func (fakeKernel) BoardOptions() []plugin.BoardOption                 { return nil }
 
+// SetOptionSource 接受引擎注入的选项查询函数（本测试不关心内容）。
+func (fakeKernel) SetOptionSource(func() []plugin.OptionBindingView) {}
+
 func (fakeKernel) Dashboard() plugin.View {
 	return &plugin.ViewFunc{
 		ViewName: "看板",

@@ -294,20 +294,66 @@ func TestDockBehavior(t *testing.T) {
 	}
 }
 
-// TestDockSlotsSplitEvenly 验证停靠区的两个槽位也各占一半。
-func TestDockSlotsSplitEvenly(t *testing.T) {
-	c := DefaultConfig()
-	c.DockTiles = 2
-	sh := Layout(geometry.Size{W: 120, H: 40}, c)
-	a, b := sh.Center.Slot(0), sh.Center.Slot(1)
+// TestDockIsLowerHalfOfCenter 固化停靠区的规则（按用户实机反馈确定）。
+//
+//	0 个磁贴 → 不开停靠区，整个中栏都给看板
+//	1 个磁贴 → 占**下半中栏整条**
+//	2 个磁贴 → **左右各半**（下左 / 下右），而不是上下叠着
+//
+// 用户的反馈原话是「有 0 个磁贴那么全部都是中栏的看板，有 1 个磁贴那么
+// 半个中栏下都是磁贴，有 2 个磁贴就是中栏的下左和下右（而不是叠着放）」。
+func TestDockIsLowerHalfOfCenter(t *testing.T) {
+	base := DefaultConfig()
+
+	// 0 个磁贴：停靠区不可见，主控区独占中栏。
+	zero := Layout(geometry.Size{W: 120, H: 40}, base)
+	if zero.Center.DockVisible {
+		t.Error("没有停靠磁贴时不该开停靠区")
+	}
+	if zero.Center.Stage.H != zero.Center.Rect.H {
+		t.Errorf("没有停靠区时主控区应独占中栏：%d vs %d", zero.Center.Stage.H, zero.Center.Rect.H)
+	}
+
+	// 1 个磁贴：占下半中栏的整条。
+	one := base
+	one.DockTiles = 1
+	sh1 := Layout(geometry.Size{W: 120, H: 40}, one)
+	if !sh1.Center.DockVisible {
+		t.Fatal("有停靠磁贴时应开停靠区")
+	}
+	if sh1.Center.Dock.W != sh1.Center.Rect.W {
+		t.Errorf("单个停靠磁贴应占整条宽度：%d vs %d", sh1.Center.Dock.W, sh1.Center.Rect.W)
+	}
+	// 上下各半（奇数行时下半少一行，因为 want = H/2）。
+	if diff := sh1.Center.Stage.H - sh1.Center.Dock.H; diff > 1 || diff < 0 {
+		t.Errorf("停靠区应约占中栏一半：主控 %d 停靠 %d", sh1.Center.Stage.H, sh1.Center.Dock.H)
+	}
+	if sh1.Center.Stage.Y1() != sh1.Center.Dock.Y {
+		t.Errorf("主控区与停靠区应上下相接：%d vs %d", sh1.Center.Stage.Y1(), sh1.Center.Dock.Y)
+	}
+
+	// 2 个磁贴：左右各半，高度相同。
+	two := base
+	two.DockTiles = 2
+	sh2 := Layout(geometry.Size{W: 120, H: 40}, two)
+	a, b := sh2.Center.Slot(0), sh2.Center.Slot(1)
 	if a.Empty() || b.Empty() {
 		t.Fatalf("停靠区两个槽位都应有面积：%v %v", a, b)
 	}
-	if a.H+b.H != sh.Center.Dock.H {
-		t.Errorf("停靠槽高度和 %d 应等于停靠区高 %d", a.H+b.H, sh.Center.Dock.H)
+	if a.W+b.W != sh2.Center.Dock.W {
+		t.Errorf("停靠槽宽度和 %d 应等于停靠区宽 %d", a.W+b.W, sh2.Center.Dock.W)
 	}
-	if a.Y1() != b.Y {
-		t.Errorf("停靠槽应相接：%d vs %d", a.Y1(), b.Y)
+	if a.X1() != b.X {
+		t.Errorf("停靠槽应左右相接：%d vs %d", a.X1(), b.X)
+	}
+	if a.H != b.H || a.Y != b.Y {
+		t.Errorf("左右两个停靠槽应同高同起：%v 与 %v", a, b)
+	}
+	if diff := a.W - b.W; diff > 1 || diff < 0 {
+		t.Errorf("停靠槽宽度差应为 0 或 1，实际 %d（%d vs %d）", diff, a.W, b.W)
+	}
+	if a.Intersects(b) {
+		t.Errorf("停靠槽不该重叠：%v 与 %v", a, b)
 	}
 }
 

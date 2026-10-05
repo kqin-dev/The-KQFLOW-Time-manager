@@ -322,6 +322,198 @@ func TestMissingHostIsAWarningWithRealPacks(t *testing.T) {
 	}
 }
 
+// TestDashboardShowsContextOptions 是"选项可被发现"的验收测试。
+//
+// 这条来自实机反馈：用户选中了一个待办，但中栏**没有多出**任何东西——
+// 联动选项在机制上是出现了（OptionKeys 里有），可界面上没有任何地方
+// 告诉用户"现在按 1 能打标签"，于是功能等于不存在。
+//
+// 现在内核的看板会列出选项，因此这里直接断言**渲染输出里出现了选项文字**。
+func TestDashboardShowsContextOptions(t *testing.T) {
+	src := newMemSource(t, testNow())
+	todo := src.addTodo("拿快递", model.KindFloating)
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 34)
+
+	// 未选中时：看板应给出"选中后会出现操作"的说明，而不是留白。
+	before := m.View()
+	if !strings.Contains(before, "选中") {
+		t.Errorf("未选中时看板应提示选中后会出现操作，实际输出：\n%s", before)
+	}
+
+	// 选中浮动待办（我们的数据里它就是"拿快递"）。
+	m.SetFocus(geometry.AnchorLeftBottom)
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+	if sel := m.Selection(); sel.ID != todo.ID {
+		t.Fatalf("应选中「拿快递」，实际 %+v", sel)
+	}
+
+	after := m.View()
+	// 关键断言：**联动选项的文字必须出现在界面上**。
+	for _, want := range []string{"打标签", "设截止时间"} {
+		if !strings.Contains(after, want) {
+			t.Errorf("选中后看板上应出现「%s」，实际输出：\n%s", want, after)
+		}
+	}
+	// 键位也要显示出来，否则用户仍然不知道怎么触发。
+	bindings := m.OptionKeys()
+	if len(bindings) == 0 {
+		t.Fatal("选中后应有可用选项")
+	}
+	if !strings.Contains(after, bindings[0].Key) {
+		t.Errorf("看板上应显示键位 %q，实际输出：\n%s", bindings[0].Key, after)
+	}
+	// 选中项的名字应出现在选项标签里（"打标签「拿快递」"）。
+	if !strings.Contains(after, "拿快递") {
+		t.Errorf("选项标签应带上选中项名字，实际输出：\n%s", after)
+	}
+	// 渲染必须仍然干净。
+	if !m.CanvasClean() {
+		t.Errorf("画布诊断不干净：%s", m.Diagnostics())
+	}
+}
+
+// TestBoardOptionsHaveNoDuplicates 是"选项重复"那次事故的墓碑。
+//
+// 内核本身也是一个已装载的包，而 Manager.BoardOptions 既从 m.kernel
+// 收它的选项，又遍历所有包再收一遍——于是每个内核选项出现两次，
+// 看板上是"1 帮助 / 2 帮助 / 3 关于 / 4 关于"，按 1 和按 2 效果一样。
+func TestBoardOptionsHaveNoDuplicates(t *testing.T) {
+	src := newMemSource(t, testNow())
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 34)
+
+	opts := m.BoardOptions()
+	seen := map[string]int{}
+	for _, o := range opts {
+		seen[o.Label()]++
+	}
+	for label, n := range seen {
+		if n > 1 {
+			t.Errorf("看板选项 %q 出现了 %d 次，应当只有一次", label, n)
+		}
+	}
+	// 键位是按键去重的最后一道防线：同一个键不能对应两个选项。
+	keys := map[string]int{}
+	for _, b := range m.OptionKeys() {
+		keys[b.Key]++
+	}
+	for k, n := range keys {
+		if n > 1 {
+			t.Errorf("键位 %q 绑定了 %d 个选项", k, n)
+		}
+	}
+	if len(opts) == 0 {
+		t.Fatal("内核应至少提供帮助与关于两个看板选项")
+	}
+}
+
+// TestLongTextIsWrappedNotTruncated 是"关于磁贴只剩半句话"的墓碑。
+//
+// 实机反馈：磁贴里那句"（焦点在本磁贴时按 enter 会上报选中）"
+// 被截断成"（焦点在本磁贴时按 enter 会上"。这里断言折行的语义：
+// 长文本要么**完整出现**（跨行），要么因为行数不够而整段不出现，
+// 绝不出现"半句话"。
+//
+// 实现上刻意**不依赖骨架布局**：`Model.Layout()` 返回的是最近一次渲染
+// 算出的骨架，没渲染过就是零值（这一条本人踩过两次，测试因此自己出错）。
+// 因此这里直接在一个固定宽度的矩形里渲染真正的 todoTile。
+func TestLongTextIsWrappedNotTruncated(t *testing.T) {
+	src := newMemSource(t, testNow())
+
+	// 造一个必然折行的标题：按"磁贴内容区 21 列"推导（见下方矩形宽度）。
+	const contentW = 21
+	rowW := itemRowWidth(geometry.Rect{W: contentW})
+	if rowW < 6 {
+		t.Fatalf("正文只有 %d 列，用例无意义", rowW)
+	}
+	perLine := rowW / 2 // 汉字占 2 列
+	title := strings.Repeat("中", perLine+2)
+	src.addTodo(title, model.KindFloating)
+
+	tile := &todoTile{src: src, state: NewHostState(), kind: model.KindFloating, title: "临时"}
+	wantWrapped := canvas.Wrap(title, rowW)
+	if len(wantWrapped) < 2 {
+		t.Fatalf("标题应当折行，实际只占 %d 行（正文 %d 列，标题 %d 字）",
+			len(wantWrapped), rowW, len([]rune(title)))
+	}
+
+	// 渲染到一块够高的矩形里（高度保证所有折行都放得下）。
+	out := renderInRect(t, contentW+4, 6+len(wantWrapped), func(ctx plugin.RenderCtx) {
+		tile.Render(ctx)
+	})
+	var rendered strings.Builder
+	for _, l := range out {
+		rendered.WriteString(l)
+	}
+	flat := flattenForTextMatch(rendered.String())
+	if !strings.Contains(flat, flattenForTextMatch(title)) {
+		t.Errorf("长标题应完整出现在折行后的输出里（标题 %d 字，正文 %d 列，应折 %d 行）\n实际输出：\n%s",
+			len([]rune(title)), rowW, len(wantWrapped), strings.Join(out, "\n"))
+	}
+	// 断言每一段都真的出现：只查整体拼接会掩盖"中间掉了一段"。
+	for i, seg := range wantWrapped {
+		if seg == "" {
+			continue
+		}
+		if !strings.Contains(flat, flattenForTextMatch(seg)) {
+			t.Errorf("折行后的第 %d 段 %q 没有出现在输出里\n实际输出：\n%s",
+				i, seg, strings.Join(out, "\n"))
+		}
+	}
+}
+
+// flattenForTextMatch 把一帧输出压成"只含可见文字"的连续字符串。
+//
+// 用途是断言"文字完整出现（可能跨行、可能被边框字符隔开）"：
+// 直接对多行输出做 Contains 会因为换行而失败，而去掉换行又会把
+// 相邻两行的边框字符混进来（例如"│TODA│"）。
+// 因此这里只保留中日韩文字、字母与数字。
+func flattenForTextMatch(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= 0x4E00 && r <= 0x9FFF: // CJK 统一表意文字
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// TestOptionsNeverCollideWithDock 验证"看板不侵占停靠区"。
+//
+// 这条是 60×16 那次事故的回归测试：舞台曾经用 Primary（含停靠区高度）
+// 而不是 Center.Stage，于是看板的文字直接画在停靠区磁贴上面，
+// 画布诊断报出 8 次"覆盖已有内容"。
+func TestOptionsNeverCollideWithDock(t *testing.T) {
+	src := newMemSource(t, testNow())
+	src.addTodo("拿快递", model.KindFloating)
+	src.addTodo("写文档", model.KindFixed)
+	src.data.Note = "随手记内容"
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	// 选中一项，让看板上多出几行选项文字——最容易压到停靠区的正是它。
+	for i := 0; i < 3; i++ {
+		m.SetFocus(geometry.AnchorLeftBottom)
+		m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+	}
+	for _, size := range []struct{ w, h int }{
+		{60, 16}, {70, 20}, {80, 24}, {100, 30}, {120, 40},
+	} {
+		m.Resize(size.w, size.h)
+		_ = m.View()
+		if !m.CanvasClean() {
+			t.Errorf("%dx%d：画布诊断不干净：%s", size.w, size.h, m.Diagnostics())
+		}
+	}
+}
+
 // TestNoProviderAtAllIsAlsoAWarning 覆盖用户指出的另一种情形：
 // **压根没有任何包会提供**那个能力（而不是"被关了"）。
 //

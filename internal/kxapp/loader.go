@@ -60,14 +60,10 @@ func (l *Loader) Build() (*kxflow.Model, *Services, *plugin.LoadReport) {
 		View:      l.viewConfig(),
 		Packs:     l.Packs(),
 	})
-	// 让内核的看板能列出可用选项（数字键提示）。
-	if k := m.Manager().Kernel(); k != nil {
-		if kk, ok := k.(interface {
-			SetOptionSource(func() []kxflow.OptionBinding)
-		}); ok {
-			kk.SetOptionSource(m.OptionKeys)
-		}
-	}
+	// 不需要在这里把选项列表交给内核：引擎在装配时已经调用了
+	// Kernel.SetOptionSource，因此看板天然能列出当前可用选项。
+	// （早先这里用类型断言偷偷注入，结果与引擎的接口撞了——
+	//  现在这是引擎的正式职责，宿主不必操心。）
 	rep := m.Report()
 	return m, services, &rep
 }

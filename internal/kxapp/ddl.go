@@ -152,12 +152,10 @@ func (t *ddlPanel) Render(ctx plugin.RenderCtx) {
 		case model.DueSoon:
 			style = tile.StyleWarn
 		}
-		mark := dueMark(e.State)
-		line := fmt.Sprintf("%s %s %s", mark, humanDue(e.Left), e.Title)
-		if len(line) > 0 {
-			ctx.Canvas.Text(ctx.Rect.X, y, " "+canvas.Truncate(line, ctx.Rect.W-1), style)
-		}
-		y++
+		body := fmt.Sprintf("%s %s · %s", e.Kind, humanDue(e.Left), e.Title)
+		// 折行而不是截断：DDL 面板的磁贴可能很窄（下左/下右各半），
+		// 截断会把条目名切掉一半，而那正是用户唯一关心的信息。
+		y = drawWrappedInset(ctx, y, ctx.Rect, dueMark(e.State)+" ", "  ", body, style)
 	}
 }
 

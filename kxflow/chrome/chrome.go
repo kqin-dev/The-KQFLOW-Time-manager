@@ -279,22 +279,35 @@ func (f *FooterBar) drawHints(c *canvas.Canvas, x, y, width int) {
 		if h.Key == "" && h.Desc == "" {
 			continue
 		}
+		if cur >= end {
+			return
+		}
 		if i > 0 {
-			if cur >= end {
-				return
-			}
 			n, _ := c.Text(cur, y, "  ", f.HintStyle)
 			cur += n
 		}
 		if cur >= end {
 			return
 		}
-		n, _ := c.Text(cur, y, canvas.Truncate(h.Key+":", end-cur), f.KeyStyle)
+		// 按键名**永远完整显示**：它是用户唯一能"照着按"的信息。
+		// 曾经这里对 Key+":" 也做 Truncate，于是窄终端下会出现
+		// "ta"、"en" 这种没有意义的片段。
+		if w := canvas.StringWidth(h.Key + ":"); w > end-cur {
+			return // 连按键都放不下了，后面的更放不下
+		}
+		n, _ := c.Text(cur, y, h.Key+":", f.KeyStyle)
 		cur += n
 		if cur >= end {
 			return
 		}
-		n, _ = c.Text(cur, y, canvas.Truncate(h.Desc, end-cur), f.HintStyle)
+		// 说明文字允许省略，但**必须带省略号**：
+		// 半个词看起来像渲染坏了，带省略号才是"这里还有内容被省略"。
+		rest := end - cur
+		desc := h.Desc
+		if canvas.StringWidth(desc) > rest {
+			desc = canvas.TruncateEllipsis(desc, rest)
+		}
+		n, _ = c.Text(cur, y, desc, f.HintStyle)
 		cur += n
 	}
 }

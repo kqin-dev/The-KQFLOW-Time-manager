@@ -570,6 +570,11 @@ func (m *Manager) ContextOptions(sel Selection) []ContextOption {
 }
 
 // BoardOptions 返回全部看板选项（内核自带的 + 各包的），按 Order 排序。
+//
+// ⚠️ 内核的选项**只收一次**：内核本身也是一个已装载的包，
+// 而它的看板选项在上面已经通过 m.kernel 收过了。若不跳过它，
+// 同一个选项会出现两次——实测症状是看板上出现"1 帮助 / 2 帮助 /
+// 3 关于 / 4 关于"，用户按 1 和按 2 效果一样，看起来像界面坏了。
 func (m *Manager) BoardOptions() []BoardOption {
 	type item struct {
 		opt BoardOption
@@ -578,10 +583,17 @@ func (m *Manager) BoardOptions() []BoardOption {
 	var items []item
 	if m.kernel != nil {
 		for _, o := range m.kernel.BoardOptions() {
+			if o == nil {
+				continue
+			}
 			items = append(items, item{opt: o, id: "kernel"})
 		}
 	}
 	for _, a := range m.packs {
+		// 内核包跳过：它的选项已由 m.kernel 收过。
+		if a.Kernel() != nil {
+			continue
+		}
 		for _, o := range a.BoardOptions() {
 			if o == nil {
 				continue

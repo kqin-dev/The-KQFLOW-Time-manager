@@ -232,8 +232,8 @@ func (t *noteTile) Render(ctx plugin.RenderCtx) {
 		if y >= ctx.Rect.Y1() {
 			return
 		}
-		ctx.Canvas.Text(ctx.Rect.X, y, canvas.Truncate(line, ctx.Rect.W), tile.StyleMuted)
-		y++
+		// 折行而不是截断：随手记是自由文本，一行往往长过磁贴宽度。
+		y = drawWrapped(ctx, y, ctx.Rect, line, tile.StyleMuted)
 	}
 }
 

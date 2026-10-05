@@ -193,6 +193,8 @@ func (c *corePlugin) New(s svc.Services) (plugin.Component, error) { return c.p.
 type coreKernel struct {
 	svc     svc.Services
 	entered int
+	// options 由引擎注入：返回当前可用的选项与键位。
+	options func() []plugin.OptionBindingView
 }
 
 func newCoreKernel() *coreKernel { return &coreKernel{} }
@@ -202,33 +204,50 @@ func (k *coreKernel) Title() string { return "内核" }
 // PowerBy 是内核必须显示的字样（req.md：中栏渲染本内核 LOGO 与 "Power by KXFLOW"）。
 func (k *coreKernel) PowerBy() string { return "Power by KXFLOW" }
 
-// Dashboard 是栈空时的底色视图：LOGO + 一行提示。
+// SetOptionSource 接收引擎注入的"当前可用选项"查询函数。
+func (k *coreKernel) SetOptionSource(f func() []plugin.OptionBindingView) { k.options = f }
+
+// Dashboard 是栈空时的底色视图：LOGO + **当前可用选项** + 说明。
 func (k *coreKernel) Dashboard() plugin.View {
 	return &plugin.ViewFunc{
 		ViewName: "看板",
 		RenderFn: func(ctx plugin.RenderCtx) {
-			lines := []string{
-				"",
-				"   ╭───────────────────────────────╮",
-				"   │          K X F L O W          │",
-				"   ╰───────────────────────────────╯",
-				"",
-				"        " + k.PowerBy(),
-				"",
-				"   这是引擎的演示程序，不含业务功能。",
-				"",
-				"   左侧「时钟」磁贴：按 enter 借调中栏（舞台）",
-				"   左侧「关于」磁贴：按 enter 看多级菜单",
-				"   左、右栏之间用 tab 切换焦点；esc 逐级退回",
-			}
 			y := ctx.Rect.Y
-			for _, line := range lines {
-				if y >= ctx.Rect.Y1() {
-					break
+			put := func(s string, style canvas.StyleID) {
+				for _, l := range ctx.Wrap(s) {
+					if y >= ctx.Rect.Y1() {
+						return
+					}
+					ctx.Canvas.Text(ctx.Rect.X, y, l, style)
+					y++
 				}
-				ctx.Canvas.Text(ctx.Rect.X, y, canvas.Truncate(line, ctx.Rect.W), 2)
-				y++
 			}
+			for _, l := range canvas.LogoLines(ctx.Rect.W) {
+				put(l, 1)
+			}
+			put(k.PowerBy(), 1)
+			put("", 1)
+			put("这是引擎的演示程序，不含业务功能。", 2)
+			put("", 1)
+
+			// 列出当前可用选项——这是"选中之后能做什么"的可见入口。
+			// 空列表时说明原因，而不是留白（留白会让人以为界面坏了）。
+			if k.options != nil {
+				bindings := k.options()
+				if len(bindings) == 0 {
+					put("（选中一个磁贴后，这里会出现可用操作）", 6)
+				}
+				for _, b := range bindings {
+					style := canvas.StyleID(2)
+					if b.Context {
+						style = 1
+					}
+					put("  "+b.Key+"  "+b.Label, style)
+				}
+			}
+			put("", 1)
+			put("  左栏「时钟」enter 借调；「关于」a 打开关于页、enter 上报选中", 6)
+			put("  左右栏之间用 tab 切换焦点；esc 逐级退回", 6)
 		},
 	}
 }
@@ -243,10 +262,16 @@ func (k *coreKernel) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action 
 	return plugin.None()
 }
 
-// BoardOptions 返回内核自带的全局选项：打开"关于"页。
-func (k *coreKernel) BoardOptions() []plugin.BoardOption {
-	return []plugin.BoardOption{&aboutOption{k: k}}
-}
+// BoardOptions 返回内核自带的全局选项。
+//
+// ⚠️ 内核**不要**在这里返回任何选项：引擎的 Manager.BoardOptions 已经把
+// 内核的成员选项（aboutOption 那个成员）收过一次了。这里再返回一遍，
+// 看板上就会出现重复条目——实测症状是"1 帮助 / 2 帮助 / 3 关于 / 4 关于"，
+// 按 1 与按 2 效果相同，看起来像界面坏了。
+//
+// 内核自带的**真正**全局选项（设置/帮助/退出这类）应当在这里返回；
+// 本演示没有，因此返回 nil。
+func (k *coreKernel) BoardOptions() []plugin.BoardOption { return nil }
 
 type aboutOption struct{ k *coreKernel }
 
@@ -346,16 +371,16 @@ func (t *clockTile) Render(ctx plugin.RenderCtx) {
 	now := ctx.Svc.Clock().Format("15:04:05")
 	lines := []string{
 		"",
-		"     " + now,
+		"  " + now,
 		"",
 		"  按 enter 借调中栏舞台",
 	}
 	y := ctx.Rect.Y
-	for _, l := range lines {
+	for _, l := range ctx.WrapLines(lines) {
 		if y >= ctx.Rect.Y1() {
 			break
 		}
-		ctx.Canvas.Text(ctx.Rect.X, y, canvas.Truncate(l, ctx.Rect.W), 2)
+		ctx.Canvas.Text(ctx.Rect.X, y, l, 2)
 		y++
 	}
 }
@@ -401,52 +426,102 @@ func (t *clockTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 }
 
 // aboutTile 演示"联动选项"的来源：它上报选中上下文，由引擎广播。
+//
+// 它自己也是"二级内容必须借调舞台"的示范：磁贴只有二十几列宽，
+// 而"关于"里有整段说明文字。**把长文本塞进小磁贴必然出问题**——
+// 实测被截成"（焦点在本磁贴时按 enter 会上"，用户以为渲染坏了。
+// 正确做法是磁贴只放一行摘要，长内容按 enter 借调中栏显示。
 type aboutTile struct{ svc svc.Services }
 
 func (t *aboutTile) Title() string { return "关于" }
 
 func (t *aboutTile) Render(ctx plugin.RenderCtx) {
 	sel := ctx.Selection
+	// 磁贴里只放**短摘要**：一眼能读完，不依赖折行。
+	summary := "未选中"
+	if sel.ID != "" {
+		summary = "已选中：" + sel.Title
+	}
 	lines := []string{
-		"",
-		"  KXFLOW 引擎演示",
-		"",
-		"  当前选中：" + sel.String(),
-		"  （焦点在本磁贴时按 enter 会上报选中）",
+		"  " + nowOrDash(ctx) + "  KXFLOW 演示",
+		"  " + summary,
+		"  enter 打开关于",
 	}
 	y := ctx.Rect.Y
-	for _, l := range lines {
+	for _, l := range ctx.WrapLines(lines) {
 		if y >= ctx.Rect.Y1() {
 			break
 		}
-		ctx.Canvas.Text(ctx.Rect.X, y, canvas.Truncate(l, ctx.Rect.W), 2)
+		ctx.Canvas.Text(ctx.Rect.X, y, l, 2)
 		y++
 	}
 }
 
-// Update 演示**选中上报**：这会让"联动选项"出现（如果包提供了的话）。
+// nowOrDash 返回当前时刻，供摘要行使用。
+func nowOrDash(ctx plugin.RenderCtx) string { return ctx.Svc.Clock().Format("15:04") }
+
+// Update 演示**借调 + 选中上报**：按 a 借调"关于"页，按 enter 上报选中。
+//
+// 两个动作分开按键，是为了让"借调"与"选中"这两套机制各自可观察。
 func (t *aboutTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
-	if ev.Key != "enter" {
-		return plugin.None()
+	switch ev.Key {
+	case "a":
+		return plugin.Borrow(aboutView())
+	case "enter":
+		if ctx.Selection.ID == "about" {
+			// 再按一次取消选中，用来观察联动选项的消失。
+			return plugin.Select(plugin.Selection{})
+		}
+		return plugin.Select(plugin.Selection{
+			Kind: "demo.tile", ID: "about", Title: "关于",
+			Can: svc.Capability{"demo.bell"},
+		})
 	}
-	if ctx.Selection.ID == "about" {
-		// 再按一次取消选中，用来观察联动选项的消失。
-		return plugin.Select(plugin.Selection{})
-	}
-	return plugin.Select(plugin.Selection{
-		Kind: "demo.tile", ID: "about", Title: "关于",
-		Can: svc.Capability{"demo.bell"},
-	})
+	return plugin.None()
 }
 
-// drawLines 是演示里反复用到的"逐行画"辅助。
-func drawLines(ctx plugin.RenderCtx, lines []string, style canvas.StyleID) {
+// aboutView 返回"关于"页（借调舞台显示）。
+//
+// 它拿到的是**整个中栏**而不是一个小磁贴，所以可以放心写长句。
+func aboutView() plugin.View {
+	return &plugin.ViewFunc{
+		ViewName: "关于",
+		RenderFn: func(rc plugin.RenderCtx) {
+			// 在这里用 ctx.WrapLines：借调区虽然宽，窄终端下仍可能不够，
+			// 折行比截断安全。
+			drawWrappedLines(rc, []string{
+				"KXFLOW 渲染引擎",
+				"",
+				"  Power by KXFLOW",
+				"",
+				"  你以为这是一句很长的话会被截断，但其实它会自动折行显示——",
+				"  磁贴只有二十几列宽时，长文本必须折行而不是截断，",
+				"  否则用户看到的是半句话，会以为渲染坏了。",
+				"",
+				"  esc 退回看板，焦点会回到「关于」磁贴。",
+			}, 1)
+		},
+	}
+}
+
+// drawWrappedLines 逐行画，但**按当前宽度折行**而不是截断。
+//
+// 演示里原先用的是 canvas.Truncate，于是"关于"磁贴里前两行直接被砍掉，
+// 只剩下第五行的尾巴——这正是用户反馈的那个现象。
+func drawWrappedLines(ctx plugin.RenderCtx, lines []string, style canvas.StyleID) {
 	y := ctx.Rect.Y
 	for _, l := range lines {
-		if y >= ctx.Rect.Y1() {
-			break
+		for _, w := range ctx.Wrap(l) {
+			if y >= ctx.Rect.Y1() {
+				return
+			}
+			ctx.Canvas.Text(ctx.Rect.X, y, w, style)
+			y++
 		}
-		ctx.Canvas.Text(ctx.Rect.X, y, canvas.Truncate(l, ctx.Rect.W), style)
-		y++
 	}
+}
+
+// drawLines 是演示里反复用到的"逐行画"辅助（会折行，不截断）。
+func drawLines(ctx plugin.RenderCtx, lines []string, style canvas.StyleID) {
+	drawWrappedLines(ctx, lines, style)
 }

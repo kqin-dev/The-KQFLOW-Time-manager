@@ -94,7 +94,7 @@ type Component interface {
 
 // RenderCtx 是一次渲染所需的全部上下文。
 //
-// 注意它**只有 Drawing 相关的东西**：没有任何"去写盘""去播声音"的入口。
+// 注意它**只有绘制相关的东西**：没有任何"去写盘""去播声音"的入口。
 // 那些只能通过 Update 返回 Action 来请求——这是"渲染是纯的"的机制保障。
 type RenderCtx struct {
 	Canvas *canvas.Canvas
@@ -118,6 +118,66 @@ type RenderCtx struct {
 	// Svc 只读能力（时钟、环境能力）。**不提供 Persist/Effect**：
 	// 渲染期不允许产生副作用。
 	Svc ReadOnlyServices
+}
+
+// Wrap 把一段文本按**当前可用宽度**折成多行。
+//
+// 磁贴这类小对象必须用它，而不是 Truncate：
+//
+//	tile 只有 14 列宽时，一句"（焦点在本磁贴时按 enter 会上报选中）"被截断后
+//	只剩下"（焦点在本磁贴时按 enter 会上"——用户看到的是半句话，
+//	会以为渲染坏了（这是**真实反馈**，不是假设）。
+//
+// 折行规则与全局一致（按显示宽度、宽字符不劈开），因为最终走的是
+// canvas.Wrap——全项目唯一的折行实现。
+//
+// 用法（画一段可能超宽的文字）：
+//
+//	for i, line := range ctx.Wrap(text) {
+//	    if i >= ctx.Rect.H { break }   // 行数也不够时才算真的放不下
+//	    ctx.Canvas.Text(ctx.Rect.X, ctx.Rect.Y+i, line, style)
+//	}
+//
+// 需要"连行内剩余空间一起填满、续行顶到左边"的效果时用 WrapInset。
+func (ctx RenderCtx) Wrap(text string) []string {
+	return canvas.Wrap(text, maxInt(ctx.Rect.W, 1))
+}
+
+// WrapLines 对多段文本逐段折行，返回可直接逐行绘制的行序列。
+//
+// 它把"逐段折行 + 按高度截断"收在一处：这两件事分开写时，
+// 每处渲染都要重复一遍，而漏掉高度检查就会出现"多画的行被裁掉"
+// 或"画到别人地盘上"。
+func (ctx RenderCtx) WrapLines(lines []string) []string {
+	out := make([]string, 0, len(lines)+4)
+	for _, l := range lines {
+		out = append(out, canvas.Wrap(l, maxInt(ctx.Rect.W, 1))...)
+	}
+	if len(out) > ctx.Rect.H {
+		out = out[:ctx.Rect.H]
+	}
+	return out
+}
+
+// WrapInset 在折行时为每行预留缩进，续行也顶到同一缩进。
+//
+// 用于"前缀 + 长文本"的排版：例如"  1 ✔ 星星"。不这样做的话，
+// 折行后的续行会从最左边开始，看起来像是另起一段。
+func (ctx RenderCtx) WrapInset(prefix, text string, indent int) []string {
+	indent = maxInt(indent, 0)
+	avail := maxInt(ctx.Rect.W-indent, 1)
+	head := canvas.Wrap(prefix+text, avail)
+	for i := range head {
+		head[i] = strings.Repeat(" ", indent) + head[i]
+	}
+	return head
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ReadOnlyServices 是渲染期可见的能力子集。

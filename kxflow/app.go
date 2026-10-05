@@ -118,6 +118,9 @@ func New(cfg Config) *Model {
 	m.report = m.manager.Load(cfg.DataSchema, cfg.Packs...)
 	m.stage = stage.New(nil)
 	if k := m.manager.Kernel(); k != nil {
+		// 把"当前可用选项"的查询交给内核，让它在看板上列出来。
+		// 这是选中条目后联动选项可见可用的唯一入口。
+		k.SetOptionSource(m.optionBindingViews)
 		m.stage.SetBase(k.Dashboard())
 		m.header.Crumbs = []string{"KXFLOW"}
 		m.header.StatusStyle = tile.StyleStatus
@@ -229,6 +232,18 @@ type OptionBinding struct {
 
 // IsContext 报告它是不是联动选项。
 func (b OptionBinding) IsContext() bool { return b.Ctx != nil }
+
+// optionBindingViews 把当前绑定转成内核可画的只读快照。
+func (m *Model) optionBindingViews() []plugin.OptionBindingView {
+	bindings := m.OptionKeys()
+	out := make([]plugin.OptionBindingView, 0, len(bindings))
+	for _, b := range bindings {
+		out = append(out, plugin.OptionBindingView{
+			Key: b.Key, Label: b.Label, Context: b.IsContext(),
+		})
+	}
+	return out
+}
 
 // Activate 打开这个选项对应的界面（借调舞台）。
 //

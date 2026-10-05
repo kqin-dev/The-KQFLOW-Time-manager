@@ -237,10 +237,15 @@ type fakeKernel struct {
 	fakeComp
 	boardOptions []BoardOption
 	dashboard    View
+	// optionSource 记录引擎注入的查询函数，供测试断言"引擎确实注入了"。
+	optionSource func() []OptionBindingView
 }
 
 func (k *fakeKernel) PowerBy() string             { return "Power by KXFLOW" }
 func (k *fakeKernel) BoardOptions() []BoardOption { return k.boardOptions }
+
+// SetOptionSource 记录注入的查询函数。
+func (k *fakeKernel) SetOptionSource(f func() []OptionBindingView) { k.optionSource = f }
 
 // Dashboard 返回底层视图；未显式给出时用一个固定的假视图。
 func (k *fakeKernel) Dashboard() View {

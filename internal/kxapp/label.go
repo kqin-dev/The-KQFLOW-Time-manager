@@ -253,8 +253,13 @@ func newLabelEditor(src Source, sel plugin.Selection, target model.Labeled, serv
 				"",
 				"  按数字键切换：",
 			}
-			putLines(ctx, head)
-			y := ctx.Rect.Y + len(head)
+			// 借调视图通常比磁贴宽，但仍然折行而不是截断：
+			// 窄终端下借调区也可能只有几十列。
+			y := ctx.Rect.Y
+			for _, l := range ctx.WrapLines(head) {
+				ctx.Canvas.Text(ctx.Rect.X, y, l, tile.StyleMuted)
+				y++
+			}
 			for i, name := range labels {
 				if y >= ctx.Rect.Y1() || i >= 9 {
 					break
@@ -263,12 +268,17 @@ func newLabelEditor(src Source, sel plugin.Selection, target model.Labeled, serv
 				if curSet[name] {
 					mark, style = "✔", tile.StyleStatus
 				}
-				ctx.Canvas.Text(ctx.Rect.X, y,
-					canvas.Truncate("   "+string(rune('1'+i))+" "+mark+" "+name, ctx.Rect.W), style)
-				y++
+				line := "   " + string(rune('1'+i)) + " " + mark + " " + name
+				for _, l := range ctx.Wrap(line) {
+					if y >= ctx.Rect.Y1() {
+						break
+					}
+					ctx.Canvas.Text(ctx.Rect.X, y, l, style)
+					y++
+				}
 			}
-			if status != "" && y+1 < ctx.Rect.Y1() {
-				ctx.Canvas.Text(ctx.Rect.X, y+1, canvas.Truncate("  "+status, ctx.Rect.W), tile.StyleMuted)
+			if status != "" && y < ctx.Rect.Y1() {
+				ctx.Canvas.Text(ctx.Rect.X, y, canvas.Truncate("  "+status, ctx.Rect.W), tile.StyleMuted)
 			}
 		},
 		UpdateFn: func(ec plugin.EventCtx, ev plugin.Event) (plugin.Action, bool) {

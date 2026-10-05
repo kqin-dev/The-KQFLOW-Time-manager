@@ -177,6 +177,16 @@ func splitEven(r geometry.Rect) [2]geometry.Rect {
 }
 
 // newLane 把中栏矩形分成主控区与（可选的）停靠区。
+//
+// 停靠区规则（按用户 2026-10-05 的实机反馈确定）：
+//
+//	0 个磁贴 → 不开停靠区，整个中栏都给看板；
+//	1 个磁贴 → 占**下半中栏的整条**（长条，适合需要大空间的磁贴）；
+//	2 个磁贴 → **左右各半**（下左 / 下右），而不是上下叠着放。
+//
+// 这样"中栏下半就是磁贴区"这件事一眼可见，高度也不再是
+// "按需算出来的一个数"（原来是 dockCount*3+2，实测只有 5 行，
+// 用户反馈"很小"）。现在固定取中栏一半，与上面对称。
 func newLane(r geometry.Rect, dockVisible bool, dockCount int) Lane {
 	l := Lane{Rect: r, DockVisible: dockVisible, DockCount: dockCount}
 	if !dockVisible || dockCount == 0 {
@@ -184,23 +194,20 @@ func newLane(r geometry.Rect, dockVisible bool, dockCount int) Lane {
 		// 这样调用方永远只需要关心 Stage，不必判断"到底有没有停靠区"。
 		l.Stage = r
 		l.Dock = geometry.Rect{X: r.X, Y: r.Y + r.H}
+		l.DockVisible = false
 		return l
 	}
-	// 停靠区高度：按需要的磁贴数算，但不超过中栏一半。
-	want := dockCount*3 + 2
-	if maxDock := r.H / 2; want > maxDock {
-		want = maxDock
-	}
-	if want < MinTileH {
-		want = MinTileH
-	}
-	if want > r.H {
-		want = r.H
+	// 停靠区取下半中栏。中栏太矮时不硬开：硬开只会把看板挤没，
+	// 而一块 2 行高的磁贴也画不出内容。
+	want := r.H / 2
+	if want < MinTileH || r.W < MinTileW {
+		l.Stage = r
+		l.Dock = geometry.Rect{X: r.X, Y: r.Y + r.H}
+		l.DockVisible = false
+		return l
 	}
 	stage, dock := r.CutBottom(want)
-	// 装不下就**不开停靠区**：一个 1~2 行高的停靠区画不出磁贴，
-	// 只会把主控区挤小——那正是"多了一条没用的空条"的来源。
-	if stage.H < MinTileH || dock.H < MinTileH || r.W < MinTileW {
+	if stage.H < MinTileH {
 		l.Stage = r
 		l.Dock = geometry.Rect{X: r.X, Y: r.Y + r.H}
 		l.DockVisible = false
@@ -208,8 +215,25 @@ func newLane(r geometry.Rect, dockVisible bool, dockCount int) Lane {
 	}
 	l.Stage = stage
 	l.Dock = dock
-	l.DockSlots = splitEven(dock)
+	l.DockSlots = splitEvenH(dock)
 	return l
+}
+
+// splitEvenH 把矩形**左右**均分给两个槽位（停靠区用）。
+//
+// 与 splitEven（上下均分）分开是因为两者的语义不同：
+// 侧栏是"上下两格"，停靠区是"下左 / 下右"。装不下时同样判空，理由见 splitEven。
+func splitEvenH(r geometry.Rect) [2]geometry.Rect {
+	var empty [2]geometry.Rect
+	if r.W < 2*MinTileW || r.H < MinTileH {
+		return empty
+	}
+	leftW := (r.W + 1) / 2
+	left, right := r.CutLeft(leftW)
+	if left.W < MinTileW || right.W < MinTileW {
+		return empty
+	}
+	return [2]geometry.Rect{left, right}
 }
 
 // pickPrimary 选出"整页内容应当使用的那一块"。
