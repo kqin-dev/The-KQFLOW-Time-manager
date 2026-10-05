@@ -72,6 +72,19 @@ type ViewFunc struct {
 	// 用它来表达"未决事务"：选项菜单一旦打开就该锁住焦点，
 	// 不让 tab 把用户带走。
 	FocusLockFn func() bool
+	// HintFn 申报本视图的按键提示（见 KeyHinter）。
+	//
+	// 借调视图的按键集与看板完全不同（编辑器有 ctrl+s、菜单有 j/k+enter），
+	// 因此下栏必须问**当前这一层**，而不是继续显示看板的提示。
+	HintFn func(ctx RenderCtx) []KeyHint
+}
+
+// KeyHints 实现 KeyHinter。
+func (v *ViewFunc) KeyHints(ctx RenderCtx) []KeyHint {
+	if v != nil && v.HintFn != nil {
+		return v.HintFn(ctx)
+	}
+	return nil
 }
 
 // FocusLock 实现 FocusLocker。

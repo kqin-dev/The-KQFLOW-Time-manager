@@ -138,18 +138,14 @@ func New(cfg Config) *Model {
 		// 但不该被要求必须自己写一份——空的下栏等于用户没有操作指引。
 		m.footer.Text = k.PowerBy()
 		m.footer.TextStyle = tile.StyleMuted
-		m.footer.Hints = []chrome.KeymapHint{
-			{Key: "tab", Desc: "切换栏位"},
-			{Key: "j/k", Desc: "移动"},
-			{Key: "l", Desc: "操作"},
-			{Key: "esc", Desc: "退回"},
-			{Key: "q", Desc: "退出"},
-		}
 		m.footer.KeyStyle = tile.StyleHintKey
 		m.footer.HintStyle = tile.StyleHint
 		m.footer.BarFilled = tile.StyleBarFilled
 		m.footer.BarEmpty = tile.StyleBarEmpty
 	}
+	// 下栏提示**跟着光标走**：光标停在哪儿，就提示那儿现在能按什么。
+	// 它是每帧重算的（提示可能依赖"列表里有没有条目"这类实时状态）。
+	m.refreshHints()
 	m.placeTiles()
 	m.applyFocusDefaults()
 	return m
@@ -189,46 +185,29 @@ func (m *Model) BoardOptions() []plugin.BoardOption {
 	return m.manager.BoardOptions()
 }
 
-// OptionKeys 返回"数字键 → 选项"的映射，供内核在界面上显示可用的快捷键。
+// Options 返回当前可用的全部选项：联动选项在前，看板选项在后。
 //
-// 编号规则（刻意与两处来源的顺序解耦）：
-//   - 联动选项排在前面（1..N）：它们是**上下文相关**的，
-//     用户刚选中一项时最可能想用的就是它们；
-//   - 看板选项接在后面。
+// **没有"键位"这回事**（用户 2026-10-05 的反馈）：
 //
-// 键位只用数字：字母与空格/回车在看板上有既有语义，
-// 借走它们会导致"这个键在看板上本来是什么"的问题（v2.1.0 踩过）。
-func (m *Model) OptionKeys() []OptionBinding {
+//	原话：不应该保留数字作为快捷键：如果有 10 个选项怎么办呢？
+//
+// 数字键是错的：它把"选项数量"和"可用按键数量"绑在一起，
+// 而且用户得先记住编号。正确的做法是**用方向键在菜单里选**
+// （按 l 打开的那一刻才需要选，见 newOptionsMenu），
+// 因此这里只给出有序列表，不给出任何按键绑定。
+func (m *Model) Options() []OptionBinding {
 	var out []OptionBinding
-	// 联动选项：当期适用才给键位——不适用的选项连编号都不该出现。
-	for i, o := range m.ContextOptions() {
-		if len(out) >= 9 {
-			break
-		}
-		out = append(out, OptionBinding{
-			Key:   string(rune('1' + i)),
-			Label: o.Label(m.selection),
-			Ctx:   o,
-		})
+	for _, o := range m.ContextOptions() {
+		out = append(out, OptionBinding{Label: o.Label(m.selection), Ctx: o})
 	}
-	base := len(out)
-	for i, o := range m.BoardOptions() {
-		if base+i >= 9 {
-			break
-		}
-		out = append(out, OptionBinding{
-			Key:   string(rune('1' + base + i)),
-			Label: o.Label(),
-			Board: o,
-		})
+	for _, o := range m.BoardOptions() {
+		out = append(out, OptionBinding{Label: o.Label(), Board: o})
 	}
 	return out
 }
 
-// OptionBinding 是一条"按键 → 选项"的绑定。
+// OptionBinding 是一个可用选项（联动选项或看板选项）。
 type OptionBinding struct {
-	// Key 是触发它的按键（当前只用数字键）。
-	Key string
 	// Label 是显示文本。
 	Label string
 	// Ctx 非空表示它来自联动选项（依赖当前选中）。
@@ -240,13 +219,13 @@ type OptionBinding struct {
 // IsContext 报告它是不是联动选项。
 func (b OptionBinding) IsContext() bool { return b.Ctx != nil }
 
-// optionBindingViews 把当前绑定转成内核可画的只读快照。
+// optionBindingViews 把当前选项转成内核可画的只读快照。
 func (m *Model) optionBindingViews() []plugin.OptionBindingView {
-	bindings := m.OptionKeys()
-	out := make([]plugin.OptionBindingView, 0, len(bindings))
-	for _, b := range bindings {
+	opts := m.Options()
+	out := make([]plugin.OptionBindingView, 0, len(opts))
+	for _, b := range opts {
 		out = append(out, plugin.OptionBindingView{
-			Key: b.Key, Label: b.Label, Context: b.IsContext(),
+			Label: b.Label, Context: b.IsContext(),
 		})
 	}
 	return out
@@ -255,7 +234,7 @@ func (m *Model) optionBindingViews() []plugin.OptionBindingView {
 // Activate 打开这个选项对应的界面（借调舞台）。
 //
 // 必须把当前选中一并传进来：联动选项要据此决定"给谁设"。
-// 宿主、内核与用户按数字键都走这**同一条**路，谁都不开后门。
+// 宿主、内核与菜单都走这**同一条**路，谁都不开后门。
 func (b OptionBinding) Activate(s svc.Services, sel plugin.Selection) (plugin.View, error) {
 	if b.Ctx != nil {
 		return b.Ctx.Activate(sel, s)
@@ -436,6 +415,8 @@ func (m *Model) View() string {
 	}
 	m.canvas.Clear()
 	m.registry.SetStates(m.focus, m.stage.Borrowing())
+	// 每帧重算下栏提示：它跟着光标与当前状态变（见 refreshHints）。
+	m.refreshHints()
 
 	// 1) 上下栏。
 	m.header.Draw(m.canvas, m.shell.Header)
@@ -544,6 +525,50 @@ func (m *Model) stageRect() geometry.Rect {
 // 它是内部规则的只读出口：测试据此断言"底色不越界"，
 // 宿主据此在需要时对齐自己的浮层。
 func (m *Model) StageRect() geometry.Rect { return m.stageRect() }
+
+// refreshHints 重算下栏的按键提示。
+//
+// 提示的来源有三层，从具体到通用：
+//
+//  1. 借调中的视图自己申报（它有完全不同的按键集，如编辑器的 ctrl+s）；
+//  2. 当前获得焦点的磁贴申报（"这里现在能按什么"只有它自己知道）；
+//  3. 引擎兜底（tab/esc/q，任何地方都能走）。
+//
+// 用户的原话点明了这件事的必要性：
+//
+//	如果光标在无动作时不会触发什么东西，那么下栏的操作提示就需要
+//	跟着光标的操作提示改变，显然这种提示需要插件包提供。
+func (m *Model) refreshHints() {
+	var hints []chrome.KeymapHint
+
+	if top := m.stage.Top(); top != nil && m.stage.Borrowing() {
+		// 借调视图：它自己说了算（实现 KeyHinter 时）。
+		if h, ok := top.(plugin.KeyHinter); ok {
+			for _, k := range h.KeyHints(m.renderCtx()) {
+				hints = append(hints, chrome.KeymapHint{Key: k.Key, Desc: k.Desc})
+			}
+		}
+	} else if slot, ok := m.registry.At(m.focus); ok && slot.Component != nil {
+		ctx := m.renderCtx()
+		ctx.Focus = true
+		for _, k := range plugin.KeyHintsOf(slot.Component, ctx) {
+			hints = append(hints, chrome.KeymapHint{Key: k.Key, Desc: k.Desc})
+		}
+	}
+
+	// 换栏位与退出在任何位置都有意义，因此永远附在末尾。
+	hints = append(hints,
+		chrome.KeymapHint{Key: "tab", Desc: "换栏位"},
+		chrome.KeymapHint{Key: "q", Desc: "退出"},
+	)
+	m.footer.Hints = hints
+}
+
+// Hints 返回当前下栏的按键提示（供宿主与测试查询）。
+//
+// 它是"光标悬停在哪儿、那里能按什么"的可读出口：测试据此断言
+// 提示确实跟着光标变，而不是一套写死的通用提示。
+func (m *Model) Hints() []chrome.KeymapHint { return m.footer.Hints }
 
 // CanvasClean 报告最近一帧没有越界、没有覆盖。
 //
@@ -709,24 +734,16 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 		}
 	}
 
-	// 打开"未决事务"：把当前选中项的操作菜单推上舞台。
+	// 打开"未决事务"：把当前光标所在项的操作菜单推上舞台。
 	//
 	// 用**按键**触发而不是"光标一移到就自动弹"：后者会让选项跟着光标
 	// 变来变去，用户一走神就分不清"我现在到底在操作谁"。
 	// 这也是 v2.1.0 的语义（按 L 打开选中项的操作菜单）。
+	//
+	// 光标本身**只负责悬停**：它移动时唯一的副作用是下栏提示跟着变
+	// （见 refreshHints），中栏看板不因此改变。
 	if ev.Key == "l" && !m.stage.Borrowing() {
 		if m.openSelectionOptions() {
-			return false
-		}
-	}
-
-	// 选项也可以用数字键直接触发（快捷方式，与 l 打开菜单等价）。
-	//
-	// 排在磁贴**之前**：数字键在看板上没有别的语义，因此借走它们不会
-	// 造成"这个键本来是什么"的问题（字母键就会——v2.1.0 踩过）。
-	// 而磁贴自己的按键是 j/k/space/enter 这些，不与数字冲突。
-	if n := digitIndex(ev.Key); n >= 0 {
-		if m.activateOption(n) {
 			return false
 		}
 	}
@@ -741,22 +758,26 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 	return false
 }
 
-// openSelectionOptions 打开当前选中项的"未决事务"（操作菜单）。
+// openSelectionOptions 打开"未决事务"：操作菜单。
 //
-// 返回 false 表示没有可打开的选项（此时按键应当继续传给磁贴，
-// 不能让用户按了没反应）。
+// 菜单里有两段（顺序即优先级）：
+//
+//	当前条目：联动选项——作用在光标所指的那一条上（可能为空）
+//	通用    ：看板选项——永远可用（开始专注、帮助、关于…）
+//
+// 为什么把两段合到一个菜单里（用户 2026-10-05 的反馈）：
+//
+//	原话：不应该保留数字作为快捷键：如果有 10 个选项怎么办呢？
+//
+// 去掉数字键之后，"常驻选项"就失去了触发方式。与其再发明一套按键，
+// 不如让 **l 成为唯一的入口**：菜单里既有针对当前条目的事，
+// 也有到处都能做的事。数量不受限（方向键滚动），也不会与字母键打架。
+//
+// 返回 false 表示连通用选项都没有（此时按键继续传给磁贴）。
 func (m *Model) openSelectionOptions() bool {
-	bindings := m.OptionKeys()
-	// 只收**联动选项**：看板选项（帮助/关于）常驻，不需要"事务"这一层，
-	// 它们有自己的数字键。
-	var ctxOpts []OptionBinding
-	for _, b := range bindings {
-		if b.IsContext() {
-			ctxOpts = append(ctxOpts, b)
-		}
-	}
-	if len(ctxOpts) == 0 {
-		m.Toast("先选中一个条目（enter），再按 l 查看可用操作")
+	opts := m.Options()
+	if len(opts) == 0 {
+		m.Toast("当前没有可执行的操作")
 		return true
 	}
 	// 记下"是谁打开的"：关闭事务时焦点要交还给当时获得焦点的那个磁贴。
@@ -767,7 +788,7 @@ func (m *Model) openSelectionOptions() bool {
 		origin.TileID = slot.PluginID
 		origin.Anchor = slot.Anchor
 	}
-	m.stage.Push(m.newOptionsMenu(ctxOpts), origin)
+	m.stage.Push(m.newOptionsMenu(opts), origin)
 	m.focus = geometry.AnchorStage
 	return true
 }
@@ -782,6 +803,14 @@ func (m *Model) newOptionsMenu(opts []OptionBinding) plugin.View {
 	return &plugin.ViewFunc{
 		ViewName:    "操作",
 		FocusLockFn: func() bool { return true },
+		// 菜单自己申报按键：它有一套与看板完全不同的操作。
+		HintFn: func(plugin.RenderCtx) []plugin.KeyHint {
+			return []plugin.KeyHint{
+				{Key: "j/k", Desc: "选择"},
+				{Key: "enter", Desc: "执行"},
+				{Key: "esc", Desc: "取消"},
+			}
+		},
 		RenderFn: func(ctx plugin.RenderCtx) {
 			putLine := func(y int, s string, style canvas.StyleID) {
 				if y < ctx.Rect.Y1() {
@@ -790,7 +819,11 @@ func (m *Model) newOptionsMenu(opts []OptionBinding) plugin.View {
 			}
 			y := ctx.Rect.Y
 			putLine(y, "可用操作", tile.StyleTitle)
-			y += 2
+			// 提示选中了谁：菜单里的操作都作用在这一条上。
+			if m.selection.Title != "" {
+				putLine(y+1, "作用于："+m.selection.Title, tile.StyleStatus)
+			}
+			y += 3
 			for i, b := range opts {
 				if y >= ctx.Rect.Y1() {
 					break
@@ -800,7 +833,7 @@ func (m *Model) newOptionsMenu(opts []OptionBinding) plugin.View {
 				if i == cursor {
 					mark, style = "▸ ", tile.StyleTitleFocused
 				}
-				putLine(y, mark+b.Key+"  "+b.Label, style)
+				putLine(y, mark+b.Label, style)
 				y++
 			}
 			y++
@@ -837,43 +870,6 @@ func (m *Model) newOptionsMenu(opts []OptionBinding) plugin.View {
 			return plugin.None(), false
 		},
 	}
-}
-
-// digitIndex 把 "1".."9" 解析成 0..8；其它按键返回 -1。
-func digitIndex(key string) int {
-	if len(key) != 1 || key[0] < '1' || key[0] > '9' {
-		return -1
-	}
-	return int(key[0] - '1')
-}
-
-// activateOption 打开第 idx 个选项（按 OptionKeys 的顺序）；没有则返回 false。
-//
-// 返回 false 时调用方继续把按键交给磁贴——这样"按了没有对应选项的数字"
-// 不会把按键吞掉，用户不会觉得"这个键没反应"。
-func (m *Model) activateOption(idx int) bool {
-	bindings := m.OptionKeys()
-	if idx < 0 || idx >= len(bindings) {
-		return false
-	}
-	b := bindings[idx]
-	view, err := b.Activate(m.svc, m.selection)
-	if err != nil {
-		m.toast, m.toastKind = "打开失败："+err.Error(), toastErr
-		return true
-	}
-	if view == nil {
-		return false
-	}
-	kind := plugin.OriginBoardOption
-	if b.IsContext() {
-		kind = plugin.OriginContextOption
-	}
-	m.stage.Push(view, plugin.Origin{Kind: kind})
-	// 打开一个界面就把焦点交给舞台：用户刚点开它，键当然该往那里走。
-	// 这也是"tab 能回到舞台"的前提——焦点本来就在舞台上。
-	m.focus = geometry.AnchorStage
-	return true
 }
 
 // focusBack 在退出借调之后把焦点交还给借调方（req.md 的 Handover）。

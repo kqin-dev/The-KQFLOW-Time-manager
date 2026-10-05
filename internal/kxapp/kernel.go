@@ -146,8 +146,12 @@ func (k *kernel) Dashboard() plugin.View {
 
 // drawOptions 画出当前可用的选项（联动选项在前，看板选项在后）。
 //
-// 空列表时给一句说明而不是留白：用户看到空白会以为界面坏了，
-// 而"选中条目后这里会出现操作"正是他需要知道的事。
+// ⚠️ 这里**不显示任何按键编号**（用户 2026-10-05 的反馈）：
+//
+//	原话：不应该保留数字作为快捷键：如果有 10 个选项怎么办呢？
+//
+// 看板只是**告诉用户有哪些事可做**（需要时按 l 打开菜单去选），
+// 因此列表用符号而不是数字，数量也不受 9 个限制。
 func (k *kernel) drawOptions(ctx plugin.RenderCtx, y int, inner geometry.Rect) int {
 	if k.options == nil {
 		return y
@@ -156,27 +160,26 @@ func (k *kernel) drawOptions(ctx plugin.RenderCtx, y int, inner geometry.Rect) i
 	if len(bindings) == 0 {
 		return putLine(ctx, y, inner, centerLine("（选中一个条目后，这里会出现可用操作）", inner.W), tile.StyleMuted)
 	}
-	// 先画联动选项（它们依赖当前选中，最可能是用户此刻想用的）。
+	putLine(ctx, y, inner, "可用操作（按 l 选择）", tile.StyleMuted)
+	y++
 	for _, b := range bindings {
 		if y >= inner.Y1() {
 			return y
 		}
 		style := tile.StyleMuted
+		mark := "  · "
 		if b.Context {
 			style = tile.StyleAccent
+			mark = "  ▸ "
 		}
-		// 键位放在固定宽的"栏目"里，说明文字在其后折行。
-		//
-		// 这样窄栏下看到的是"1  打标签「拿快 /   递」"，
-		// 而不是把选项名从中间劈开成"2  设截止时间「拿快 / 递」"——
-		// 后者看起来像文字被截断了（正是用户反馈过的那类观感）。
-		y = drawWrappedInset(ctx, y, inner, "  "+b.Key+"  ", optionGutter, b.Label, style)
+		// 折行而不是截断：选项名带条目名时可能很长。
+		y = drawWrappedInset(ctx, y, inner, mark, optionGutter, b.Label, style)
 	}
 	return y
 }
 
-// optionGutter 是选项说明文字的续行缩进（对齐到键位右侧）。
-const optionGutter = "     "
+// optionGutter 是选项说明文字的续行缩进（对齐到记号右侧）。
+const optionGutter = "    "
 
 // centerLine 在给定宽度内居中一段**纯文本**（不截断，超宽原样返回）。
 func centerLine(s string, width int) string {

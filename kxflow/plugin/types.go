@@ -213,6 +213,44 @@ const (
 	StateOccupied
 )
 
+// KeyHint 是组件向下栏申报的一条"我现在能按什么键"。
+type KeyHint struct {
+	// Key 是按键名（如 "space" / "enter" / "l"）。
+	Key string
+	// Desc 是它的含义（如 "勾选" / "借调"）。
+	Desc string
+}
+
+// KeyHinter 是可选能力：组件据此申报**当前**可用的按键。
+//
+// 为什么要它（用户的原话）：
+//
+//	如果光标在无动作时不会触发什么东西，那么下栏的操作提示就需要
+//	跟着光标的操作提示改变，显然这种提示需要插件包提供。
+//
+// 也就是说：光标只负责**悬停**，它一移动下栏提示就该跟着变；
+// 而"这个位置能按什么"只有组件自己知道（它知道自己有没有条目、
+// 有没有正在跑的东西）。引擎不该去猜。
+//
+// 用可选接口而不是往 Component 里加方法：不申报提示的组件
+// （内核、纯展示磁贴）不该被迫实现一个恒返回空的方法。
+// 引擎在组件没实现它时会退回到一组通用提示（tab/esc/q）。
+type KeyHinter interface {
+	// KeyHints 返回当前上下文的按键提示；返回空表示"这里没什么可做的"。
+	//
+	// 实现必须是**廉价且纯**的：它每帧都会被调用，
+	// 因此不该在里面读盘或做重活。
+	KeyHints(ctx RenderCtx) []KeyHint
+}
+
+// KeyHintsOf 取一个组件的按键提示（未实现该接口则返回 nil）。
+func KeyHintsOf(c Component, ctx RenderCtx) []KeyHint {
+	if h, ok := c.(KeyHinter); ok {
+		return h.KeyHints(ctx)
+	}
+	return nil
+}
+
 // Event 是交给组件处理的事件。
 //
 // 定义成引擎自己的类型而不是直接用 bubbletea 的 KeyMsg：

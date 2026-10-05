@@ -8,21 +8,22 @@ import (
 	"github.com/kqin-dev/kxflow/plugin"
 )
 
-// TestDashboardOptionGutter 验证看板选项的"键位栏目 + 说明折行"排版。
+// TestDashboardOptionGutter 验证看板上选项列表的排版。
 //
-// 断言两件事：
+// 断言三件事：
 //  1. 每个选项的说明**完整出现**（可能折行，但不丢字）；
-//  2. 续行对齐到键位右侧（缩进宽度 = 键位栏目宽度），
-//     而不是从最左边顶格开始（那样看起来像另起一条）。
+//  2. **不出现数字编号**——用户反馈"有 10 个选项怎么办呢"；
+//  3. 续行对齐到记号右侧，而不是从最左边顶格开始
+//     （那样看起来像另起一条选项）。
 func TestDashboardOptionGutter(t *testing.T) {
 	bindings := []plugin.OptionBindingView{
-		{Key: "1", Label: "打标签「拿快递」", Context: true},
-		{Key: "2", Label: "设截止时间「拿快递」", Context: true},
-		{Key: "3", Label: "帮助 / Help"},
+		{Label: "打标签「拿快递」", Context: true},
+		{Label: "设截止时间「拿快递」", Context: true},
+		{Label: "帮助 / Help"},
 	}
 	k := &kernel{options: func() []plugin.OptionBindingView { return bindings }}
 
-	const w, h = 44, 12
+	const w, h = 44, 14
 	raw := renderInRect(t, w, h, func(ctx plugin.RenderCtx) {
 		k.drawOptions(ctx, 0, ctx.Rect)
 	})
@@ -37,15 +38,23 @@ func TestDashboardOptionGutter(t *testing.T) {
 			t.Errorf("选项 %q 的说明未完整出现：\n%s", b.Label, joined)
 		}
 	}
-	// 每个选项的第一行都应以键位栏目开头（`  N  `）。
-	for i, b := range bindings {
-		if i >= len(out) {
-			t.Fatalf("选项 %d 没有对应行：%v", i, out)
+	// 选项行必须以记号开头（○ 或 ▸），**不能是数字**。
+	foundMark := false
+	for _, l := range out {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" || strings.HasPrefix(trimmed, "可用操作") {
+			continue
 		}
-		want := "  " + b.Key + "  "
-		if !strings.HasPrefix(out[i], want) {
-			t.Errorf("第 %d 个选项应以 %q 开头，实际 %q", i, want, out[i])
+		if trimmed[0] >= '1' && trimmed[0] <= '9' {
+			t.Errorf("选项行不该以数字开头（已去掉数字快捷键）：%q", l)
+			continue
 		}
+		if strings.HasPrefix(trimmed, "▸") || strings.HasPrefix(trimmed, "·") {
+			foundMark = true
+		}
+	}
+	if !foundMark {
+		t.Errorf("选项行应以记号开头，实际各行：%v", out)
 	}
 	// 每行都不越界。
 	for i, l := range out {
@@ -53,9 +62,9 @@ func TestDashboardOptionGutter(t *testing.T) {
 			t.Errorf("第 %d 行宽 %d 超过 %d：%q", i, got, w, l)
 		}
 	}
-	// 第二个选项的说明很长，在 24 列下必然折行；续行应当缩进到键位右侧
-	// （不是顶格）——顶格会看起来像另起一条选项。
-	narrow := renderInRect(t, 24, 8, func(ctx plugin.RenderCtx) {
+
+	// 第三个选项的说明很长，在 24 列下必然折行；续行应当缩进（不是顶格）。
+	narrow := renderInRect(t, 24, 10, func(ctx plugin.RenderCtx) {
 		k.drawOptions(ctx, 0, ctx.Rect)
 	})
 	narrowRows := usedRows(trimTrailing(narrow))
@@ -68,11 +77,19 @@ func TestDashboardOptionGutter(t *testing.T) {
 			t.Errorf("24 列下第 %d 行宽 %d 越界：%q", i, canvas.StringWidth(l), l)
 		}
 	}
-	// 第 2 行是选项 1 的续行：应当以缩进开头，且不含键位。
-	if !strings.HasPrefix(narrowRows[1], optionGutter) {
-		t.Errorf("续行应以 %d 个空格缩进，实际 %q", len(optionGutter), narrowRows[1])
-	}
-	if strings.HasPrefix(strings.TrimSpace(narrowRows[1]), "1") {
-		t.Errorf("续行不应重复键位，实际 %q", narrowRows[1])
+	// 找一条续行：它应当以缩进开头且不含记号。
+	for _, l := range narrowRows {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" || strings.HasPrefix(trimmed, "可用操作") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "▸") || strings.HasPrefix(trimmed, "·") {
+			continue
+		}
+		lead := len(l) - len(strings.TrimLeft(l, " "))
+		if lead != len(optionGutter) {
+			t.Errorf("续行缩进应为 %d 个空格，实际 %d：%q", len(optionGutter), lead, l)
+		}
+		break
 	}
 }

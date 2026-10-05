@@ -232,17 +232,23 @@ func (k *coreKernel) Dashboard() plugin.View {
 
 			// 列出当前可用选项——这是"选中之后能做什么"的可见入口。
 			// 空列表时说明原因，而不是留白（留白会让人以为界面坏了）。
+			//
+			// 注意不显示按键编号：选项用方向键在菜单里选（按 l 打开），
+			// 数量不受限（用户反馈：有 10 个选项怎么办）。
 			if k.options != nil {
 				bindings := k.options()
 				if len(bindings) == 0 {
 					put("（选中一个磁贴后，这里会出现可用操作）", 6)
+				} else {
+					put("可用操作（按 l 选择）", 6)
 				}
 				for _, b := range bindings {
 					style := canvas.StyleID(2)
+					mark := "  · "
 					if b.Context {
-						style = 1
+						style, mark = 1, "  ▸ "
 					}
-					put("  "+b.Key+"  "+b.Label, style)
+					put(mark+b.Label, style)
 				}
 			}
 			put("", 1)

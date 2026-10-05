@@ -159,16 +159,27 @@ func run() error {
 		fmt.Fprintln(os.Stderr, rep.Explain())
 		// 画布诊断：正常路径下必须干净（越界与覆盖都是 0）。
 		fmt.Fprintf(os.Stderr, "--- 画布诊断 --- %s\n", m.Diagnostics())
-		// 把"当前可用选项"也打出来：这是"联动选项是否出现"最直接的证据。
-		if bindings := m.OptionKeys(); len(bindings) > 0 {
+		// 把"当前可用选项"也打出来：这是"选项是否出现"最直接的证据。
+		if opts := m.Options(); len(opts) > 0 {
 			fmt.Fprintln(os.Stderr, "--- 当前可用选项 ---")
-			for _, b := range bindings {
+			for _, b := range opts {
 				kind := "看板"
 				if b.IsContext() {
 					kind = "联动"
 				}
-				fmt.Fprintf(os.Stderr, "  [%s] %s  %s\n", kind, b.Key, b.Label)
+				fmt.Fprintf(os.Stderr, "  [%s] %s\n", kind, b.Label)
 			}
+		}
+		// 下栏提示是跟着光标走的，打出来便于确认"悬停即变"。
+		if hints := m.Hints(); len(hints) > 0 {
+			fmt.Fprint(os.Stderr, "--- 下栏提示 --- ")
+			for i, h := range hints {
+				if i > 0 {
+					fmt.Fprint(os.Stderr, "  ")
+				}
+				fmt.Fprintf(os.Stderr, "%s:%s", h.Key, h.Desc)
+			}
+			fmt.Fprintln(os.Stderr)
 		}
 		return nil
 	}

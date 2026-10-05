@@ -220,6 +220,23 @@ func (t *todoTile) setCursor(v int) {
 	t.state.setFloatingCursor(v)
 }
 
+// KeyHints 申报"光标停在这个列表上时能按什么"。
+//
+// 这是用户点明的那件事：**光标只有悬停作用**，但下栏提示要跟着它变。
+// 因此空列表与有列表给出的提示不同——空列表上 j/k 与勾选都没有意义，
+// 提示里就不该出现它们（否则用户按了没反应，会以为程序坏了）。
+func (t *todoTile) KeyHints(plugin.RenderCtx) []plugin.KeyHint {
+	if len(TodoList(t.src, t.kind)) == 0 {
+		// 列表为空：只能等用户先加条目，这里如实说明"没什么可按的"。
+		return nil
+	}
+	return []plugin.KeyHint{
+		{Key: "j/k", Desc: "移动"},
+		{Key: "space", Desc: "勾选"},
+		{Key: "l", Desc: "操作"},
+	}
+}
+
 // Update 处理按键：移动光标、勾选、上报选中。
 //
 // 选中始终 = **光标所在的那一条**。移动光标会重新上报，因此按 l 打开的

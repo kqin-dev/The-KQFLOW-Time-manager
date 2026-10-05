@@ -425,6 +425,24 @@ func (t *timerTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 	return plugin.Toast("已暂停")
 }
 
+// KeyHints 申报计时磁贴上的可用按键——**随计时状态变化**。
+//
+// 这正是"提示必须由插件包提供"的最好例子：没在计时时只有"开始"，
+// 计时中才有"暂停"；这些只有计时包自己知道，引擎无从推断。
+func (t *timerTile) KeyHints(plugin.RenderCtx) []plugin.KeyHint {
+	if !t.state.Timer.Running() {
+		return []plugin.KeyHint{{Key: "l", Desc: "开始专注"}}
+	}
+	stop := "暂停"
+	if t.state.Timer.Paused() {
+		stop = "继续"
+	}
+	return []plugin.KeyHint{
+		{Key: "space", Desc: stop},
+		{Key: "l", Desc: "计时操作"},
+	}
+}
+
 // checkDone 检查方案是否走完；走完只响一次铃。
 //
 // announced 标记由引擎侧的共享状态持有，因此"响铃"与"界面显示已完成"

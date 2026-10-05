@@ -7,6 +7,7 @@ import (
 
 	"github.com/kqin-dev/kxflow"
 	"github.com/kqin-dev/kxflow/canvas"
+	"github.com/kqin-dev/kxflow/chrome"
 	"github.com/kqin-dev/kxflow/geometry"
 	"github.com/kqin-dev/kxflow/layout"
 	"github.com/kqin-dev/kxflow/plugin"
@@ -208,11 +209,44 @@ func TestSelectingTodoRevealsContextOptions(t *testing.T) {
 	}
 }
 
-// TestDigitKeyOpensContextOption 验证数字键真的能打开联动选项的界面。
+// openMenuOption 按 l 打开操作菜单，用方向键把光标移到**标签包含 want**
+// 的那一项，回车进入它的界面；返回是否找到了这一项。
 //
-// 这条把"选项 → 借调舞台 → 视图"整条链路走通：
+// 抽成 helper 是因为"按 label 找选项"在多个用例里都要做，
+// 而菜单的交互（l → j… → enter）是**用户真实的按键路径**——
+// 测试照着走一遍，就等于验证了这条路径本身。
+func openMenuOption(t *testing.T, m *kxflow.Model, want string) bool {
+	t.Helper()
+	opts := m.Options()
+	target := -1
+	for i, b := range opts {
+		if strings.Contains(b.Label, want) {
+			target = i
+			break
+		}
+	}
+	if target < 0 {
+		return false
+	}
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "l"})
+	if !m.Stage().Borrowing() {
+		t.Fatalf("按 l 应打开操作菜单（选项 %v）", opts)
+	}
+	for i := 0; i < target; i++ {
+		m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+	}
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "enter"})
+	return true
+}
+
+// TestMenuOpensContextOption 验证 l 真的能打开联动选项的界面。
+//
+// 这条把"选项 → 菜单 → 借调舞台 → 视图"整条链路走通：
 // 它是 req.md 说的"磁贴或选项向中栏请求界面"的宿主侧证据。
-func TestDigitKeyOpensContextOption(t *testing.T) {
+//
+// 注意按键是 **l + 方向键 + enter**，不是数字键——
+// 数字键被去掉了（用户反馈：有 10 个选项怎么办）。
+func TestMenuOpensContextOption(t *testing.T) {
 	src := newMemSource(t, testNow())
 	src.addTodo("写文档", model.KindFixed)
 
@@ -220,40 +254,54 @@ func TestDigitKeyOpensContextOption(t *testing.T) {
 	m, _, _ := l.Build()
 	m.Resize(120, 40)
 	m.SetFocus(geometry.AnchorLeftTop)
-	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"}) // 选中
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"}) // 光标移到条目上
 
-	bindings := m.OptionKeys()
-	if len(bindings) == 0 {
-		t.Fatal("选中后应有可用的选项键位")
+	opts := m.Options()
+	if len(opts) == 0 {
+		t.Fatal("选中后应有可用的选项")
 	}
-	// 找"打标签"那一项（它是 Order 最小的联动选项）。
+	// 菜单里应当有"打标签"（它是 Order 最小的联动选项，因此排在最前）。
 	target := -1
-	for i, b := range bindings {
+	for i, b := range opts {
 		if strings.Contains(b.Label, "打标签") {
 			target = i
 			break
 		}
 	}
 	if target < 0 {
-		t.Fatalf("键位列表里应有打标签，实际 %v", bindings)
+		t.Fatalf("选项列表里应有打标签，实际 %v", opts)
 	}
 
-	if !m.Stage().Borrowing() == false {
+	if m.Stage().Borrowing() {
 		t.Fatal("开局不应有借调")
 	}
-	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: bindings[target].Key})
+	// l 打开菜单。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "l"})
 	if !m.Stage().Borrowing() {
-		t.Fatalf("按 %s 应借调舞台打开标签编辑器", bindings[target].Key)
+		t.Fatal("按 l 应打开操作菜单")
 	}
+	if !strings.Contains(m.View(), "可用操作") {
+		t.Fatalf("应显示操作菜单：\n%s", m.View())
+	}
+	// 方向键把光标移到"打标签"（它是第一项，因此先下后上回到原位也无妨）。
+	for i := 0; i < target; i++ {
+		m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
+	}
+	// enter 打开真正的编辑界面（叠在菜单之上）。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "enter"})
 	out := m.View()
 	if !strings.Contains(out, "标签") {
 		t.Errorf("舞台应显示标签编辑器，实际输出：\n%s", out)
 	}
 
-	// esc 退出借调，焦点回到原磁贴。
+	// esc 退回菜单，再 esc 关闭事务并交还焦点。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "esc"})
+	if !m.Stage().Borrowing() {
+		t.Error("第一次 esc 应退回菜单（事务还在）")
+	}
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "esc"})
 	if m.Stage().Borrowing() {
-		t.Error("esc 应退出借调")
+		t.Error("第二次 esc 应退出借调")
 	}
 	if m.Focus() != geometry.AnchorLeftTop {
 		t.Errorf("焦点应回到借调方（左上），实际 %v", m.Focus())
@@ -274,15 +322,8 @@ func TestDDLWizardEditsRealData(t *testing.T) {
 	m.SetFocus(geometry.AnchorLeftTop)
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
 
-	// 打开"设截止时间"。
-	opened := false
-	for _, b := range m.OptionKeys() {
-		if strings.Contains(b.Label, "设截止时间") {
-			m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: b.Key})
-			opened = true
-			break
-		}
-	}
+	// 打开菜单，把光标移到"设截止时间"，回车进入向导。
+	opened := openMenuOption(t, m, "设截止时间")
 	if !opened {
 		t.Fatal("应有「设截止时间」选项")
 	}
@@ -391,13 +432,12 @@ func TestDashboardShowsContextOptions(t *testing.T) {
 	m.Resize(120, 34)
 
 	// 未选中时：看板要明确给出**怎么操作**（按 l），而不是留白。
-	// 只写"选中后会出现操作"是不够的——用户仍不知道按哪个键打开它。
 	before := m.View()
-	if !strings.Contains(before, "l 操作") {
+	if !strings.Contains(before, "按 l") {
 		t.Errorf("未选中时看板应提示按 l 打开操作，实际输出：\n%s", before)
 	}
 
-	// 选中浮动待办（我们的数据里它就是"拿快递"）。
+	// 光标移到浮动待办上（走真实按键路径）。
 	m.SetFocus(geometry.AnchorLeftBottom)
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "j"})
 	if sel := m.Selection(); sel.ID != todo.ID {
@@ -405,28 +445,112 @@ func TestDashboardShowsContextOptions(t *testing.T) {
 	}
 
 	after := m.View()
-	// 关键断言：**联动选项的文字必须出现在界面上**。
+	// 关键断言：**联动选项的文字必须出现在界面上**（不需要按键就看得见）。
 	for _, want := range []string{"打标签", "设截止时间"} {
 		if !strings.Contains(after, want) {
 			t.Errorf("选中后看板上应出现「%s」，实际输出：\n%s", want, after)
 		}
 	}
-	// 键位也要显示出来，否则用户仍然不知道怎么触发。
-	bindings := m.OptionKeys()
-	if len(bindings) == 0 {
-		t.Fatal("选中后应有可用选项")
-	}
-	if !strings.Contains(after, bindings[0].Key) {
-		t.Errorf("看板上应显示键位 %q，实际输出：\n%s", bindings[0].Key, after)
-	}
 	// 选中项的名字应出现在选项标签里（"打标签「拿快递」"）。
 	if !strings.Contains(after, "拿快递") {
 		t.Errorf("选项标签应带上选中项名字，实际输出：\n%s", after)
+	}
+	// ⚠️ 关键：**选项里不该再出现按键编号**。
+	// 用户反馈："不应该保留数字作为快捷键：如果有 10 个选项怎么办呢？"
+	if strings.Contains(after, "1  ") || strings.Contains(after, "1  打标签") {
+		t.Errorf("选项不该带数字编号：\n%s", after)
+	}
+	// 下栏提示要跟着光标变（这里是待办列表）。
+	hints := m.Hints()
+	keys := map[string]bool{}
+	for _, h := range hints {
+		keys[h.Key] = true
+	}
+	for _, want := range []string{"j/k", "space", "l", "tab", "q"} {
+		if !keys[want] {
+			t.Errorf("待办列表上的下栏提示应含 %q，实际 %v", want, hints)
+		}
 	}
 	// 渲染必须仍然干净。
 	if !m.CanvasClean() {
 		t.Errorf("画布诊断不干净：%s", m.Diagnostics())
 	}
+}
+
+// TestHintsFollowCursor 是用户第 3 条反馈的直接验收。
+//
+//	原话：如果光标在无动作时不会触发什么东西，那么下栏的操作提示就需要
+//	跟着光标的操作提示改变，显然这种提示需要插件包提供。
+//
+// 因此：光标停在不同的磁贴上，下栏提示必须**不一样**；
+// 而中栏看板不因此改变（光标只有悬停作用）。
+func TestHintsFollowCursor(t *testing.T) {
+	src := newMemSource(t, testNow())
+	src.addTodo("待办甲", model.KindFixed)
+	src.addTodo("临时乙", model.KindFloating)
+
+	l := NewLoader(src, src.Config())
+	m, _, _ := l.Build()
+	m.Resize(120, 40)
+
+	// 计时磁贴（未计时）：只提示"开始专注"。
+	m.SetFocus(geometry.AnchorCenterDockRight)
+	m.View()
+	timerHints := m.Hints()
+
+	// 待办列表：提示移动/勾选/操作。
+	m.SetFocus(geometry.AnchorLeftTop)
+	m.View()
+	todoHints := m.Hints()
+
+	if equalHints(timerHints, todoHints) {
+		t.Fatalf("不同磁贴的下栏提示不应相同：计时 %v / 待办 %v", timerHints, todoHints)
+	}
+	// 待办的提示里应当有"勾选"，计时的里面不该有。
+	if !hasHint(todoHints, "space") {
+		t.Errorf("待办列表应提示 space 勾选，实际 %v", todoHints)
+	}
+	if hasHint(timerHints, "space") {
+		t.Errorf("未计时的计时磁贴不该提示 space，实际 %v", timerHints)
+	}
+	// 两处都应有 tab / q（任何位置都能用）。
+	for _, hints := range [][]chrome.KeymapHint{timerHints, todoHints} {
+		for _, want := range []string{"tab", "q"} {
+			if !hasHint(hints, want) {
+				t.Errorf("任何位置都应提示 %q，实际 %v", want, hints)
+			}
+		}
+	}
+
+	// 中栏看板**不因光标移动而改变**（它是底色，只按选中/选项变化）。
+	before := m.View()
+	m.SetFocus(geometry.AnchorRightTop)
+	after := m.View()
+	// 看板区域的内容不该因为聚焦变化而出现/消失（只有高亮会变）。
+	if strings.Contains(before, "可用操作") != strings.Contains(after, "可用操作") {
+		t.Errorf("中栏看板不该因光标移动而改变内容")
+	}
+}
+
+func hasHint(hints []chrome.KeymapHint, key string) bool {
+	for _, h := range hints {
+		if h.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func equalHints(a, b []chrome.KeymapHint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestOptionMenuIsAPendingTransaction 固化"未决事务"的语义（实机反馈）。
@@ -557,7 +681,10 @@ func TestStageIsInFocusRingWhileBorrowing(t *testing.T) {
 	}
 
 	// 借调之后（帮助页），tab 应当能转到舞台。
-	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "3"}) // 打开"帮助"
+	// 没有选中条目时，菜单里只有通用选项；"帮助"排在第一项。
+	if !openMenuOption(t, m, "帮助") {
+		t.Fatalf("菜单里应有「帮助」，实际 %v", m.Options())
+	}
 	if !m.Stage().Borrowing() {
 		t.Fatal("应借调打开帮助页")
 	}
@@ -574,23 +701,45 @@ func TestStageIsInFocusRingWhileBorrowing(t *testing.T) {
 	}
 }
 
-// TestLWithoutOptionsExplains 验证没有可打开项时**说清原因**。
+// TestMenuWithoutSelectionShowsOnlyBoardOptions 验证没有选中条目时菜单的形态。
 //
-// 按键不能"按了没反应"：用户会以为程序卡了。
-func TestLWithoutOptionsExplains(t *testing.T) {
+// 去掉数字键之后 l 成了唯一入口，因此它**必须总能打开**——
+// 否则"开始专注/帮助/关于"这些通用操作就再也没有触发方式了。
+// 此时菜单里应当只有通用选项，没有"作用于某条目"的联动选项。
+func TestMenuWithoutSelectionShowsOnlyBoardOptions(t *testing.T) {
 	src := newMemSource(t, testNow())
 	l := NewLoader(src, src.Config())
 	m, _, _ := l.Build()
 	m.Resize(120, 34)
 
-	// 没有任何条目 → 没有选中 → 按 l 应当给出提示而不是静默。
+	// 没有条目 → 没有选中 → 只有看板选项。
+	for _, b := range m.Options() {
+		if b.IsContext() {
+			t.Fatalf("没有选中时不该有联动选项：%q", b.Label)
+		}
+	}
+
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "l"})
-	if m.Stage().Borrowing() {
-		t.Error("没有可操作项时不该打开空菜单")
+	if !m.Stage().Borrowing() {
+		t.Fatal("l 应当总能打开菜单（通用操作只能从这里进）")
 	}
 	out := m.View()
-	if !strings.Contains(out, "先选中") {
-		t.Errorf("按 l 而无可操作项时应给出提示：\n%s", out)
+	if !strings.Contains(out, "可用操作") {
+		t.Errorf("应显示操作菜单：\n%s", out)
+	}
+	// 通用选项必须在菜单里可见。
+	for _, want := range []string{"帮助", "关于"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("菜单里应有 %q：\n%s", want, out)
+		}
+	}
+	// esc 关闭后焦点回到磁贴。
+	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "esc"})
+	if m.Stage().Borrowing() {
+		t.Error("esc 应关闭菜单")
+	}
+	if !m.Focus().IsSlot() {
+		t.Errorf("关闭菜单后焦点应回到某个磁贴，实际 %v", m.Focus())
 	}
 }
 
@@ -633,8 +782,11 @@ func TestSaveFailureIsSurfaced(t *testing.T) {
 // TestBoardOptionsHaveNoDuplicates 是"选项重复"那次事故的墓碑。
 //
 // 内核本身也是一个已装载的包，而 Manager.BoardOptions 既从 m.kernel
+// TestBoardOptionsHaveNoDuplicates 是"选项重复"那次事故的墓碑。
+//
+// 内核本身也是一个已装载的包，而 Manager.BoardOptions 既从 m.kernel
 // 收它的选项，又遍历所有包再收一遍——于是每个内核选项出现两次，
-// 看板上是"1 帮助 / 2 帮助 / 3 关于 / 4 关于"，按 1 和按 2 效果一样。
+// 用户在菜单里会看到两条一模一样的"帮助"。
 func TestBoardOptionsHaveNoDuplicates(t *testing.T) {
 	src := newMemSource(t, testNow())
 	l := NewLoader(src, src.Config())
@@ -651,14 +803,14 @@ func TestBoardOptionsHaveNoDuplicates(t *testing.T) {
 			t.Errorf("看板选项 %q 出现了 %d 次，应当只有一次", label, n)
 		}
 	}
-	// 键位是按键去重的最后一道防线：同一个键不能对应两个选项。
-	keys := map[string]int{}
-	for _, b := range m.OptionKeys() {
-		keys[b.Key]++
+	// 汇总后的选项列表同样不能有重复标签（用户看到的就是这个列表）。
+	dup := map[string]int{}
+	for _, b := range m.Options() {
+		dup[b.Label]++
 	}
-	for k, n := range keys {
+	for label, n := range dup {
 		if n > 1 {
-			t.Errorf("键位 %q 绑定了 %d 个选项", k, n)
+			t.Errorf("选项列表里 %q 出现了 %d 次", label, n)
 		}
 	}
 	if len(opts) == 0 {

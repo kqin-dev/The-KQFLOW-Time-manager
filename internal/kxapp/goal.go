@@ -165,6 +165,18 @@ func goalLine(g *model.Goal, src Source) string {
 	return line
 }
 
+// KeyHints 申报目标列表上的可用按键（空列表时没什么可按）。
+func (t *goalTile) KeyHints(plugin.RenderCtx) []plugin.KeyHint {
+	if len(GoalList(t.src)) == 0 {
+		return nil
+	}
+	return []plugin.KeyHint{
+		{Key: "j/k", Desc: "移动"},
+		{Key: "space", Desc: "完成"},
+		{Key: "l", Desc: "操作"},
+	}
+}
+
 func (t *goalTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 	goals := GoalList(t.src)
 	switch ev.Key {

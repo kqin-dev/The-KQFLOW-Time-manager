@@ -164,17 +164,9 @@ func TestTimerEndToEndThroughEngine(t *testing.T) {
 		t.Errorf("未开始时磁贴应显示「未开始」：\n%s", m.View())
 	}
 
-	// 打开看板上的"开始专注"。
-	opened := false
-	for _, b := range m.OptionKeys() {
-		if strings.Contains(b.Label, "开始专注") {
-			m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: b.Key})
-			opened = true
-			break
-		}
-	}
-	if !opened {
-		t.Fatalf("看板上应有「开始专注」选项，实际 %v", m.OptionKeys())
+	// 打开菜单里的"开始专注"（它是看板选项，因此不需要先选中条目）。
+	if !openMenuOption(t, m, "开始专注") {
+		t.Fatalf("选项里应有「开始专注」，实际 %v", m.Options())
 	}
 	if !strings.Contains(m.View(), "选择时长") {
 		t.Fatalf("应打开计时的时长选择界面：\n%s", m.View())
@@ -226,19 +218,11 @@ func TestTimerStopRecordsSession(t *testing.T) {
 	if !l.State().Timer.Start(plan, nil, testNow()) {
 		t.Fatal("应当能开始计时")
 	}
-	// 过 12 分钟，然后通过看板选项进入计时界面并结束。
+	// 过 12 分钟，然后从菜单进入计时界面并结束。
 	setNow(src, testNow().Add(12*time.Minute))
 
-	opened := false
-	for _, b := range m.OptionKeys() {
-		if strings.Contains(b.Label, "计时中") {
-			m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: b.Key})
-			opened = true
-			break
-		}
-	}
-	if !opened {
-		t.Fatalf("计时中时看板选项应变成「计时中…」，实际 %v", m.OptionKeys())
+	if !openMenuOption(t, m, "计时中") {
+		t.Fatalf("计时中时选项应变成「计时中…」，实际 %v", m.Options())
 	}
 	m.Dispatch(plugin.Event{Kind: plugin.EventKey, Key: "s"}) // 结束并记录
 
