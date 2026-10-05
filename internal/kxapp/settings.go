@@ -21,18 +21,28 @@ const (
 	SettingOptionID = "kqflow.settings.board"
 )
 
-// settingPack 是设置整合包：**只含一个看板选项**，没有磁贴。
+// settingPack 是设置整合包：**只含看板选项**，没有磁贴。
 //
 // 设置不该占看板空间——它是"偶尔进去改一下"的东西。
 // 这也说明包不一定非要含磁贴（与 kqflow.labels 只含联动选项同理）。
 type settingPack struct {
 	src   Source
 	state *HostState
+	// view 是"界面布局"选项的**唯一实例**。
+	//
+	// ⚠️ 必须存下来而不是每次 Members() 现造：装配时管理器拿的是
+	// Members() 返回的实例，而 BindViewEngine（在装配之后调用）若再
+	// 调一次 Members() 就会拿到**另一批新对象**，于是绑定落在一个
+	// 谁都不用的对象上——界面布局页永远读不到引擎状态（槽位全空、
+	// 停靠区显示关）。我第一版正是这么错的，症状就是"进布局页一片空"。
+	//
+	// 同类坑：任何"构造 + 绑定"分两步的对象，都必须只构造一次。
+	view *viewOption
 }
 
 // NewSettingPack 创建设置包。
 func NewSettingPack(src Source, st *HostState) plugin.Pack {
-	return &settingPack{src: src, state: st}
+	return &settingPack{src: src, state: st, view: &viewOption{src: src, state: st}}
 }
 
 func (p *settingPack) ID() string              { return SettingPackID }
@@ -45,13 +55,25 @@ func (p *settingPack) Requires() []string      { return nil }
 func (p *settingPack) Conflicts() []string     { return nil }
 
 func (p *settingPack) Members() []plugin.Plugin {
-	return []plugin.Plugin{&boardOptionSpec{
-		mf: plugin.Manifest{
-			ID: SettingOptionID, Name: "设置", Kind: plugin.KindBoardOption,
-			Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+	return []plugin.Plugin{
+		&boardOptionSpec{
+			mf: plugin.Manifest{
+				ID: SettingOptionID, Name: "设置", Kind: plugin.KindBoardOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &settingOption{src: p.src, state: p.state},
 		},
-		opt: &settingOption{src: p.src, state: p.state},
-	}}
+		// "界面布局"与"设置"并列：两者都是看板选项，但管的事完全不同
+		//（设置改偏好，布局改磁贴摆哪儿）。放在同一个包里是因为
+		// 它们都属于"用户配置界面"，一起开关是合理的。
+		&boardOptionSpec{
+			mf: plugin.Manifest{
+				ID: ViewOptionID, Name: "界面布局", Kind: plugin.KindBoardOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: p.view, // 用存下来的那一个实例，见 settingPack.view 的说明
+		},
+	}
 }
 
 func (p *settingPack) Assemble(s svc.Services) (plugin.Assembled, error) {
@@ -62,6 +84,25 @@ func (p *settingPack) Assemble(s svc.Services) (plugin.Assembled, error) {
 		}
 	}
 	return a, nil
+}
+
+// BindViewEngine 把引擎能力接给"界面布局"选项。
+//
+// 为什么用**注入**而不是让 viewOption 直接持有引擎：
+// kxapp 是宿主适配层，引擎是要能单独拆出去的模块（v3 的整个目的）。
+// 让它反向依赖引擎门面类型会把两者绑死；注入一个窄接口则不会，
+// 而且测试里能给替身。
+//
+// 由 Loader.Build 在装配完成后调用（那时引擎已经装好、知道有哪些磁贴）。
+//
+// ⚠️ 这里直接改 p.view（**同一个实例**），不去遍历 Members()——
+// 遍历会现造新对象，绑定就落空了（详见 settingPack.view 的说明）。
+func (p *settingPack) BindViewEngine(read func() viewEngine, apply func(plugin.ViewConfig)) {
+	if p.view == nil {
+		return
+	}
+	p.view.engineView = read
+	p.view.apply = apply
 }
 
 // settingOption 是"设置"看板选项。

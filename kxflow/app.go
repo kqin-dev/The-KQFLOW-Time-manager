@@ -300,6 +300,26 @@ func (m *Model) placeTiles() {
 	m.placementIssues = issues
 }
 
+// Placements 返回当前每个磁贴的落位（供宿主与测试查询）。
+//
+// 视图设置界面用它显示"这个磁贴现在在哪儿"；测试用它断言搬迁真的生效
+// （只看渲染文本会被"标题撞车"骗过去）。
+func (m *Model) Placements() []plugin.Placement {
+	out := make([]plugin.Placement, 0, len(geometry.AllAnchors))
+	for _, a := range geometry.AllAnchors {
+		slot, ok := m.registry.At(a)
+		if !ok || slot.PluginID == "" {
+			continue
+		}
+		out = append(out, plugin.Placement{
+			PluginID: slot.PluginID, PackID: slot.PackID, Anchor: a,
+			// ByUser 问视图配置：这个槽位是不是用户明确指派的。
+			ByUser: m.viewCfg.SlotOf(a) != "",
+		})
+	}
+	return out
+}
+
 // Unplaced 返回没有槽位可放的磁贴（供宿主展示"为什么它没出现"）。
 func (m *Model) Unplaced() []plugin.Manifest { return m.unplaced }
 
@@ -660,6 +680,29 @@ func (m *Model) footerStatus() (float64, string, bool) {
 		}
 	}
 	return 0, "", false
+}
+
+// AllTiles 返回全部**已装载**的磁贴（含未安置、被隐藏的）。
+//
+// 视图设置界面需要它：用户要能看到"有哪些磁贴可以摆"，
+// 而不仅仅是"现在摆出来的那几个"。因此这里从管理器问，
+// 而不是从注册表（注册表只有已安置的）。
+func (m *Model) AllTiles() []plugin.TileRef { return m.manager.AllTiles() }
+
+// ViewConfig 返回当前的视图配置（供宿主保存与界面展示）。
+func (m *Model) ViewConfig() plugin.ViewConfig { return m.viewCfg }
+
+// ApplyViewConfig 换一份视图配置并立即重新安置。
+//
+// 视图设置改完就是这样生效的：改配置 → 重新安置 → 重绘。
+// 不做"增量搬动"是因为那需要处理一大堆中间冲突（两边互占、连锁让位），
+// 而重新安置的规则已经被测试穷举过（design §4.7）。
+func (m *Model) ApplyViewConfig(vc plugin.ViewConfig) {
+	m.viewCfg = vc
+	m.registry = tile.NewRegistry()
+	m.placeTiles()
+	m.relayout()
+	m.applyFocusDefaults()
 }
 
 // CanvasClean 报告最近一帧没有越界、没有覆盖。

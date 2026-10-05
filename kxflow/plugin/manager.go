@@ -569,6 +569,21 @@ func (m *Manager) ContextOptions(sel Selection) []ContextOption {
 	return out
 }
 
+// AllTiles 返回全部已装载的磁贴（**含**未安置与被隐藏的）。
+//
+// 与 Placements 的区别：那个回答"现在摆在哪儿"，这个回答"有哪些可摆"。
+// 视图设置界面需要后者——否则用户没法把一个还没摆出来的磁贴摆上去。
+func (m *Manager) AllTiles() []TileRef {
+	out := append([]TileRef{}, m.Tiles()...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].PackID != out[j].PackID {
+			return out[i].PackID < out[j].PackID
+		}
+		return out[i].Manifest.ID < out[j].Manifest.ID
+	})
+	return out
+}
+
 // BoardOptions 返回全部看板选项（内核自带的 + 各包的），按 Order 排序。
 //
 // ⚠️ 内核的选项**只收一次**：内核本身也是一个已装载的包，

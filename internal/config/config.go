@@ -127,6 +127,15 @@ type Config struct {
 	// 在那之前让新引擎当默认，等于拿用户的日常使用做测试。
 	// 空串按 legacy 处理，因此老配置文件（没有这个字段）行为完全不变。
 	Engine string `json:"engine,omitempty"`
+	// View 是界面布局（磁贴摆在哪个槽位、隐藏了哪些、停靠区开不开）。
+	//
+	// 放在配置里而不是日数据里：它是**偏好**，与逻辑日无关，
+	// 也不该随某一天的数据被清理（与 SavedPlans 同理）。
+	//
+	// 用 any 而不是 plugin.ViewConfig：**internal/config 不该依赖引擎**——
+	// 配置是数据的形状，引擎是可替换的实现（v3 的整个目的就是让引擎能换）。
+	// 由宿主在读写时做一次转换（见 internal/kxapp 的 viewConfig）。
+	View map[string]any `json:"view,omitempty"`
 	// Timezone 为空时使用系统本地时区。
 	Timezone string `json:"timezone,omitempty"`
 	// Nickname 会出现在看板问候语中。
