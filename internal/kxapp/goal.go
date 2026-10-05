@@ -45,41 +45,76 @@ func (p *goalPack) Requires() []string      { return nil }
 func (p *goalPack) Conflicts() []string     { return nil }
 func (p *goalPack) Provides() []string      { return []string{CapItemSelection} }
 func (p *goalPack) Members() []plugin.Plugin {
-	return []plugin.Plugin{&tilePluginSpec{
-		mf: plugin.Manifest{
-			ID: GoalTileID, Name: "目标", Kind: plugin.KindTile,
-			Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
-			Slots: plugin.SlotPreference{Anchor: geometry.AnchorRightTop, Priority: 20},
+	return []plugin.Plugin{
+		&tilePluginSpec{
+			mf: plugin.Manifest{
+				ID: GoalTileID, Name: "目标", Kind: plugin.KindTile,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+				Slots: plugin.SlotPreference{Anchor: geometry.AnchorRightTop, Priority: 20},
+			},
+			newComp: func(s svc.Services) plugin.Component {
+				return &goalTile{src: p.src, state: p.state, svc: s}
+			},
 		},
-		newComp: func(s svc.Services) plugin.Component {
-			return &goalTile{src: p.src, state: p.state, svc: s}
+		// "添加目标"是**看板选项**而不是联动选项：目标列表可能为空，
+		// 而"空列表上也得能加"是基本要求（否则新用户进不来）——
+		// 联动选项在"没有可选中项"时不会出现。
+		&boardOptionSpec{
+			mf: plugin.Manifest{
+				ID: AddGoalOptionID, Name: "添加目标", Kind: plugin.KindBoardOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &goalAddOption{src: p.src, state: p.state},
 		},
-	}}
+		&ctxOptionSpec{
+			mf: plugin.Manifest{
+				ID: EditGoalOptionID, Name: "重命名目标", Kind: plugin.KindContextOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &goalRenameOption{src: p.src, state: p.state},
+		},
+		&ctxOptionSpec{
+			mf: plugin.Manifest{
+				ID: DelGoalOptionID, Name: "删除目标", Kind: plugin.KindContextOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &goalDeleteOption{src: p.src, state: p.state},
+		},
+	}
 }
 
 func (p *goalPack) Assemble(s svc.Services) (plugin.Assembled, error) {
-	tiles := make([]plugin.Component, 0, 1)
+	a := &goalAssembled{p: p}
 	for _, m := range p.Members() {
-		comp, err := m.New(s)
-		if err != nil {
-			return nil, err
+		switch spec := m.(type) {
+		case *tilePluginSpec:
+			comp, err := spec.New(s)
+			if err != nil {
+				return nil, err
+			}
+			a.tiles = append(a.tiles, comp)
+		case *ctxOptionSpec:
+			a.ctx = append(a.ctx, spec.opt)
+		case *boardOptionSpec:
+			a.board = append(a.board, spec.opt)
 		}
-		tiles = append(tiles, comp)
 	}
-	return &goalAssembled{p: p, tiles: tiles}, nil
+	return a, nil
 }
 
 type goalAssembled struct {
 	p     *goalPack
 	tiles []plugin.Component
+	ctx   []plugin.ContextOption
+	board []plugin.BoardOption
 }
 
 func (a *goalAssembled) Pack() plugin.Pack                  { return a.p }
 func (a *goalAssembled) Kernel() plugin.Kernel              { return nil }
 func (a *goalAssembled) Tiles() []plugin.Component          { return a.tiles }
-func (a *goalAssembled) BoardOptions() []plugin.BoardOption { return nil }
+func (a *goalAssembled) BoardOptions() []plugin.BoardOption { return a.board }
 func (a *goalAssembled) ContextOptions() []plugin.ContextOption {
-	return nil
+	return a.ctx
 }
 func (a *goalAssembled) Services() []plugin.Service { return nil }
 func (a *goalAssembled) Dispose()                   {}
@@ -170,11 +205,13 @@ func goalLine(g *model.Goal, src Source) string {
 // 与待办列表同理：tab 过来即选中第一条；没有目标时返回零值，
 // 避免把上一个磁贴的选中带过来。
 func (t *goalTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	t.state.FocusList = ListRefGoal
 	goals := GoalList(t.src)
 	cur := ClampCursor(t.state.GoalCursor, len(goals))
 	if cur >= len(goals) {
 		t.state.SelectedGoal = ""
-		return plugin.Selection{}
+		// 空列表：上报"列表本身被选中"（理由见 listSelection）。
+		return listSelection(ListRefGoal)
 	}
 	g := goals[cur]
 	t.state.SelectedGoal = g.ID

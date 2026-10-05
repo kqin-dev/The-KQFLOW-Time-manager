@@ -86,17 +86,49 @@ func (p *todoPack) Members() []plugin.Plugin {
 					title: "TODAY · 临时", svc: s}
 			},
 		},
+		// 下面三个是"日常真正要用的动作"：加、改、删。
+		// 它们与列表**同属一个包**，因此认识列表类型——
+		// 这正是"包内可以有机耦合"的用法（添加动作天然要知道加到哪个列表）。
+		//
+		// 加/改/删都做成**联动选项**：作用对象是"光标所在的列表/条目"，
+		// 由引擎广播的 Selection 传达，它们不需要认识任何磁贴。
+		&ctxOptionSpec{
+			mf: plugin.Manifest{
+				ID: AddTodoOptionID, Name: "添加待办", Kind: plugin.KindContextOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &todoAddOption{src: p.src, state: p.state, kind: model.KindFixed},
+		},
+		&ctxOptionSpec{
+			mf: plugin.Manifest{
+				ID: EditTodoOptionID, Name: "重命名待办", Kind: plugin.KindContextOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &todoRenameOption{src: p.src, state: p.state},
+		},
+		&ctxOptionSpec{
+			mf: plugin.Manifest{
+				ID: DelTodoOptionID, Name: "删除待办", Kind: plugin.KindContextOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &todoDeleteOption{src: p.src, state: p.state},
+		},
 	}
 }
 
 func (p *todoPack) Assemble(s svc.Services) (plugin.Assembled, error) {
 	a := &todoAssembled{p: p}
 	for _, m := range p.Members() {
-		comp, err := m.New(s)
-		if err != nil {
-			return nil, err
+		switch spec := m.(type) {
+		case *tilePluginSpec:
+			comp, err := spec.New(s)
+			if err != nil {
+				return nil, err
+			}
+			a.tiles = append(a.tiles, comp)
+		case *ctxOptionSpec:
+			a.ctx = append(a.ctx, spec.opt)
 		}
-		a.tiles = append(a.tiles, comp)
 	}
 	return a, nil
 }
@@ -104,6 +136,7 @@ func (p *todoPack) Assemble(s svc.Services) (plugin.Assembled, error) {
 type todoAssembled struct {
 	p     *todoPack
 	tiles []plugin.Component
+	ctx   []plugin.ContextOption
 }
 
 func (a *todoAssembled) Pack() plugin.Pack                  { return a.p }
@@ -111,7 +144,7 @@ func (a *todoAssembled) Kernel() plugin.Kernel              { return nil }
 func (a *todoAssembled) Tiles() []plugin.Component          { return a.tiles }
 func (a *todoAssembled) BoardOptions() []plugin.BoardOption { return nil }
 func (a *todoAssembled) ContextOptions() []plugin.ContextOption {
-	return nil
+	return a.ctx
 }
 func (a *todoAssembled) Services() []plugin.Service { return nil }
 func (a *todoAssembled) Dispose()                   {}
@@ -245,11 +278,21 @@ func (t *todoTile) KeyHints(plugin.RenderCtx) []plugin.KeyHint {
 // 列表为空时返回零值 Selection，表示"这里没有东西可选"——
 // 此时按 l 只会看到通用选项，不会误作用到别的磁贴的条目上。
 func (t *todoTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
+	// 记下"光标在哪个列表里"：添加待办要知道加到哪儿（见 HostState.FocusList）。
+	t.state.FocusList = string(t.kind)
 	items := TodoList(t.src, t.kind)
 	cur := ClampCursor(t.cursorIndex(), len(items))
 	if cur >= len(items) {
 		t.state.selectTodo("")
-		return plugin.Selection{}
+		// 列表为空：上报"这个**列表**被选中"。
+		//
+		// 不能返回空选中——那样 Applies 会让**所有**联动选项消失，
+		// 连"添加"都不出现，用户就永远加不进第一条（真实的死锁）。
+		ref := ListRefFixed
+		if t.kind == model.KindFloating {
+			ref = ListRefFloating
+		}
+		return listSelection(ref)
 	}
 	item := items[cur]
 	t.state.selectTodo(item.ID)

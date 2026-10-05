@@ -3,6 +3,8 @@ package kxapp
 import (
 	"strings"
 
+	"github.com/kqin-dev/kxflow/plugin"
+
 	"github.com/kqin-dev/The-KQFLOW-Time-manager/internal/model"
 )
 
@@ -41,6 +43,15 @@ type HostState struct {
 	// 只有结束时才把结果写进当天记录。这样"程序崩了"最多丢一次计时，
 	// 而不会在数据里留下一条永远没结束的会话。
 	Timer Timer
+
+	// FocusList 记录"光标现在停在哪个列表里"（model.KindFixed /
+	// model.KindFloating / 目标用 "goal"）。
+	//
+	// 为什么需要它："添加待办"要知道加到**哪个列表**。Selection 里只有
+	// 条目 ID，没有"它是固定还是临时"——而这件事只有列表磁贴自己知道。
+	// 让磁贴在获得焦点/移动光标时记下来，是这里唯一不重复实现的办法
+	//（另一条路是让引擎去问磁贴，但那会把"列表"这个概念塞进引擎）。
+	FocusList string
 }
 
 // NewHostState 创建初始状态。
@@ -63,6 +74,36 @@ func (h *HostState) setFloatingCursor(v int) { h.TodoFloatCursor = v }
 
 // selectTodo 记录当前选中的待办 ID。
 func (h *HostState) selectTodo(id string) { h.SelectedTodo = id }
+
+// ListRefKind 是"选中对象是**列表本身**"时的 Kind。
+//
+// 为什么需要它（一个真实的死锁）：列表为空时没有条目可选，于是选中为空，
+// 而引擎的 Applies 对空选中一律返回 false —— **连"添加"都不出现**，
+// 用户因此永远加不进第一条。空列表恰恰是最需要"添加"的时候。
+//
+// 解法是让光标在列表上时上报一个"列表本身"的选中：
+//
+//	Kind: ListRefKind, ID: 列表标识（"fixed"/"floating"/"goal"）
+//
+// 于是"添加"这类**作用于列表**的选项可以声明 AppliesTo(ListRefKind)，
+// 而"删除/重命名"这类**作用于条目**的选项只认真正的条目（Kind: "todo"），
+// 不会在空列表上冒出来。
+const ListRefKind = "list"
+
+// 列表标识（用作列表选中的 ID，也是 HostState.FocusList 的取值）。
+const (
+	ListRefFixed    = "fixed"
+	ListRefFloating = "floating"
+	ListRefGoal     = "goal"
+)
+
+// listSelection 造一个"列表本身被选中"的上报。
+//
+// 它表示"当前上下文是这个列表"——添加类选项据此出现，
+// 而要求"某一条目"的选项（删除/重命名）不会出现。
+func listSelection(ref string) plugin.Selection {
+	return plugin.Selection{Kind: ListRefKind, ID: ref}
+}
 
 // DisplayTitle 把一段文本清成"可以安全显示"的样子。
 //

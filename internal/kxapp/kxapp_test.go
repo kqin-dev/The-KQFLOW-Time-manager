@@ -229,12 +229,23 @@ func TestSelectingTodoRevealsContextOptions(t *testing.T) {
 // 因此更要让这一层是显式的、可数的。
 //
 // 返回 0 表示没找到 `want` 这一项（此时什么都没做）。
+//
+// ⚠️ `want` 要写得足够具体：菜单里同时有"添加固定待办"与"添加目标"，
+// 用"添加"会命中先出现的那一个（这正是我第一版测试踩的坑）。
 func openMenuOption(t *testing.T, m *kxflow.Model, want string) int {
+	t.Helper()
+	return openMenuOptionFunc(t, m, func(label string) bool {
+		return strings.Contains(label, want)
+	})
+}
+
+// openMenuOptionFunc 是 openMenuOption 的谓词版本：需要更精确的匹配时用它。
+func openMenuOptionFunc(t *testing.T, m *kxflow.Model, match func(label string) bool) int {
 	t.Helper()
 	opts := m.Options()
 	target := -1
 	for i, b := range opts {
-		if strings.Contains(b.Label, want) {
+		if match(b.Label) {
 			target = i
 			break
 		}
@@ -721,21 +732,39 @@ func TestStageIsInFocusRingWhileBorrowing(t *testing.T) {
 	}
 }
 
-// TestMenuWithoutSelectionShowsOnlyBoardOptions 验证没有选中条目时菜单的形态。
+// TestMenuWithoutSelectionShowsOnlyBoardOptions 验证没有条目时菜单的形态。
 //
 // 去掉数字键之后 l 成了唯一入口，因此它**必须总能打开**——
 // 否则"开始专注/帮助/关于"这些通用操作就再也没有触发方式了。
-// 此时菜单里应当只有通用选项，没有"作用于某条目"的联动选项。
+//
+// 注意"没有条目"时选中**不是空的**，而是"列表本身被选中"
+// （见 listSelection）：否则 Applies 会让所有联动选项消失，
+// 连"添加"都不出现，用户永远加不进第一条——那是个真实的死锁。
+// 因此空列表上应当出现"添加"，但不该出现"删除/重命名"。
 func TestMenuWithoutSelectionShowsOnlyBoardOptions(t *testing.T) {
 	src := newMemSource(t, testNow())
 	l := NewLoader(src, src.Config())
 	m, _, _ := l.Build()
 	m.Resize(120, 34)
 
-	// 没有条目 → 没有选中 → 只有看板选项。
+	// 焦点在空列表上：选中是"列表本身"。
+	if sel := m.Selection(); sel.Kind != ListRefKind || sel.ID != ListRefFixed {
+		t.Fatalf("空列表上选中应为 list:fixed，实际 %+v", sel)
+	}
+	labels := map[string]bool{}
 	for _, b := range m.Options() {
-		if b.IsContext() {
-			t.Fatalf("没有选中时不该有联动选项：%q", b.Label)
+		labels[b.Label] = true
+	}
+	// 空列表必须能添加。
+	if !labels["添加固定待办…"] {
+		t.Errorf("空列表上必须能添加，实际选项 %v", m.Options())
+	}
+	// 但不该有作用在**条目**上的选项。
+	for _, bad := range []string{"删除", "重命名", "打标签", "设截止时间"} {
+		for label := range labels {
+			if strings.Contains(label, bad) {
+				t.Errorf("空列表上不该出现 %q（它需要具体条目）", label)
+			}
 		}
 	}
 
