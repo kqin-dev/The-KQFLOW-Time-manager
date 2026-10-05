@@ -87,34 +87,122 @@ func TestCapabilityGraphAndOrder(t *testing.T) {
 	}
 }
 
-// TestMissingCapabilityIsExplained 验证缺依赖时**说清缺哪一个标记**。
+// TestMissingHostIsWarningNotError 是评审后修正的**核心语义测试**。
 //
-// 这是"可解释"的核心：只说"没装上"等于没有信息。
-func TestMissingCapabilityIsExplained(t *testing.T) {
-	ddl := newPack("kqflow.ddl")
-	ddl.requires = []string{"item.selection"}
-	ddl.members = []Plugin{ctxPlugin("kqflow.ddl.ctx")}
+// 用户的原话："这种情况属于安装了一个正常的包，但是没有任何包可以接纳它……
+// 因此只需要在包管理器里给个警告（而不是错误）提示此包是正常的，
+// 但是虽然启用却没有任何作用，因此静默失效了，
+// 因为它不是有问题，而是『没有水瓶给水』这种警告类型的问题。"
+//
+// 因此这里断言三件事：
+//  1. 它**不在** Rejected 里（它不是错误）；
+//  2. 它在 Inactive 里（启用了但没起作用）；
+//  3. 有一条 WarnNoHost 警告，且说明是"没有接纳它的组件"而不是"包有缺陷"。
+func TestMissingHostIsWarningNotError(t *testing.T) {
+	labels := newPack("kqflow.labels")
+	labels.requires = []string{"item.selection"}
+	labels.members = []Plugin{ctxPlugin("kqflow.labels.ctx")}
 
 	m := NewManager(engine)
-	rep := m.Load(0, ddl)
+	rep := m.Load(0, labels)
 
-	if rep.Loaded != nil {
-		t.Fatalf("缺依赖的包不应装载，实际 %s", describeReport(rep))
+	if len(rep.Rejected) != 0 {
+		t.Fatalf("没有接纳者不是错误，不应出现在 Rejected 里，实际 %s", describeReport(rep))
 	}
-	rj := rep.RejectionsOf(RejectMissingCapability)
-	if len(rj) != 1 {
-		t.Fatalf("应有一条缺能力记录，实际 %s", describeReport(rep))
+	if len(rep.Inactive) != 1 || rep.Inactive[0] != "kqflow.labels" {
+		t.Fatalf("应记为 Inactive，实际 %v", rep.Inactive)
 	}
-	if !strings.Contains(rj[0].Detail, "item.selection") {
-		t.Errorf("缺能力说明必须点出具体标记，实际 %q", rj[0].Detail)
+	ws := rep.WarningsOf(WarnNoHost)
+	if len(ws) != 1 {
+		t.Fatalf("应有一条 WarnNoHost，实际 %s", describeReport(rep))
+	}
+	if !strings.Contains(ws[0].Detail, "item.selection") {
+		t.Errorf("警告要点出缺的是哪个标记，实际 %q", ws[0].Detail)
+	}
+	if strings.Contains(ws[0].Detail, "缺陷") || strings.Contains(ws[0].Detail, "错误") {
+		t.Errorf("警告里不该说这个包有毛病，实际 %q", ws[0].Detail)
+	}
+	// 报告文本要把"警告"与"错误"分开说。
+	text := rep.Explain()
+	if !strings.Contains(text, "警告") {
+		t.Errorf("报告里应有警告段落，实际：\n%s", text)
+	}
+	if strings.Contains(text, "错误（这些包有问题") {
+		t.Errorf("没有错误时不该出现错误段落，实际：\n%s", text)
 	}
 }
 
-// TestDisabledPackIsNotAnError 验证用户关闭的包记在 Disabled 而不是 Rejected。
+// TestProviderDisabledGivesActionableHint 验证"提供者存在但被关掉"给可操作指引。
+//
+// 与 WarnNoHost 分开的理由就是这条：用户需要知道**去开哪个包**，
+// 而不是只被告知"缺少能力标记 foo"。
+func TestProviderDisabledGivesActionableHint(t *testing.T) {
+	host := newPack("kqflow.todo")
+	host.provides = []string{"item.selection"}
+	host.members = []Plugin{tilePlugin("kqflow.todo.fixed", "固定 TODO", geometry.AnchorLeftTop, 0)}
+	host.setEnabled(false) // 用户关了它
+
+	labels := newPack("kqflow.labels")
+	labels.requires = []string{"item.selection"}
+	labels.members = []Plugin{ctxPlugin("kqflow.labels.ctx")}
+
+	m := NewManager(engine)
+	rep := m.Load(0, host, labels)
+
+	if len(rep.Rejected) != 0 {
+		t.Fatalf("不应有错误，实际 %s", describeReport(rep))
+	}
+	ws := rep.WarningsOf(WarnProviderDisabled)
+	if len(ws) != 1 {
+		t.Fatalf("应有一条 WarnProviderDisabled，实际 %s", describeReport(rep))
+	}
+	if !strings.Contains(ws[0].Detail, "kqflow.todo") {
+		t.Errorf("指引里要点出该开启哪个包，实际 %q", ws[0].Detail)
+	}
+	// 被关闭的包本身也应有一条警告（连它一起说清楚）。
+	if got := rep.WarningsOf(WarnDisabled); len(got) != 1 {
+		t.Errorf("被关闭的包应有一条 WarnDisabled，实际 %d 条", len(got))
+	}
+	// 关键：提供者被关闭时，依赖它的包**不该**被装载，
+	// 否则它会以为自己有宿主，而那个宿主根本不在。
+	if len(rep.Loaded) != 0 {
+		t.Errorf("提供者被关闭时依赖方不该装载，实际 %v", rep.Loaded)
+	}
+}
+
+// TestWarningsDoNotBlockEngine 验证警告不影响引擎可用性判定。
+//
+// OK() 只看"有没有内核"与"有没有错误"：把警告算进来会让
+// "少一个可选功能"变成"启动失败"，方向就错了。
+func TestWarningsDoNotBlockEngine(t *testing.T) {
+	orphan := newPack("kqflow.orphan")
+	orphan.requires = []string{"nobody.provides.this"}
+	orphan.members = []Plugin{ctxPlugin("kqflow.orphan.ctx")}
+
+	core := newPack("kqflow.core")
+	core.kernel = true
+	core.members = []Plugin{kernelPlugin("kqflow.kernel")}
+
+	m := NewManager(engine)
+	rep := m.Load(0, core, orphan)
+
+	if !rep.OK() {
+		t.Fatalf("有内核、只有警告时 OK 应为真，实际 %s", describeReport(rep))
+	}
+	if len(rep.Rejected) != 0 {
+		t.Errorf("不应有错误，实际 %s", describeReport(rep))
+	}
+	if len(rep.Warnings) == 0 {
+		t.Error("应留下警告")
+	}
+}
+
+// TestDisabledPackIsAWarningNotAnError 验证用户关闭的包记在 Disabled 与警告里，
+// **不是**错误。
 //
 // 这条很重要：关闭不是错误，但**必须留记录**——否则"我明明设了它却没了"
-// 永远没有答案。
-func TestDisabledPackIsNotAnError(t *testing.T) {
+// 永远没有答案。同时它也不能让引擎判定为"有问题"。
+func TestDisabledPackIsAWarningNotAnError(t *testing.T) {
 	off := newPack("kqflow.note")
 	off.enabled = false
 	off.members = []Plugin{tilePlugin("kqflow.note.tile", "随手记", geometry.AnchorRightTop, 0)}
@@ -129,8 +217,11 @@ func TestDisabledPackIsNotAnError(t *testing.T) {
 	if len(rep.Disabled) != 1 || rep.Disabled[0] != "kqflow.note" {
 		t.Fatalf("关闭的包应记入 Disabled，实际 %s", describeReport(rep))
 	}
-	if len(rep.RejectionsOf(RejectMissingCapability)) != 0 {
-		t.Error("被关闭不应被当成缺能力错误")
+	if len(rep.Rejected) != 0 {
+		t.Errorf("被关闭不是错误，实际 %s", describeReport(rep))
+	}
+	if got := rep.WarningsOf(WarnDisabled); len(got) != 1 {
+		t.Errorf("被关闭应有一条警告，实际 %d 条", len(got))
 	}
 	if rep.KernelID != "kqflow.core" {
 		t.Fatalf("内核应是 kqflow.core，实际 %q", rep.KernelID)
@@ -276,6 +367,8 @@ func TestAssembleFailureIsRecorded(t *testing.T) {
 }
 
 // TestCyclicDependencyExplained 验证环依赖被如实报告，而不是死循环。
+//
+// 环依赖同样归为"没有接纳者"这一类警告：包都没问题，只是彼此等不到。
 func TestCyclicDependencyExplained(t *testing.T) {
 	a := newPack("kqflow.a")
 	a.provides = []string{"cap.a"}
@@ -293,8 +386,20 @@ func TestCyclicDependencyExplained(t *testing.T) {
 	if len(rep.Loaded) != 0 {
 		t.Fatalf("环依赖的包都不应装载，实际 %s", describeReport(rep))
 	}
-	if len(rep.RejectionsOf(RejectMissingCapability)) != 2 {
-		t.Fatalf("两个包都应被报缺能力，实际 %s", describeReport(rep))
+	if len(rep.Rejected) != 0 {
+		t.Errorf("环依赖不是「包有问题」，不应记成错误，实际 %s", describeReport(rep))
+	}
+	if len(rep.Warnings) != 2 {
+		t.Fatalf("两个包都应留下警告，实际 %s", describeReport(rep))
+	}
+	// 两者都在环里：说明应点出是环，而不是"缺少某个标记"。
+	for _, w := range rep.Warnings {
+		if w.Reason != WarnNoHost {
+			t.Errorf("环依赖应记为 WarnNoHost，实际 %v", w.Reason)
+		}
+		if !strings.Contains(w.Detail, "环") {
+			t.Errorf("说明应点出成环，实际 %q", w.Detail)
+		}
 	}
 }
 

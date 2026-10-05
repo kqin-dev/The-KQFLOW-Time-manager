@@ -115,6 +115,18 @@ func newPack(id string) *fakePack {
 	}
 }
 
+// setEnabled 把包装成"用户启用/关闭"的状态，并返回自身便于链式书写。
+//
+// 为什么要一个方法而不是直接写 `p.enabled = false`：
+// 直接赋值在**别的测试文件**里做不到（字段是包内私有的，跨文件同一个包内
+// 其实可以，但读起来像在改内部状态），而且更重要的是一旦写成别的字段名，
+// 编译器不会报错——测试会"绿得莫名其妙"或"红得莫名其妙"。
+// 提供一个有名字的入口，语义与拼写都只有一处。
+func (p *fakePack) setEnabled(on bool) *fakePack {
+	p.enabled = on
+	return p
+}
+
 // setEngine 把包与**全部成员**的引擎范围都设成 r。
 //
 // 必须一起设：ValidatePack 会校验"包声明 ⊇ 成员要求"，
@@ -278,10 +290,17 @@ func boardPlugin(id string) *fakePlugin {
 }
 
 // describeReport 把报告压成一行，便于断言里直接比较。
+//
+// 必须同时包含 warnings 与 inactive：只看 loaded/rejected 的话，
+// 断言失败时输出会是"什么都没有"，根本看不出是类别判错了还是包没进来。
 func describeReport(r LoadReport) string {
-	out := fmt.Sprintf("loaded=%v kernel=%s", r.Loaded, r.KernelID)
+	out := fmt.Sprintf("loaded=%v inactive=%v kernel=%s disabled=%v",
+		r.Loaded, r.Inactive, r.KernelID, r.Disabled)
+	for _, w := range r.Warnings {
+		out += fmt.Sprintf(" | WARN %s:%s", w.PackID, w.Reason)
+	}
 	for _, rj := range r.Rejected {
-		out += fmt.Sprintf(" | %s:%s", rj.PackID, rj.Reason)
+		out += fmt.Sprintf(" | ERR %s:%s", rj.PackID, rj.Reason)
 	}
 	return out
 }

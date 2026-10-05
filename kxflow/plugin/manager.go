@@ -10,10 +10,15 @@ import (
 	"github.com/kqin-dev/kxflow/svc"
 )
 
-// RejectReason 是拒绝装载的原因类别。
+// RejectReason 是**拒绝装载**的原因类别：包进不去，属于错误。
 //
-// 分类而不是只留一句话，是为了让"为什么我的 DDL 没出现"能被**程序化地**
-// 回答（设置页要按类别展示，而人类读的说明放在 Detail 里）。
+// 与 WarnReason 的区别是刻意的（评审后引入）：
+//   - 拒绝 = 这个包**有问题**（声明缺陷、版本不匹配、与人冲突）；
+//   - 警告 = 这个包**没问题**，但当前环境下用不上（比如"没有任何组件接纳它"）。
+//
+// 混为一谈的代价是真实的：曾经把"没有 host 接纳"记成"包声明有缺陷"，
+// 用户看到的是"我的标签包坏了"，而真相是"它好好的，只是你没开 TODO/GOAL"。
+// 这不是有问题，而是「没有水瓶给水」。
 type RejectReason uint8
 
 const (
@@ -21,16 +26,12 @@ const (
 	RejectEngineAPI RejectReason = iota
 	// RejectKernelDuplicate 已经有内核了（内核是单例）。
 	RejectKernelDuplicate
-	// RejectMissingCapability 依赖的能力没有被任何已装载的包提供。
-	RejectMissingCapability
 	// RejectConflict 与另一个包显式冲突。
 	RejectConflict
 	// RejectDuplicateID 包 ID 重复。
 	RejectDuplicateID
 	// RejectDataSchema 要求的数据结构版本低于数据实际版本。
 	RejectDataSchema
-	// RejectDisabled 用户关掉了它（不是错误，但也要有记录）。
-	RejectDisabled
 	// RejectInvalid 包自身声明有缺陷（开发者错误）。
 	RejectInvalid
 	// RejectAssembleFailed 装配失败（Assemble 返回错误或返回 nil）。
@@ -44,16 +45,12 @@ func (r RejectReason) String() string {
 		return "引擎版本不匹配"
 	case RejectKernelDuplicate:
 		return "已有内核"
-	case RejectMissingCapability:
-		return "缺少依赖能力"
 	case RejectConflict:
 		return "与其它包冲突"
 	case RejectDuplicateID:
 		return "包 ID 重复"
 	case RejectDataSchema:
 		return "数据结构版本不兼容"
-	case RejectDisabled:
-		return "已被关闭"
 	case RejectInvalid:
 		return "包声明有缺陷"
 	case RejectAssembleFailed:
@@ -62,7 +59,58 @@ func (r RejectReason) String() string {
 	return "未知原因"
 }
 
-// Rejection 是一条拒绝记录。**必须可解释**：只说"没装上"等于没有信息。
+// WarnReason 是**警告**的原因类别：包是正常的，只是当前没起作用。
+type WarnReason uint8
+
+const (
+	// WarnDisabled 用户关掉了它。不是问题，但必须留记录
+	// （否则"我明明设了它却没了"永远没有答案）。
+	WarnDisabled WarnReason = iota
+	// WarnNoHost 没有任何组件愿意接纳它。
+	//
+	// 这是被漏掉过的一类：像"标签"这种联动选项包，必须有人上报选中上下文
+	// 它才有用。若用户既没开 TODO 也没开 GOAL，它启用了、装载了，
+	// 却**永远不会出现**。它没有坏，只是没有接纳它的组件。
+	WarnNoHost
+	// WarnProviderDisabled 它需要的组件存在，但被用户关掉了。
+	//
+	// 与 WarnNoHost 分开是为了给出**可操作**的指引：
+	// "去开启 X 包"比"缺少能力标记 foo"对用户有用得多。
+	WarnProviderDisabled
+	// WarnTileUnplaced 它的磁贴没有位置可放（槽位满了）。
+	WarnTileUnplaced
+)
+
+// String 返回中文说明。
+func (r WarnReason) String() string {
+	switch r {
+	case WarnDisabled:
+		return "已被关闭"
+	case WarnNoHost:
+		return "没有接纳它的组件"
+	case WarnProviderDisabled:
+		return "依赖的组件被关闭"
+	case WarnTileUnplaced:
+		return "磁贴没有位置可放"
+	}
+	return "未知原因"
+}
+
+// Warning 是一条警告：**包是正常的**，只是当前环境里没起作用。
+type Warning struct {
+	PackID string
+	Pack   string
+	Reason WarnReason
+	Detail string // 人读的说明，含具体缺哪个组件/能力标记
+}
+
+// String 便于测试与日志。
+func (w Warning) String() string {
+	return fmt.Sprintf("%s（%s）：%s —— %s", w.Pack, w.PackID, w.Reason, w.Detail)
+}
+
+// Rejection 是一条拒绝记录：包**有问题**，装不上。
+// **必须可解释**：只说"没装上"等于没有信息。
 type Rejection struct {
 	PackID string
 	Pack   string // 显示名
@@ -78,13 +126,26 @@ func (r Rejection) String() string {
 // LoadReport 是一次装载的完整结果。
 //
 // 设计原则：**"少一个包"必须仍然可用，"起不来"才是事故**。
-// 因此装载期的失败一律记录在 Rejected 里，不 panic 也不整体失败；
-// 只有"包自身声明有缺陷"（开发者错误）才由 ValidatePack 在装载期就拦住。
+// 因此装载期的失败一律记录在 Rejected 里，不 panic 也不整体失败。
+//
+// 三类结果，语义各不相同（不要混）：
+//
+//	Loaded    装载成功且已装配
+//	Inactive  **声明正常、依赖也满足**，但当前环境里没有组件接纳它（见 WarnNoHost）
+//	Rejected  包有问题，装载被拒
+//	Disabled  用户主动关闭
 type LoadReport struct {
 	// Loaded 是装载成功的包 ID，顺序即装配顺序（依赖在前）。
 	Loaded []string
-	// Rejected 是未能装载的包及原因。
+	// Inactive 是"装载成功但当前不起作用"的包 ID。
+	//
+	// 它们**不是错误**：包本身没问题，只是没有接纳它的组件，
+	// 或者接纳它的那个包被用户关掉了。引擎照常启动，用户看到一条警告。
+	Inactive []string
+	// Rejected 是未能装载的包及原因（包有问题）。
 	Rejected []Rejection
+	// Warnings 是全部警告（含 Disabled 与 Inactive 的原因）。
+	Warnings []Warning
 	// Disabled 是用户显式关掉的包 ID（不是错误）。
 	Disabled []string
 	// KernelID 是最终生效的内核包 ID（无内核时为空）。
@@ -93,17 +154,15 @@ type LoadReport struct {
 	Capabilities []string
 }
 
-// OK 报告是否至少有一个内核，且没有任何"非关闭"的拒绝。
+// OK 报告引擎是否可以正常工作：有内核，且没有任何**错误**。
+//
+// 注意它**不看**警告与 Inactive：一个包没起作用不影响引擎可用，
+// 把警告算进来会让"少一个可选功能"变成"启动失败"，方向就错了。
 func (r LoadReport) OK() bool {
 	if r.KernelID == "" {
 		return false
 	}
-	for _, rj := range r.Rejected {
-		if rj.Reason != RejectDisabled {
-			return false
-		}
-	}
-	return true
+	return len(r.Rejected) == 0
 }
 
 // RejectionsOf 返回指定原因的拒绝记录，便于设置页按类别展示。
@@ -117,7 +176,21 @@ func (r LoadReport) RejectionsOf(reason RejectReason) []Rejection {
 	return out
 }
 
+// WarningsOf 返回指定原因的警告，便于设置页按类别展示。
+func (r LoadReport) WarningsOf(reason WarnReason) []Warning {
+	var out []Warning
+	for _, w := range r.Warnings {
+		if w.Reason == reason {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 // Explain 生成人读的装载摘要，直接可用于启动报告或设置页。
+//
+// 措辞刻意区分"错误"与"警告"：把这两类用同一个词说出来，
+// 会让用户以为"我的标签包坏了"，而它只是没被任何组件接纳。
 func (r LoadReport) Explain() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "已装载 %d 个包", len(r.Loaded))
@@ -126,11 +199,18 @@ func (r LoadReport) Explain() string {
 	} else {
 		b.WriteString("（**无内核**）")
 	}
-	if len(r.Disabled) > 0 {
-		fmt.Fprintf(&b, "；已关闭：%s", strings.Join(r.Disabled, "、"))
+	if len(r.Inactive) > 0 {
+		fmt.Fprintf(&b, "；%d 个包当前未起作用：%s",
+			len(r.Inactive), strings.Join(r.Inactive, "、"))
+	}
+	if len(r.Warnings) > 0 {
+		b.WriteString("\n警告（包本身正常，当前未起作用）：")
+		for _, w := range r.Warnings {
+			fmt.Fprintf(&b, "\n  · %s", w)
+		}
 	}
 	if len(r.Rejected) > 0 {
-		b.WriteString("\n未装载：")
+		b.WriteString("\n错误（这些包有问题，未能装载）：")
 		for _, rj := range r.Rejected {
 			fmt.Fprintf(&b, "\n  · %s", rj)
 		}
@@ -170,24 +250,27 @@ func (m *Manager) Kernel() Kernel { return m.kernel }
 // candidate 是装载过程中的一个候选包。
 type candidate struct {
 	pack Pack
-	// reject 非空表示它在单包体检阶段就被否决了。
+	// reject 非空表示它在单包体检阶段就被否决了（包**有问题**）。
 	reject *Rejection
 	// admitted 表示它通过了依赖不动点。
 	admitted bool
+	// done 表示它已经被定性过（关闭或已产出警告），不需要再判。
+	done bool
 }
 
 // Load 按 design §4.4 的表逐条裁决并装配。
 //
-// 三个阶段（顺序是刻意的）：
+// 四个阶段（顺序是刻意的）：
 //
 //  1. **单包体检**：只看这个包自己——声明是否自洽、引擎版本、ID 是否重复、
 //     用户是否关闭、数据版本。冲突与内核唯一**不放这里**，因为它们要跟
 //     "最终真的装上了哪些包"比，而不是跟"传进来哪些包"比。
 //  2. **依赖不动点定序**：反复扫描，把"Requires 都已被满足"的包依次接纳。
-//     接纳顺序即拓扑序（被依赖者在前），因此**不需要单独做拓扑排序**；
-//     环依赖的包永远等不到依赖，会被如实报成缺能力而不是死循环。
+//     接纳顺序即拓扑序（被依赖者在前），因此**不需要单独做拓扑排序**。
 //  3. **按序装配**：按接纳顺序调用 Assemble，并在此刻裁决冲突与内核唯一。
-//     放在这里是因为此刻"谁真的装上了"才确定——用传入顺序判决会冤枉好包。
+//  4. **给没接纳的包定性**：区分"包有问题"（错误）与
+//     "包没问题但没组件接纳它"（警告 + Inactive）。这一条是评审后加的，
+//     见 WarnNoHost 的说明。
 //
 // dataSchema 是数据文件的实际版本（0 表示不检查）。
 func (m *Manager) Load(dataSchema int, packs ...Pack) LoadReport {
@@ -196,9 +279,30 @@ func (m *Manager) Load(dataSchema int, packs ...Pack) LoadReport {
 	rep := LoadReport{}
 
 	cands := m.precheck(dataSchema, packs, &rep)
+	// 预先统计"哪些能力**本来**有人提供"，用于区分两种不同的"没起作用"：
+	//   - 提供者存在、但被用户关了 → 给可操作指引（去开哪个包）
+	//   - 完全没有提供者           → 只说明事实
+	// 分成两张表是必须的：把被关闭的包也算进"存在"，
+	// 会让依赖它的包被误判为"依赖已满足"从而照常装载
+	// （实测症状：关掉 TODO 后 labels 仍然装上了，而它其实没有宿主）。
+	enabled := map[string][]string{}  // 能力 → 提供它的**启用**包
+	disabled := map[string][]string{} // 能力 → 提供它的**被关闭**包
+	for _, c := range cands {
+		if c.reject != nil {
+			continue
+		}
+		dst := enabled
+		if !c.pack.Enabled() {
+			dst = disabled
+		}
+		for _, cap := range c.pack.Provides() {
+			dst[cap] = append(dst[cap], c.pack.ID())
+		}
+	}
+
 	order := m.admit(cands, &rep)
 	m.assemble(cands, order, &rep)
-	m.finishRejections(cands, order, &rep)
+	m.classifyRemaining(cands, order, enabled, disabled, &rep)
 
 	rep.Capabilities = providedCapabilities(order)
 	m.report = rep
@@ -223,8 +327,12 @@ func (m *Manager) precheck(dataSchema int, packs []Pack, rep *LoadReport) []*can
 		}
 		if !p.Enabled() {
 			rep.Disabled = append(rep.Disabled, p.ID())
-			c.reject = &Rejection{PackID: p.ID(), Pack: p.Name(), Reason: RejectDisabled,
-				Detail: "用户在配置里关闭了这个包"}
+			rep.Warnings = append(rep.Warnings, Warning{
+				PackID: p.ID(), Pack: p.Name(), Reason: WarnDisabled,
+				Detail: "用户在配置里关闭了这个包；它本身没有问题",
+			})
+			// 被关闭不算"错误"，也不进 Rejected：它没有缺陷。
+			c.done = true
 			continue
 		}
 		if seenID[p.ID()] {
@@ -262,7 +370,10 @@ func (m *Manager) admit(cands []*candidate, rep *LoadReport) []*candidate {
 	for progress := true; progress; {
 		progress = false
 		for _, c := range cands {
-			if c.reject != nil || c.admitted {
+			// done 表示"已经定性过"（用户关闭）。**必须一起跳过**：
+			// 这类包没有声明依赖，不动点会认为"依赖全都满足"而把它接纳，
+			// 于是被用户关掉的包照样装上了——一个真实发生过的错误。
+			if c.reject != nil || c.admitted || c.done {
 				continue
 			}
 			if missing := firstMissing(c.pack.Requires(), provided); missing != "" {
@@ -320,11 +431,25 @@ func (m *Manager) assemble(cands []*candidate, order []*candidate, rep *LoadRepo
 	}
 }
 
-// finishRejections 把没能装载的包整理成报告。
+// classifyRemaining 给"没能装载"的包定性：是**错误**还是**警告**。
 //
-// 依赖等不到的包要**如实点出缺哪一个标记**——这正是
-// "关掉 TODO 与 GOAL 后 DDL 为什么没出现"的答案。
-func (m *Manager) finishRejections(cands []*candidate, order []*candidate, rep *LoadReport) {
+// 这是评审后修掉的一处语义错误。原先所有"依赖没满足"都记成
+// RejectMissingCapability（错误），于是用户看到"我的标签包坏了"——
+// 而它根本没坏：它启用了、声明也正常，只是**没有任何组件接纳它**
+// （没有 TODO/GOAL 就没人上报选中上下文）。用户的原话很准：
+// 这不是有问题，而是「没有水瓶给水」。
+//
+// 四种情形分得很清楚（判定顺序不能变，否则会互相遮蔽）：
+//
+//	① 包有问题（reject 非空）              → 错误，进 Rejected
+//	② 缺的能力有**启用**的包能提供，却仍没装上 → 被卡在环里（WarnNoHost，说明是环）
+//	   注意这一条必须排在③前面：环里的包，其依赖的提供者也是环里的另一员，
+//	   它同样没被接纳，若先看"提供者是否被关闭"会误判。
+//	③ 缺的能力只有**被关闭**的包提供        → WarnProviderDisabled + Inactive
+//	   给出可操作指引："去开启 X 包"
+//	④ 完全没有提供者                        → WarnNoHost + Inactive
+func (m *Manager) classifyRemaining(cands []*candidate, order []*candidate, enabled, disabled map[string][]string, rep *LoadReport) {
+	// 真正装上的包提供了哪些能力。
 	provided := map[string]bool{}
 	for _, c := range order {
 		if c.admitted {
@@ -333,6 +458,7 @@ func (m *Manager) finishRejections(cands []*candidate, order []*candidate, rep *
 			}
 		}
 	}
+
 	for _, c := range cands {
 		if c.reject != nil {
 			rep.Rejected = append(rep.Rejected, *c.reject)
@@ -341,17 +467,63 @@ func (m *Manager) finishRejections(cands []*candidate, order []*candidate, rep *
 		if c.admitted {
 			continue
 		}
-		missing := firstMissing(c.pack.Requires(), provided)
-		detail := fmt.Sprintf("依赖的能力标记 %q 没有任何已装载的包提供", missing)
-		if missing == "" {
-			// Requires 都满足了却没被接纳：只可能是环依赖。
-			detail = fmt.Sprintf("依赖 %v 形成环，无法确定装配顺序", c.pack.Requires())
+		// 用户关掉的包在最体检阶段就记过警告了，这里只补上 Inactive 标记。
+		// **这一条必须排在最前面**：被关闭的包也常常声明 provides，
+		// 于是它会出现在 disabled 能力表里，让下面的判定把它自己的依赖
+		// 当成"有主人却被关了"，从而把"没人接纳"误报成"提供者被关闭"。
+		if !c.pack.Enabled() {
+			if !c.done {
+				rep.Inactive = append(rep.Inactive, c.pack.ID())
+			}
+			continue
 		}
-		rep.Rejected = append(rep.Rejected, Rejection{
-			PackID: c.pack.ID(), Pack: c.pack.Name(),
-			Reason: RejectMissingCapability, Detail: detail,
-		})
+		if c.done {
+			continue
+		}
+		rep.Inactive = append(rep.Inactive, c.pack.ID())
+
+		switch {
+		case allSalvageable(c.pack.Requires(), provided, enabled):
+			// ② 依赖都"本来能满足"，却仍然没被接纳 —— 只可能是环。
+			rep.Warnings = append(rep.Warnings, Warning{
+				PackID: c.pack.ID(), Pack: c.pack.Name(), Reason: WarnNoHost,
+				Detail: fmt.Sprintf("依赖 %v 与其它包互相等待，形成环而无法确定装载顺序；"+
+					"包本身没有问题", c.pack.Requires()),
+			})
+		case providerDisabledFor(c.pack.Requires(), disabled) != "":
+			// ③ 有提供者，但被用户关了 —— 这是**可操作**的警告。
+			missing := providerDisabledFor(c.pack.Requires(), disabled)
+			rep.Warnings = append(rep.Warnings, Warning{
+				PackID: c.pack.ID(), Pack: c.pack.Name(), Reason: WarnProviderDisabled,
+				Detail: fmt.Sprintf("它需要的组件由 %s 提供，但那个包被关闭了；开启它即可让本包生效",
+					strings.Join(disabled[missing], "、")),
+			})
+		default:
+			// ④ 根本没人提供 —— 如实说明事实，不说"它有毛病"。
+			missing := firstMissing(c.pack.Requires(), provided)
+			rep.Warnings = append(rep.Warnings, Warning{
+				PackID: c.pack.ID(), Pack: c.pack.Name(), Reason: WarnNoHost,
+				Detail: fmt.Sprintf("没有任何已启用的包提供 %q，因此没有组件会接纳它；"+
+					"它已启用但不会有任何作用（包本身没有问题）", missing),
+			})
+		}
 	}
+}
+
+// allSalvageable 报告 need 里的每一项**要么已经可用，要么有启用的包能提供**。
+//
+// 用于区分"被环卡住"与"根本没人提供"：环里的包，其依赖在能力表里是有主的，
+// 只是那个主也在环里、同样没被接纳。
+func allSalvageable(need []string, provided map[string]bool, enabled map[string][]string) bool {
+	for _, n := range need {
+		if provided[n] {
+			continue
+		}
+		if len(enabled[n]) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Unload 卸载全部包（幂等）。退出时调用。
@@ -466,6 +638,21 @@ func firstMissing(requires []string, provided map[string]bool) string {
 	for _, r := range requires {
 		if !provided[r] {
 			return r
+		}
+	}
+	return ""
+}
+
+// providerDisabledFor 返回第一个"主人存在但被用户关闭"的能力标记；没有则空串。
+//
+// 与 other 的 firstMissing 之区别：那个查"哪些能力已生效"，这个查
+// "哪些能力的提供者被关了"。**只考虑 need 里真的声明过的标记**——
+// 曾经写成"在 providers 表里找不到就返回"，于是表里根本没有的键
+// 会让它返回空字符串（""），进而把"根本没人提供"误判成"提供者被关闭"。
+func providerDisabledFor(need []string, disabled map[string][]string) string {
+	for _, n := range need {
+		if len(disabled[n]) > 0 {
+			return n
 		}
 	}
 	return ""

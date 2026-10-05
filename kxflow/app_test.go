@@ -462,6 +462,55 @@ func TestToastIsTemporaryAndClearedByKey(t *testing.T) {
 	}
 }
 
+// TestInactivePackDoesNotBreakEngine 验证"没有接纳它的组件"不会让程序出问题。
+//
+// 这是评审后修正的语义在引擎层面的落点：那个包启用了、声明也正常，
+// 只是没有任何组件会接纳它。引擎必须照常启动、照常渲染，
+// 并让人能在报告里看到原因（警告），而不是把它当成错误。
+func TestInactivePackDoesNotBreakEngine(t *testing.T) {
+	// 一个"孤儿"包：需要宿主，但这个引擎里没有任何包提供它。
+	orphan := newFakePack("demo.orphan", newFakeTileAt("demo.orphan.tile", "孤儿", geometry.AnchorRightTop))
+	orphan.requires = []string{"nobody.provides.this"}
+
+	// 一个正常包，用来确认它没被连累。
+	normal := newFakePack("demo.normal", newFakeTileAt("demo.normal.tile", "正常", geometry.AnchorLeftTop))
+
+	m := New(Config{
+		EngineAPI: testEngine, Services: svc.Noop{},
+		Layout: layout.DefaultConfig(), View: plugin.NewViewConfig(),
+		Packs: []plugin.Pack{orphan, normal},
+	})
+	m.Resize(100, 30)
+
+	rep := m.Report()
+	if len(rep.Rejected) != 0 {
+		t.Fatalf("没有接纳者不是错误，实际 %s", rep.Loaded)
+	}
+	if len(rep.Inactive) != 1 || rep.Inactive[0] != "demo.orphan" {
+		t.Fatalf("孤儿包应记为 Inactive，实际 %v", rep.Inactive)
+	}
+	// 正常包照常装载。
+	if len(rep.Loaded) != 1 || rep.Loaded[0] != "demo.normal" {
+		t.Fatalf("正常包应照常装载，实际 %v", rep.Loaded)
+	}
+	// 引擎照常渲染，孤儿包的磁贴不会出现。
+	out := m.View()
+	if !strings.Contains(out, "正常") {
+		t.Errorf("正常磁贴应被渲染，实际输出：\n%s", out)
+	}
+	if strings.Contains(out, "孤儿") {
+		t.Errorf("没有接纳者的包不该出现在界面上，实际输出：\n%s", out)
+	}
+	// 报告要能说清原因，且措辞是警告而非错误。
+	text := rep.Explain()
+	if !strings.Contains(text, "警告") || !strings.Contains(text, "nobody.provides.this") {
+		t.Errorf("报告应给出警告并点出缺失标记，实际：\n%s", text)
+	}
+	if strings.Contains(text, "错误（这些包有问题") {
+		t.Errorf("不该出现错误段落，实际：\n%s", text)
+	}
+}
+
 // TestLoadReportIsExposed 验证装载报告能被宿主读到（"为什么它没出现"要有答案）。
 func TestLoadReportIsExposed(t *testing.T) {
 	// 缺依赖的包：要有一个成员，否则它会先因为"空包"被拦下，
