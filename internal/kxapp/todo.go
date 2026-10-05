@@ -94,6 +94,13 @@ func (p *todoPack) Members() []plugin.Plugin {
 		// 由引擎广播的 Selection 传达，它们不需要认识任何磁贴。
 		&ctxOptionSpec{
 			mf: plugin.Manifest{
+				ID: AddTaskOptionID, Name: "添加子任务", Kind: plugin.KindContextOption,
+				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
+			},
+			opt: &todoAddTaskOption{src: p.src, state: p.state},
+		},
+		&ctxOptionSpec{
+			mf: plugin.Manifest{
 				ID: AddTodoOptionID, Name: "添加待办", Kind: plugin.KindContextOption,
 				Version: semver.MustParse("0.1.0"), EngineAPI: engineRange,
 			},
@@ -172,6 +179,15 @@ func (t *todoTile) Render(ctx plugin.RenderCtx) {
 			canvas.Truncate("（今天还没有条目）", ctx.Rect.W), tile.StyleMuted)
 		return
 	}
+	// 子任务模式：只画**这一条**的子任务，顶层列表暂时让位。
+	//
+	// 为什么不是"列表下面追加子任务"：磁贴可能只有几行高，
+	// 混在一起会两者都看不清。而用户进入子任务模式时，
+	// 他关心的本来就只有这一个条目。
+	if t.subtaskActiveFor(items, cursor) {
+		t.renderSubtasks(ctx, items[cursor])
+		return
+	}
 	// 滚动：光标必须始终可见，否则用户会以为"按了没反应"。
 	//
 	// 这里**按显示行数**倒推起点，而不是按条目数：一条长待办折行后占两行，
@@ -199,6 +215,87 @@ func (t *todoTile) Render(ctx plugin.RenderCtx) {
 		// 折行而不是截断：长标题在小磁贴里被砍一半最难读。
 		y = drawWrappedInset(ctx, y, ctx.Rect, prefix, strings.Repeat(" ", listIndentWidth), line, style)
 	}
+}
+
+// subtaskActiveFor 报告"是否应当以子任务模式渲染"。
+//
+// 三重校验（缺一个都会画出错东西）：
+//   - 模式开着；
+//   - 光标所指的那一条**就是**当初进入时的那一条（SubtaskOwner）；
+//   - 它确实有子任务。
+//
+// 第二条尤其重要：用户可能在子任务模式里 ququ 顶层光标变了
+// （例如别处刷新），那时再画"这个条目的子任务"就是驴唇不对马嘴。
+func (t *todoTile) subtaskActiveFor(items []*model.Todo, cursor int) bool {
+	if !t.state.SubtaskActive || cursor >= len(items) {
+		return false
+	}
+	it := items[cursor]
+	if it.ID != t.state.SubtaskOwner || len(it.Tasks) == 0 {
+		return false
+	}
+	return true
+}
+
+// renderSubtasks 画出子任务列表（带一个"从哪来"的标题行）。
+func (t *todoTile) renderSubtasks(ctx plugin.RenderCtx, todo *model.Todo) {
+	cur := ClampCursor(t.state.SubtaskCursor, len(todo.Tasks))
+	rowW := itemRowWidth(ctx.Rect)
+	y := ctx.Rect.Y
+
+	// 标题行：告诉用户"现在看的是谁的子任务"。
+	// 没有它，用户会以为顶层列表的内容变了。
+	head := "▾ " + DisplayTitle(todo.Title)
+	if n := len(canvas.Wrap(head, ctx.Rect.W)); n > 0 && y < ctx.Rect.Y1() {
+		y = drawWrappedInset(ctx, y, ctx.Rect, "", "", head, tile.StyleStatus)
+	}
+
+	rows := make([]int, len(todo.Tasks))
+	for i := range todo.Tasks {
+		rows[i] = taskRows(&todo.Tasks[i], rowW)
+	}
+	avail := ctx.Rect.H - (y - ctx.Rect.Y)
+	if avail < 1 {
+		return
+	}
+	start := firstVisibleByRows(rows, cur, avail)
+	for i := start; i < len(todo.Tasks); i++ {
+		if y >= ctx.Rect.Y1() {
+			return
+		}
+		task := &todo.Tasks[i]
+		style := tile.StyleMuted
+		prefix := strings.Repeat(" ", markerWidth+listIndentWidth)
+		if i == cur && ctx.Focus {
+			prefix, style = "  ▸ ", tile.StyleTitleFocused
+		} else if task.Done() {
+			style = tile.StyleBorderDim
+		}
+		y = drawWrappedInset(ctx, y, ctx.Rect, prefix,
+			strings.Repeat(" ", markerWidth+listIndentWidth+2), taskLine(task), style)
+	}
+}
+
+// taskLine 生成一条子任务的显示文本。
+func taskLine(task *model.Task) string {
+	mark := "○"
+	if task.Done() {
+		mark = "✔"
+	} else if task.Status == model.StatusDoing {
+		mark = "◐"
+	}
+	return fmt.Sprintf("%s %s", mark, DisplayTitle(task.Title))
+}
+
+// taskRows 返回一条子任务折行后占几行。
+func taskRows(task *model.Task, rowW int) int {
+	if rowW < 1 {
+		return 1
+	}
+	if n := len(canvas.Wrap(taskLine(task), rowW)); n > 0 {
+		return n
+	}
+	return 1
 }
 
 // markerWidth 是"记号 + 一个空格"的显示宽度（滚动计算与绘制必须用同一个值）。
@@ -238,6 +335,16 @@ func todoLine(t *model.Todo) string {
 	return line
 }
 
+// OwnsEsc 报告"子任务模式占着 esc"。
+//
+// 引擎在分派 esc 之前会问它（见 plugin.ModalOwner）：没有它，
+// 子任务模式里的 esc 会被引擎当成"退出上一层界面"处理掉，
+// 而子任务模式还开着——用户按 esc 想退出一层，实际退出了两层（或零层）。
+func (t *todoTile) OwnsEsc() bool {
+	items := TodoList(t.src, t.kind)
+	return t.subtaskActiveFor(items, ClampCursor(t.cursorIndex(), len(items)))
+}
+
 // cursorIndex 返回本磁贴对应的光标。
 func (t *todoTile) cursorIndex() int {
 	if t.kind == model.KindFixed {
@@ -261,13 +368,24 @@ func (t *todoTile) setCursor(v int) {
 // 因此空列表与有列表给出的提示不同——空列表上 j/k 与勾选都没有意义，
 // 提示里就不该出现它们（否则用户按了没反应，会以为程序坏了）。
 func (t *todoTile) KeyHints(plugin.RenderCtx) []plugin.KeyHint {
-	if len(TodoList(t.src, t.kind)) == 0 {
+	items := TodoList(t.src, t.kind)
+	if len(items) == 0 {
 		// 列表为空：只能等用户先加条目，这里如实说明"没什么可按的"。
 		return nil
+	}
+	if t.subtaskActiveFor(items, ClampCursor(t.cursorIndex(), len(items))) {
+		// 子任务模式是**另一套按键**，提示必须跟着换——
+		// 否则用户会按 j/k 以为在动子任务，实际提示里写的是别的东西。
+		return []plugin.KeyHint{
+			{Key: "j/k", Desc: "选择子任务"},
+			{Key: "space", Desc: "勾选子任务"},
+			{Key: "esc", Desc: "退回条目"},
+		}
 	}
 	return []plugin.KeyHint{
 		{Key: "j/k", Desc: "移动"},
 		{Key: "space", Desc: "勾选"},
+		{Key: "enter", Desc: "子任务"},
 		{Key: "l", Desc: "操作"},
 	}
 }
@@ -296,6 +414,21 @@ func (t *todoTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
 	}
 	item := items[cur]
 	t.state.selectTodo(item.ID)
+	// 子任务模式：选中的是**子任务**，不是父条目。
+	//
+	// 这样联动选项会自然收敛（它们匹配 "todo"，因此不再出现），
+	// 而以后要加"作用于子任务"的选项时，匹配 "subtask" 即可。
+	// 关键是：父条目仍然通过 Owner 可查（SubtaskOwner），
+	// 因此"给这个子任务设截止时间"这类需求不会因为换了 Kind 而做不到。
+	if t.subtaskActiveFor(items, cur) {
+		tasks := item.Tasks
+		tc := ClampCursor(t.state.SubtaskCursor, len(tasks))
+		if tc < len(tasks) {
+			return plugin.Selection{
+				Kind: "subtask", ID: tasks[tc].ID, Title: DisplayTitle(tasks[tc].Title),
+			}
+		}
+	}
 	return plugin.Selection{
 		Kind: "todo", ID: item.ID, Title: DisplayTitle(item.Title),
 		Can: svc.Capability{CapItemDue, CapItemLabel},
@@ -309,6 +442,10 @@ func (t *todoTile) FocusSelection(plugin.RenderCtx) plugin.Selection {
 // 操作作用在 B"这种最难查的错位。
 func (t *todoTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 	items := TodoList(t.src, t.kind)
+	// 子任务模式有自己的一套按键，因此先分流（与 2.1.0 的 taskActive 同理）。
+	if t.subtaskActiveFor(items, ClampCursor(t.cursorIndex(), len(items))) {
+		return t.updateSubtasks(ctx, ev, items)
+	}
 	switch ev.Key {
 	case "j", "down":
 		t.setCursor(MoveCursor(t.cursorIndex(), 1, len(items)))
@@ -316,10 +453,84 @@ func (t *todoTile) Update(ctx plugin.EventCtx, ev plugin.Event) plugin.Action {
 	case "k", "up":
 		t.setCursor(MoveCursor(t.cursorIndex(), -1, len(items)))
 		return t.selectCurrent()
-	case " ", "enter":
+	case "esc":
+		// esc 在列表模式下不做事：它属于"退回"语义，而列表就是最外层。
+		// 交给引擎（它会去关借调层或什么都不做）。
+		return plugin.None()
+	case "enter":
+		// enter 进入子任务模式（与 2.1.0 一致：enter 是"进入下级"）。
+		//
+		// 与 space 的分工：space 勾选整条，enter 进入它的下级。
+		// 两者都常用，因此不能合并——合并了必然有一个要绕路。
+		return t.enterSubtasks(items)
+	case " ", "L":
 		return t.toggle(ctx, items)
 	}
 	return plugin.None()
+}
+
+// enterSubtasks 进入子任务模式。
+func (t *todoTile) enterSubtasks(items []*model.Todo) plugin.Action {
+	cur := ClampCursor(t.cursorIndex(), len(items))
+	if cur >= len(items) {
+		return plugin.None()
+	}
+	it := items[cur]
+	if len(it.Tasks) == 0 {
+		// 没有子任务时如实告诉用户怎么办（2.1.0 的提示也是这句）。
+		// 静默无反应会让人以为程序坏了。
+		return plugin.Toast("该项还没有子任务，按 t 添加")
+	}
+	t.state.SubtaskActive = true
+	t.state.SubtaskOwner = it.ID
+	t.state.SubtaskCursor = ClampCursor(t.state.SubtaskCursor, len(it.Tasks))
+	return t.selectCurrent()
+}
+
+// updateSubtasks 处理子任务模式下的按键。
+func (t *todoTile) updateSubtasks(ctx plugin.EventCtx, ev plugin.Event, items []*model.Todo) plugin.Action {
+	cur := ClampCursor(t.cursorIndex(), len(items))
+	todo := items[cur]
+	switch ev.Key {
+	case "esc":
+		// 退出子任务模式（先退这一层，不是直接关程序——引擎的 esc 只
+		// 在没有人消费时才会往上走，而这里我们消费它）。
+		t.state.SubtaskActive = false
+		t.state.SubtaskOwner = ""
+		return t.selectCurrent()
+	case "j", "down":
+		t.state.SubtaskCursor = MoveCursor(t.state.SubtaskCursor, 1, len(todo.Tasks))
+		return t.selectCurrent()
+	case "k", "up":
+		t.state.SubtaskCursor = MoveCursor(t.state.SubtaskCursor, -1, len(todo.Tasks))
+		return t.selectCurrent()
+	case " ", "enter":
+		return t.toggleSubtask(ctx, todo)
+	}
+	return plugin.None()
+}
+
+// toggleSubtask 勾选当前子任务，并回写父条目状态。
+//
+// 回写必须走 model.Todo.SyncFromTasks：父条目的完成状态是**派生**的
+// （全部子任务完成 ⇒ 父完成；部分完成 ⇒ 父回到进行中）。各写各的
+// 一定会不一致，而那种不一致在界面上表现为"子任务全勾了父条目还没完成"。
+func (t *todoTile) toggleSubtask(ctx plugin.EventCtx, todo *model.Todo) plugin.Action {
+	cur := ClampCursor(t.state.SubtaskCursor, len(todo.Tasks))
+	if cur >= len(todo.Tasks) {
+		return plugin.None()
+	}
+	task := &todo.Tasks[cur]
+	if task.Done() {
+		task.Status = model.StatusTodo
+		task.DoneAt = nil
+	} else {
+		at := ctx.Now
+		task.Status = model.StatusDone
+		task.DoneAt = &at
+	}
+	todo.SyncFromTasks(ctx.Now)
+	return plugin.Persist(TodoPackID, "day", t.src.Day())
 }
 
 // toggle 勾选当前条目并落盘。

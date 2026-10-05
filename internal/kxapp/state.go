@@ -52,6 +52,21 @@ type HostState struct {
 	// 让磁贴在获得焦点/移动光标时记下来，是这里唯一不重复实现的办法
 	//（另一条路是让引擎去问磁贴，但那会把"列表"这个概念塞进引擎）。
 	FocusList string
+
+	// SubtaskActive 为真表示当前处于**子任务模式**（光标在某个条目的
+	// 子任务列表里，而不是在顶层列表里）。
+	//
+	// 与 2.1.0 的 taskActive 同一个概念，但对齐了 v3 的交互模型：
+	// 它是一个**模式**（enter 进入、esc 退出），而不是一层借调界面——
+	// 因为子任务列表就画在同一个磁贴里，用户视线不用移动。
+	SubtaskActive bool
+	// SubtaskOwner 是进入子任务模式时那个条目的 ID。
+	//
+	// 记 ID 而不是下标：下标会随"别处删了一条"而失效，
+	// 于是光标会莫名其妙跳到另一个条目的子任务上。
+	SubtaskOwner string
+	// SubtaskCursor 是子任务模式下的光标。
+	SubtaskCursor int
 }
 
 // NewHostState 创建初始状态。

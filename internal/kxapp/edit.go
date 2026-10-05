@@ -14,16 +14,17 @@ import (
 // 条目编辑相关的插件 ID。
 const (
 	AddTodoOptionID  = "kqflow.todo.add"
+	AddTaskOptionID  = "kqflow.todo.addtask"
 	DelTodoOptionID  = "kqflow.todo.del"
 	AddGoalOptionID  = "kqflow.goal.add"
 	DelGoalOptionID  = "kqflow.goal.del"
 	EditTodoOptionID = "kqflow.todo.edit"
 	EditGoalOptionID = "kqflow.goal.edit"
-	// AddOptionOrder 是"添加"在菜单里的位置。
+	// AddOptionOrder 是"添加待办"在菜单里的位置。
 	//
-	// 排在标签（10）**后面**：两者都常用，但"给这条打标签"是"对当前条目
-	// 动手"，而"添加"是"往列表里加新的"——前者更贴近用户此刻盯着的那一条，
-	// 因此让它排第一。（早先我把添加放在最前，实测读菜单时反而别扭。）
+	// 排在标签（10）与"添加子任务"（12）**后面**：三者都常用，
+	// 但"对当前这一条动手"（打标签、拆子任务）比"往列表里加新的"
+	// 更贴近用户此刻盯着的那一条。
 	AddOptionOrder    = 15
 	DeleteOptionOrder = 60
 )
@@ -152,6 +153,111 @@ func newAddTodoView(src Source, st *HostState, kind model.Kind) plugin.View {
 				} else {
 					st.setFloatingCursor(len(data.Floating) - 1)
 				}
+				input = ""
+				status = "已添加：" + title
+				return plugin.Persist(TodoPackID, "day", data), false
+			case "backspace":
+				input = trimLastRune(input)
+				return plugin.None(), false
+			}
+			for _, r := range ev.Runes {
+				if isSettingRune(r) {
+					input += string(r)
+				}
+			}
+			if len(ev.Runes) == 0 && len(ev.Key) == 1 {
+				if r := rune(ev.Key[0]); isSettingRune(r) {
+					input += ev.Key
+				}
+			}
+			return plugin.None(), false
+		},
+	}
+}
+
+// todoAddTaskOption 是"添加子任务"联动选项。
+//
+// 2.1.0 用裸键 `t` 做这件事；v3 把它放进统一入口（`l`）。
+// 这里保留的是**能力**，换掉的是触发方式——这是刻意的设计差异，
+// 已在 docs/kxflow-parity.md 里记明。
+type todoAddTaskOption struct {
+	src   Source
+	state *HostState
+}
+
+func (o *todoAddTaskOption) AppliesTo() []string { return []string{"todo"} }
+func (o *todoAddTaskOption) Requires() []string  { return nil }
+
+// Order 让它排在"添加待办"（15）**之前**：往当前条目里加子任务
+// 比往列表里加新条目更贴近用户此刻盯着的那一条（与标签的取舍同理）。
+func (o *todoAddTaskOption) Order() int { return 12 }
+
+func (o *todoAddTaskOption) Label(sel plugin.Selection) string {
+	if sel.Title == "" {
+		return "添加子任务…"
+	}
+	return "给「" + sel.Title + "」加子任务…"
+}
+
+func (o *todoAddTaskOption) Activate(sel plugin.Selection, services svc.Services) (plugin.View, error) {
+	return newAddTaskView(o.src, o.state, sel.ID), nil
+}
+
+// newAddTaskView 是"添加子任务"输入界面。
+//
+// 与添加待办同形：可以**连续添加**（回车加一条，esc 记完了），
+// 因为"拆解一件事"通常一次就要写好几条，来回开关最打断思路。
+func newAddTaskView(src Source, st *HostState, todoID string) plugin.View {
+	input := ""
+	var status string
+	return &plugin.ViewFunc{
+		ViewName: "添加子任务",
+		HintFn: func(plugin.RenderCtx) []plugin.KeyHint {
+			return []plugin.KeyHint{
+				{Key: "enter", Desc: "添加"},
+				{Key: "esc", Desc: "记完了"},
+			}
+		},
+		RenderFn: func(ctx plugin.RenderCtx) {
+			y := ctx.Rect.Y
+			put := func(s string, style canvas.StyleID) {
+				y = drawWrapped(ctx, y, ctx.Rect, s, style)
+			}
+			put("添加子任务", tile.StyleTitle)
+			put("", tile.StyleMuted)
+			put("直接输入内容，回车添加（可以连续添加几条）", tile.StyleMuted)
+			put("", tile.StyleMuted)
+			put("输入："+input+"▏", tile.StyleAccent)
+			if status != "" {
+				put("", tile.StyleMuted)
+				put(status, tile.StyleStatus)
+			}
+		},
+		UpdateFn: func(ec plugin.EventCtx, ev plugin.Event) (plugin.Action, bool) {
+			switch ev.Key {
+			case "esc":
+				return plugin.None(), true
+			case "enter":
+				title := model.Sanitize(input, false)
+				if title == "" {
+					return plugin.None(), true
+				}
+				data := src.Day()
+				if data == nil {
+					status = "没有当天数据，无法添加"
+					return plugin.None(), false
+				}
+				todo := data.Find(todoID)
+				if todo == nil {
+					status = "条目已经不在了"
+					return plugin.None(), false
+				}
+				todo.Tasks = append(todo.Tasks, model.NewTask(title))
+				// 父条目状态是**派生**的（见 SyncFromTasks），加完要重算。
+				todo.SyncFromTasks(ec.Now)
+				// 记下"下次 enter 该进哪个条目的子任务"，并且光标落在刚加的那条上。
+				st.SubtaskOwner = todoID
+				st.SubtaskCursor = len(todo.Tasks) - 1
 				input = ""
 				status = "已添加：" + title
 				return plugin.Persist(TodoPackID, "day", data), false

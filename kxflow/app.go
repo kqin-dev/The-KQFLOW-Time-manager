@@ -992,6 +992,16 @@ func (m *Model) Dispatch(ev plugin.Event) (requestQuit bool) {
 		m.FocusNext(-1)
 		return false
 	case "esc":
+		// 当前焦点磁贴如果是**模态**（占用 esc），esc 归它
+		//（子任务模式就是这种：esc 是"从子任务退回条目"，
+		//  不是"退出上一层界面"）。
+		//
+		// 必须在全局 pop 之前问：否则用户在子任务里按 esc 会直接把
+		// 借调层关掉，而子任务模式还开着——两层状态就此错位。
+		if slot, ok := m.registry.At(m.focus); ok && slot.Component != nil &&
+			plugin.OwnsEsc(slot.Component) {
+			break // 落到下面的磁贴分派去
+		}
 		// esc 的语义：先退出借调，退出不了才算"没处可去"。
 		if origin, ok := m.stage.Pop(); ok {
 			m.focusBack(origin)

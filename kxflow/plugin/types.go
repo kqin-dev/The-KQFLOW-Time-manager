@@ -308,6 +308,31 @@ func FooterProgressOf(c Component, ctx RenderCtx) (float64, string, bool) {
 	return 0, "", false
 }
 
+// ModalOwner 是可选能力：组件声明"我现在占着 esc"。
+//
+// 为什么需要它（一个真实的死锁）：esc 在引擎里是"退回上一层"的全局键，
+// 它在按键分派的最前面就被处理掉了，**磁贴根本收不到**。
+// 而子任务模式需要 esc 做"从子任务退回条目"——那是同一个键的第二层含义。
+//
+// 组件没法通过 Update 的返回值表达"我消费了 esc"（那个 bool 的语义是
+// "关掉我这一层"），因此只能由组件显式声明"我占着它"，
+// 引擎在分派 esc 之前先问一句。
+//
+// ⚠️ 实现必须是纯的、廉价的（每次按键都会问）：它只是"我现在是不是
+// 一个模态"，不该在这里改状态。
+type ModalOwner interface {
+	// OwnsEsc 报告组件当前是否要自己处理 esc。
+	OwnsEsc() bool
+}
+
+// OwnsEsc 报告组件是否占着 esc（未实现该接口则为假）。
+func OwnsEsc(c Component) bool {
+	if m, ok := c.(ModalOwner); ok {
+		return m.OwnsEsc()
+	}
+	return false
+}
+
 // HeaderContent 是内核向下栏/上栏申报的文本内容。
 type HeaderContent struct {
 	// Left 是上栏左侧文本（日期、问候、当天概况）。
