@@ -5,7 +5,13 @@ go 1.26.5
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	golang.org/x/sys v0.36.0
 )
+
+// KXFLOW 引擎是本仓库内的独立模块（./kxflow），开发期用这条 replace 指向本地目录：
+// 这样"刚克隆的人"和"离线的人"执行 go build ./cmd/kqf 都能直接成功，
+// 不必先 go work sync。引擎要独立发布时，删掉这条并把 require 指向发布版本即可。
+replace github.com/kqin-dev/kxflow => ./kxflow
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -23,6 +29,5 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
 )

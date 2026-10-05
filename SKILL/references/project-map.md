@@ -25,16 +25,43 @@ KQFLOW（可执行文件 `kqf.exe`）是一个用 Go 写的命令行时间管理
 ## 代码结构
 
 ```
+go.work                 ★ 把宿主与引擎两个模块编到一起（开发期用）
+go.mod                  宿主模块：The-KQFLOW-Time-manager
 cmd/kqf/main.go        入口：命令行参数、配置装配、启动 Bubble Tea
 internal/version/       Version 常量 —— 全项目版本号唯一权威来源
 internal/clock/         逻辑日、日界线、问候语、时长与时钟格式化
 internal/config/        配置结构、读写、数据目录定位（KQFLOW_HOME > DataDir > exe 同级）
 internal/model/         TODO / GOAL / TASK / Session / Activity / DayData 等数据结构
 internal/store/         按日分库的持久化、原子写、备份与恢复
-internal/ui/            Bubble Tea 界面（最大的一块，见下）
+internal/ui/            Bubble Tea 界面（v2.1.0 原型，v3.0 起逐步被 kxflow 取代）
+kxflow/                 ★ KXFLOW 渲染引擎（独立模块 github.com/kqin-dev/kxflow）
 setup/                  Inno Setup 脚本 + build-installer.ps1
+docs/                   ★ docs/kxflow-design.md 是 v3.0.0 的架构设计与接口签名
 SKILL/                  本手册
 ```
+
+### kxflow（v3.0.0 引入的引擎模块）
+
+**它的存在理由**：v2.1.0 的渲染是"每个页面各自算宽度、各自折行、各自裁剪"，
+于是同一类排版问题反复出现且修不完（详见 `docs/kxflow-design.md` §0）。
+引擎把"布局只有一处权威"和"越界写不进去"做成机制，而不是约定。
+
+| 目录 | 职责 | 状态 |
+| --- | --- | --- |
+| `kxflow/geometry` | Rect、尺寸、四向分割（`CutTop/CutBottom/CutLeft/CutRight`） | ✅ 已完成 |
+| `kxflow/canvas` | 画布、裁剪区、样式下标、折行/截断/宽度口径 | ✅ 已完成 |
+| `kxflow/internal/enginetest` | 架构约束测试（引擎不得依赖宿主） | ✅ 已完成 |
+| `kxflow/theme`、`layout`、`tile`、`stage`、`plugin`、`chrome`、`svc` | 五层骨架与插件体系 | 待实现（M2 起） |
+| `internal/kxapp` | 宿主适配层：KQFLOW 内核 + 各业务插件 | 待实现（M4 起） |
+
+**两条硬规则**（改了就是破坏架构，测试会红）：
+
+1. **引擎绝不依赖 KQFLOW**：`kxflow/` 下任何包不得 import
+   `The-KQFLOW-Time-manager/...`。由 `kxflow/internal/enginetest/imports_test.go` 自动校验。
+2. **宽度口径是确定的**：`canvas` 包在 `init` 里显式把 `runewidth` 的
+   `EastAsianWidth` 设为 `false`（中日韩文字 2 列，框线/几何图形 1 列）。
+   不要依赖它的自动环境检测——那会让同一份代码在不同机器上得到不同的列宽，
+   而测试仍然是绿的（这正是 v2.1.0"只在特定终端下复现"那类问题的根因）。
 
 ### internal/ui 细分
 

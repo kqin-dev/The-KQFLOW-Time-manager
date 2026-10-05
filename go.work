@@ -1,0 +1,17 @@
+go 1.26.5
+
+// 开发期把宿主（KQFLOW）与引擎（KXFLOW）编到一起。
+//
+// 两个模块同仓但各自独立：
+//   - KQFLOW 是产品，依赖引擎（见根 go.mod 里的 require + replace）；
+//   - KXFLOW 是引擎，**不得**依赖 KQFLOW —— 这条由
+//     kxflow/internal/enginetest/imports_test.go 用 Go 的 import 图自动校验，
+//     而不是只写在文档里。
+//
+// go.work 只对"在工作目录之下执行的构建"生效，因此主模块的 go.mod 里还写了一条
+// replace 指向 ./kxflow：这样"刚克隆的人"和"离线的人"都能直接 go build，
+// 不必先 go work sync。将来引擎要独立发布时，删掉那条 replace 并给 kxflow 打 tag 即可。
+use (
+	.
+	./kxflow
+)
